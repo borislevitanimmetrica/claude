@@ -14,7 +14,7 @@ then returning to LineageOS 23.2 without disturbing the restored value.
 | Slot A bootable | ✓ (`current-slot: a`, `slot-successful:a:yes`) |
 | Slot B unbootable | ⚠ (`slot-unbootable:b:yes`) — flash to slot A only initially |
 | OFP available | ✓ `/Users/boris/Downloads/CPH2459export_11_C.26_2025020813270000/CPH2459export_11_C.26_2025020813270000.zip` |
-| OFP decryptor | ✓ `/Users/boris/Downloads/CPH2459export_11_C.26_2025020813270000/oppo_decrypt/oppo_decrypt.py` |
+| OFP decryptor | ✓ `/Users/boris/Downloads/CPH2459export_11_C.26_2025020813270000/oppo_decrypt/ofp_qc_decrypt.py` |
 | Lineage zip | ✓ `/Users/boris/Downloads/flash_to_device_5/lineage-23.2-20260610-nightly-gunnar-signed/lineage-23.2-20260610-nightly-gunnar-signed.zip` |
 | Lineage .img files | ✓ (boot, vendor_boot, dtbo, vbmeta, super_empty in same dir) |
 | modem-related partitions in Lineage OTA | ✗ (Lineage zip does not write modem/modemst/persist — see SESSION_43 §6) |
@@ -32,7 +32,7 @@ unzip -o CPH2459export_11_C.26_2025020813270000.zip
 find . -maxdepth 3 -name '*.ofp' -not -path '*oppo_decrypt*'
 
 # decrypt — adjust path to the .ofp once located
-python3 oppo_decrypt/oppo_decrypt.py \
+python3 oppo_decrypt/ofp_qc_decrypt.py \
     /Users/boris/Downloads/CPH2459export_11_C.26_2025020813270000/<filename>.ofp \
     ofp_decrypted/
 
