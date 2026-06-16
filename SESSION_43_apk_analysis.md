@@ -205,3 +205,180 @@ Plan D dwarfs the rest. Failure mode of D dictates the next move:
 - **D fails with "static NV restore complete" but `*#06#` still null** → write reported success but didn't persist; check persist partition state.
 - **D succeeds but reverts on Lineage reflash** → Lineage's modem-side init wipes NV-550 again; isolate which service in Lineage's init chain does it.
 - **D succeeds and survives** → done.
+
+
+
+---
+
+# Addendum — modemst content + HIDL surface elimination
+
+## modemst1 / modemst2 are NOT zero-padded templates
+
+Previous session asserted "modemst1 and modemst2 contained only templates with all
+payload zeroed out." Direct inspection contradicts this:
+
+- `modemst1.img`: 3 MB, **82% non-zero**, header at offset 0x20 reads `IMGEFS1|`
+  (the canonical Qualcomm IMGEFS magic, indicating a populated EFS image).
+- Block density across the file: blocks 0–145 are 96–99% non-zero; blocks
+  160-191 (the last ~17%) are 100% zero. That's a normal partial-fill pattern
+  for a 3 MB partition.
+- Embedded ASCII pathnames: only ~9 path-shaped strings, all garbled
+  (`/5"J. *b)`, `/^aJ*(t6@`, etc.) — these are coincidental matches in
+  encrypted/binary data, not real paths.
+- 9-byte BCD-shaped pattern matches (`08[0-9a-f]{17}f`) appear at random
+  offsets but contain a-f nibbles in the digit positions, so they're not
+  valid BCD-encoded IMEIs — also coincidental.
+
+Interpretation: the modemst on this device is **encrypted EFS** with substantial
+populated content. Encrypted EFS is the norm on bp4a-class Snapdragon firmware;
+the encryption key lives in the modem's secure storage and is invisible to
+host-side tools. We can't determine from the dump alone *which* NV items are
+populated vs. missing — only the modem itself can answer that, and its current
+answer is "NV-550 empty."
+
+Implication: the previous instance's mental model — "modemst is a wreck, may
+need to be wholesale restored" — was incorrect. modemst1/2 are healthy. The
+specific gap is NV-550 only. This makes Plan D's prospects *better* than the
+previous session's writeup suggested, because the modem's factory state is
+otherwise intact.
+
+The fully-zeroed partitions (`fsg`, `fsc`, `mdm1m9kefsc`) remain the open
+risk for Plan D, because `fsg` is sometimes used as a factory-attestation seed.
+
+## Two of the six unexplored HIDL surfaces eliminated by symbol-table inspection
+
+Pulled the `Bp/Bn` proxy/stub method names from the binding `.so` files
+already in this repo:
+
+### `vendor.qti.data.factory@2.3::IFactory` — **0% probability, remove**
+
+Full cumulative method list (V2_0 through V2_3):
+
+```
+createQmiIAgent(IServiceCallback) → IAgent
+createRcsConfig(int, IRcsConfigListener) → IRcsConfig
+createCneIService(IServiceCallback) → ICneService
+createCneIApiService() → IApiService
+createILinkLatencyService(IClientToken) → ILinkLatencyService
+createDynamicddsISubscriptionManager(IToken) → ISubscriptionManager
+createISlmService(ISlmToken) → ISlmService             [V2_1]
+createRcsConfig_1_1(int, IRcsConfigListener) → IRcsConfig  [V2_1]
+createIMwqemService(IMwqemToken) → IMwqemService       [V2_2]
+createILceService(IToken) → ILceService                [V2_3]
+```
+
+This is a *factory* in the design-pattern sense — every method is
+`createXService(...) → IXService`. The interface itself has no read/write/get/
+set semantics; it just hands out other interfaces (link latency, RCS config,
+CNE, dynamic DDS, MWQEM, LCE). None of those sub-services is identifier-related.
+Eliminate from the candidate list.
+
+### `vendor.qti.ims.factory@2.2::IImsFactory` — **0% probability, remove**
+
+Full cumulative method list (V2_0 through V2_2):
+
+```
+createConfigService(int, IConfigServiceListener) → IConfigService
+createOptionsService(int, IOptionsListener) → IOptionsService
+createPresenceService(int, IPresenceListener) → IPresenceService
+createConnectionService(int) → IConnectionService
+createCallCapabilityService(int) → ICallCapabilityService
+createRcsSipTransportService(int, ISipTransportListener) → ISipTransportService
+createConfigService_1_1(...)               [V2_1]
+createPresenceService_1_1(...)             [V2_1]
+createRcsSipTransportService_1_1(...)      [V2_1]
+createPresenceService_1_2(...)             [V2_2]
+createRcsSipTransportService_1_2(...)      [V2_2]
+```
+
+Same pattern — purely a service factory, in the IMS domain. Zero relevance to
+IMEI provisioning. Eliminate.
+
+### Confirmation: `vendor.qti.hardware.radio.atcmdfwd@1.0::IAtCmdFwd`
+
+Single method: `processAtCmd(AtCmd) → AtCmdResponse`. Confirms what we already
+knew — this *would* be a generic AT-command tunnel, but (a) the service isn't
+registered on the LineageOS target, and (b) on stock the OEM's own
+EngineerMode references only `AT+EGMR=0,7` / `=0,10` (read forms), never the
+`=1,…` write form, so it's unused even on stock for IMEI write.
+
+### Remaining 4 surfaces still need their .so files pulled to characterize
+
+These were not in the repo's pre-pulled file set, so their methods are unknown:
+
+- `vendor.qti.hardware.radio.qtiradio@2.7::IQtiRadio/slot1`
+- `vendor.qti.hardware.radio.internal.deviceinfo@1.0::IDeviceInfo/deviceinfo`
+- `vendor.oplus.hardware.appradio@1.0::IOplusAppRadio/oplus_app_slot1`
+- `vendor.oplus.hardware.ims@1.0::IOplusImsRadio/oplusimsradio0`
+
+To enumerate their methods we just need to pull the bindings .so from
+`/vendor/lib64/` on the broken target and run the same `nm | c++filt | grep Bp`
+extraction.
+
+## Stock-side findings from `service list` and `lshal list -i`
+
+### Confirmed registered on stock (CPH2459 OxygenOS 11_C.26):
+
+Framework binders (registered by system_server, OPlus framework patches):
+- `oplus_telephony_ext`  →  `com.android.internal.telephony.IOplusTelephonyExt`
+- `engineer`             →  `android.engineer.IOplusEngineerManager`
+- `extphone`             →  `org.codeaurora.internal.IExtTelephony`  *(CAF, not com.qti.extphone)*
+- `qti.radio.extphone`   →  `org.codeaurora.internal.IExtTelephony`  *(second registration, same iface)*
+- `ISubsysRadio`         →  `com.oplus.telephony.ISubsysRadio`
+
+Vendor HIDL services (registered by /odm/etc/init/ and /vendor/etc/init/ rc files):
+- `vendor.oplus.hardware.engineer@1.0::IEngineer/default`           ← **OPlus engineer HIDL**
+- `vendor.oplus.hardware.handlefactory@1.0::IHandleFactory/default` ← previously unknown
+- `vendor.qti.hardware.radio.qcrilhook@1.0::IQtiOemHook/oemhook0`   (also on Lineage)
+- `vendor.qti.data.factory@2.0/2.1/2.2::IFactory/default`           (note: stock has 2.0/2.1/2.2; Lineage has 2.0–2.3 active)
+- `vendor.qti.ims.factory@1.0/1.1::IImsFactory/default`             (note: stock has 1.0/1.1; Lineage has 2.0–2.2)
+
+Init.rc files on stock that LineageOS lacks:
+```
+/odm/etc/init/vendor-oplus-hardware-engineer@1.0-service.rc
+/odm/etc/init/vendor_engineermode.rc
+/vendor/etc/init/vendor.qti.hardware.factory@1.0-service.rc
+/vendor/etc/init/hw/init.at.qcom.rc
+/vendor/etc/init/hw/init.at.target.rc
+/vendor/etc/init/hw/init.oem_ftm.rc
+/vendor/etc/init/hw/init.qcom.factory.rc
+/vendor/etc/init/hw/vendor.oem_ftm.rc
+/vendor/etc/init/hw/vendor.oem_ftm_svc_disable.rc
+```
+
+These are the candidate Plan-1A donors. The likely IMEI-restore chain on stock:
+
+```
+EngineerMode .apk
+   ↓
+oplus_telephony_ext  binder         (system_server)
+   ↓
+[OPlus framework patches in services.jar; not in this APK]
+   ↓
+vendor.oplus.hardware.engineer@1.0::IEngineer    or
+vendor.qti.hardware.factory@1.0::IFactory         (vendor process)
+   ↓
+QMI to modem (different QMI service than OEM-hook?)
+   ↓
+modem
+```
+
+The framework-tier porting is genuinely required — `IOplusTelephonyExt` is
+registered by `system_server` on stock, and Lineage's `system_server` doesn't
+include OPlus's framework patches.
+
+### Confirmed missing on the broken target (LineageOS 23.2):
+
+Service list / getprop on `9385711f` returns empty for `extphone`, `oplus_*`,
+`engineer`, `nvbackup`, `factorymode` — confirming none of the OPlus framework
+binders exist there.
+
+## Final ranking after symbol-table evidence
+
+| Rank | Plan | P(success) | Effort |
+|---|---|---|---|
+| 1 | **D** — boot stock 11_C.26, EngineerMode → static NV restore, reflash Lineage | 40–55% | low |
+| 2 | Pull + characterize the remaining 4 HIDL .so (`IQtiRadio`, `IDeviceInfo`, `IOplusAppRadio`, `IOplusImsRadio`); probe any `setImei`/NV method found | combined ~5–10% | very low (1–2 hrs) |
+| 3 | 1A++ — port `IOplusTelephonyExt` framework + `IEngineer`/`factory@1.0` HIDLs to Lineage | 20–30% | very high (days) |
+| 4 | 3 — patch `libqcrilNr` for `DMS_SET_IMEI` | 5–10% | high |
+| – | ~~G, Remedy 2, qti.data.factory, qti.ims.factory~~ | 0% | — |
