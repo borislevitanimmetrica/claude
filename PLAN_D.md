@@ -34,10 +34,10 @@ find . -maxdepth 3 -name '*.ofp' -not -path '*oppo_decrypt*'
 # decrypt — adjust path to the .ofp once located
 python3 oppo_decrypt/ofp_qc_decrypt.py \
     /Users/boris/Downloads/CPH2459export_11_C.26_2025020813270000/<filename>.ofp \
-    ofp_decrypted/
+    /Users/boris/Downloads/fw_11C26_extracted_5/
 
 # verify the .img set
-ls -la ofp_decrypted/*.img | sort
+ls -la /Users/boris/Downloads/fw_11C26_extracted_5/*.img | sort
 ```
 
 You should see at minimum: `boot.img`, `dtbo.img`, `vendor_boot.img`,
@@ -77,7 +77,7 @@ adb -s 9385711f reboot bootloader
 fastboot -s 9385711f getvar current-slot
 # expect: current-slot: a
 
-cd /Users/boris/Downloads/CPH2459export_11_C.26_2025020813270000/ofp_decrypted/
+cd /Users/boris/Downloads/fw_11C26_extracted_5/
 
 # core stock images, slot A only
 fastboot -s 9385711f flash --slot=a boot         boot.img
