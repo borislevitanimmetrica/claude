@@ -382,3 +382,90 @@ binders exist there.
 | 3 | 1A++ — port `IOplusTelephonyExt` framework + `IEngineer`/`factory@1.0` HIDLs to Lineage | 20–30% | very high (days) |
 | 4 | 3 — patch `libqcrilNr` for `DMS_SET_IMEI` | 5–10% | high |
 | – | ~~G, Remedy 2, qti.data.factory, qti.ims.factory~~ | 0% | — |
+
+
+
+---
+
+# Addendum 2 — `IQtiRadio` and `IDeviceInfo` characterized; OPlus surfaces missing from upload
+
+Symbol-table extraction from the `BpHwQtiRadio` (all 8 versions) and
+`BpHwDeviceInfo` proxy classes, with the bindings .so files now in the repo.
+
+## `vendor.qti.hardware.radio.qtiradio@1.0..@2.7::IQtiRadio` — **0%, eliminate**
+
+Cumulative method set across all eight versions:
+
+```
+@1.0   getAtr, setCallback
+@2.0 + disable5g, enable5g, enable5gOnly, query5gStatus,
+       queryNrBearerAllocation, queryNrDcParam,
+       queryNrSignalStrength, sendCdmaSms
+@2.1 + query5gConfigInfo, queryUpperLayerIndInfo
+@2.2 + queryNrIconType
+@2.3 + enableEndc, queryEndcStatus,
+       getPropertyValueBool, getPropertyValueInt, getPropertyValueString
+@2.4 + setCarrierInfoForImsiEncryption
+@2.5 + queryNrConfig, setNrConfig
+@2.6 + getQtiRadioCapability
+@2.7 + getQosParameters
+```
+
+`IQtiRadio` is a 5G/NR feature-control extension to AOSP `IRadio`. The closest
+thing to an identifier-write method is `setCarrierInfoForImsiEncryption` —
+which sets a carrier-provided **public key for encrypting the outbound IMSI**
+in 5G NAS messages, not the IMSI itself, and definitely not IMEI. There is no
+`setImei`, `nvWrite`, `provision*`, or factory-write surface here. Eliminate.
+
+## `vendor.qti.hardware.radio.internal.deviceinfo@1.0::IDeviceInfo` — **0%, eliminate**
+
+Three sub-interfaces with full method lists:
+
+| Interface | Methods (custom only) |
+|---|---|
+| `IDeviceInfo` | `setCallbacks`, `sendDeviceInteractiveInfo`, `sendDevicePowerInfo`, `sendFeaturesSupported` |
+| `IDeviceInfoIndication` | `onDeviceInfoReportingChanged`, `onPowerInfoReportingChanged` |
+| `IDeviceInfoResponse` | `sendDeviceInteractiveInfoResponse`, `sendDevicePowerInfoResponse`, `sendFeaturesSupportedResponse` |
+
+Despite the name, this interface is the *opposite* of what we'd want — it
+flows device-state info **from Android down to the modem** (screen-on/off,
+power state, supported features) for power-optimization purposes. No
+identifier read/write. Eliminate.
+
+## OPlus surfaces missing from upload (path was wrong)
+
+`vendor.oplus.hardware.appradio@1.0.so` and `vendor.oplus.hardware.ims@1.0.so`
+were not at `/vendor/lib64/`. Both *are* registered HIDL services per the
+earlier `lshal list -i` (the `hwservicemanager` knows them), so the bindings
+.so must exist somewhere on the device. Standard locations for OPlus HALs:
+
+- `/odm/lib64/` (most likely — OPlus typically ships its HALs in ODM)
+- `/odm/lib64/hw/`
+- `/vendor/lib64/hw/`
+- `/system_ext/lib64/`
+- `/apex/com.android.*/lib64/`
+
+Priors are low regardless:
+
+- `IOplusAppRadio`: app-tier coordination binder for OPlus apps to signal
+  network-mode hints to the radio. Not a provisioning surface. **~3% prior.**
+- `IOplusImsRadio`: IMS-stack extensions (VoLTE/VoNR/RCS specific). IMEI is
+  not an IMS concern. **~1% prior.**
+
+Combined upside: ~3–5%. Worth pulling for completeness but not worth blocking
+on.
+
+## Final ranking after 4-of-6 characterization
+
+| Rank | Plan | P(success) | Effort |
+|---|---|---|---|
+| 1 | **D** — boot stock 11_C.26, EngineerMode → static NV restore, reflash Lineage | 40–55% | low |
+| 2 | Characterize `IOplusAppRadio` + `IOplusImsRadio` (last two surfaces) | 3–5% combined | trivial when .so files arrive |
+| 3 | 1A++ — port `IOplusTelephonyExt` framework + backend HIDLs to Lineage | 20–30% | very high (days) |
+| 4 | 3 — patch `libqcrilNr` for `DMS_SET_IMEI` | 5–10% | high |
+| – | ~~G, Remedy 2, qti.data.factory, qti.ims.factory, IQtiRadio, IDeviceInfo~~ | 0% | dead |
+
+Plan D's dominance is now even clearer: 4 of the 6 "maybe" surfaces have
+collapsed to zero; the two remaining have low priors and narrow domain
+reasons not to expose IMEI. Recommendation: pull the OPlus pair for
+completeness, but proceed in parallel with Plan D preparation.
