@@ -214,3 +214,39 @@ returning to Lineage may or may not recover the data depending on whether
 metadata/persist/keystore are left untouched. True data safety requires a full
 backup first. "Skip userdata in rawprogram" alone does not guarantee the data
 survives the round trip.
+
+
+
+---
+
+## CORRECTION 2 (user): 2026-05-30 backup is post-telephony-loss but possibly PRE-IMEI-wipe
+
+User clarified telephony was lost due to the LineageOS AIDL<->HIDL bridge bug
+(software), NOT due to IMEI loss. IMEI was likely wiped LATER, during attempts
+to fix telephony. So the 2026-05-30 modemst backup MIGHT predate the IMEI wipe
+and still contain NV-550 = IMEI. Reopens the modemst-restore path.
+
+### Backup scan result (repo modemst1/2 == los232_backups, sha 74b3.../740e...)
+Opaque: 0 hits for IMEI BCD/ASCII, 0 hits for EFS path strings
+(ue_imei_i/item_files/nv/mmode), only IMGEFS header, ~37% printable.
+=> modemst is encrypted/obfuscated; cannot read NV-550 offline. Grep is
+inconclusive about whether the backup holds the IMEI.
+
+### Decisive, REVERSIBLE test: restore the 2026-05-30 modemst and check *#06#
+- Baseline already preserved: live_modemst1.img / live_modemst2.img pulled this
+  session (Mac). Repo also holds the May-30 backup as modemst1.img/modemst2.img.
+- Modem EFS key is a stable per-device HW key (QFPROM), independent of the
+  persist wipe, so a same-device snapshot should decrypt when restored.
+- Method (primary): reboot bootloader; `fastboot flash modemst1 <may30>`,
+  `fastboot flash modemst2 <may30>`; `fastboot reboot`; check `*#06#`.
+- If IMEI returns -> the backup was pre-wipe; problem effectively solved on the
+  spot, no EDL/stock/diag needed.
+- If not -> reboot bootloader; flash live_modemst1/2 back to return to baseline.
+- Tradeoff to flag: reverting modemst loses ~18 days of modem EFS changes
+  (incl. possibly whatever made the modem power up); reversible via live backup.
+- Fallback if fastboot refuses modemst: root `dd` on Lineage then immediate
+  reboot, or write via EDL/firehose.
+
+This test takes priority over the EDL->stock->diag route because it is cheap,
+reversible, needs no mode change, and directly tests whether the IMEI survives
+in the backup.
