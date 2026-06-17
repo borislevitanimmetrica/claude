@@ -111,3 +111,53 @@ from an on-device backup?
 Also possible: modemst EFS is itself damaged (not merely NV-550 empty), which
 would both explain the empty IMEI and the modem rejecting writes, and would
 require an EFS repair only doable under authenticated/factory state.
+
+
+
+---
+
+## modemst backup-vs-live comparison (user backup 2026-05-30, POST-loss)
+
+User's earliest modemst backup is dated 2026-05-30 06:59 UTC — AFTER telephony
+was lost (loss was triggered by the official LOS 23.2 AIDL<->HIDL bridge bug;
+IMEI loss discovered later). So there is NO pre-loss modemst backup.
+
+Diff (user backup 2026-05-30 vs live pull this session):
+- modemst1: 2,610,817 / 3,145,728 bytes differ = **82.996%**, 10,075 ranges
+- modemst2: 2,610,617 / 3,145,728 bytes differ = **82.989%**, 10,276 ranges
+
+That is essentially the ENTIRE populated region (modemst is ~82% non-zero) — a
+wholesale ciphertext change, not the small localized churn of a few counters.
+Two readings:
+1. modemst is a live, log-structured ENCRYPTED EFS; over ~18 days the modem's
+   wear-leveling/GC rewrites most physical blocks even if logical NV content is
+   stable, so wholesale ciphertext drift is plausible and means the EFS is
+   alive and the modem is actively reading/writing modemst.
+2. We cannot read NV-550 from the ciphertext either way; the authoritative read
+   remains the modem's own `*#06#` = null.
+
+Net: the EFS is healthy and mutating, the modem CAN read/write modemst, yet
+NV-550 specifically stays empty and rejects writes. That points to a per-item
+lock on 550 (IMEI write-protect at the modem), not a dead/corrupt EFS. The
+2026-05-30 backup is post-loss, so restoring it would NOT bring the IMEI back.
+
+## Consolidated state (end of investigation phase)
+
+- IMEI value: KNOWN (box label 868957060298983); confirmed format
+  08 8a 86 59 07 06 92 98 38.
+- Surviving authenticated on-device factory source: NONE
+  (persist wiped; fsg zeroed; modemst NV-550 empty; no pre-loss backup;
+   the /persist/rfs files are a failed manual re-injection).
+- All LineageOS-reachable write paths: gated/rejected at the modem.
+- EFS: alive and mutating; item 550 specifically locked.
+
+Remaining theoretical paths, all requiring authenticated/stock state and all
+uncertain:
+- (A) EDL -> stock OxygenOS -> on-phone EngineerMode IMEI write (IF it supports
+  manual entry, not just restore-from-backup). Untested on this device.
+- (B) EDL -> stock -> diag/FTM + Qualcomm PC tool (QPST EFS Explorer / QFIL
+  service programming) writing ue_imei_i into modem EFS. The canonical factory
+  method; needs Qualcomm tooling + modem permitting EFS write in FTM.
+- (C) Commercial servicing box (Hydra/UMT/etc.) that performs authenticated
+  IMEI repair. Paid, gray-market; many shops decline when no on-device copy
+  remains (matches user's experience).
