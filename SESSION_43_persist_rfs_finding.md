@@ -161,3 +161,56 @@ uncertain:
 - (C) Commercial servicing box (Hydra/UMT/etc.) that performs authenticated
   IMEI repair. Paid, gray-market; many shops decline when no on-device copy
   remains (matches user's experience).
+
+
+
+---
+
+## Question B answered: stock EngineerMode does NOT support manual IMEI entry
+
+APK analysis of com.oplus.engineermode and com.oplus.engineernetwork (11_C.26):
+
+- IMEI handling in EngineerMode is READ / DISPLAY / COMPLIANCE-CHECK only:
+  - AT commands present: `AT+EGMR=0,7` and `AT+EGMR=0,10` — both mode-0 (READ).
+    There is NO `AT+EGMR=1,...` (write) anywhere in either APK.
+  - UI resources: `imei_pcb.xml`, `imei_check`, `imei_pcb_check`,
+    "IMEI Compliance check", "Check Imei Info", `imei_meid_number` — all
+    display/verify screens. No IMEI input EditText bound to a write.
+  - engineernetwork has only `setImeiSvn` (software version number), not IMEI.
+  - No WriteImeiActivity, no writeImei/setImei(String), no SubBoard write entry.
+- The NV-restore path (IOplusTelephonyExt.staticNvRestore) restores from a
+  backup blob; it does not take a typed IMEI, and routes through the gated qcril
+  modem path anyway.
+
+Conclusion: on this device, the factory IMEI WRITE is not exposed in on-phone
+EngineerMode. It is performed by the PC-side factory tool over diag in FTM
+(Factory Test Mode) — the assembly-line method. So "Path A" (boot stock, type
+IMEI into EngineerMode) is NOT available on CPH2459.
+
+### Consequence for the plan
+
+Booting stock to use EngineerMode for IMEI entry will not work. The remaining
+real lever is FTM + diag/EFS write (Path B), whose success is uncertain because
+the modem firmware (NON-HLOS, identical on stock and Lineage) has rejected every
+write path tested so far. The one mode never exercised is FTM, which is the
+OEM's provisioning mode and may relax the modem's write-protect.
+
+### Untested sub-path worth a cheap probe BEFORE the EDL/stock cycle
+
+Legacy DIAG NV (cmd 0x26/0x27) is closed, but the EFS2 diag subsystem
+(DIAG_SUBSYS_FS, 0x4B) — the protocol QPST EFS Explorer uses to write EFS files
+like `modem/mmode/ue_imei_i` — was never tested. /dev/diag transport is alive on
+Lineage. If EFS2-over-diag write is open, IMEI could potentially be written
+without EDL at all. Worth probing on the live device first (needs a diag/EFS
+tool: QPST on Windows, or an open EFS2-diag client).
+
+### Data-preservation caveat for any Lineage->stock->Lineage round trip
+
+userdata on Lineage is FBE-encrypted with keys tied to keymaster/TEE + key blobs
+in metadata/persist. Stock OxygenOS uses different vold/key derivation and will
+likely fail to decrypt Lineage's userdata and may force-wipe it on first boot.
+Preserving the bytes (not flashing userdata) is necessary but NOT sufficient:
+returning to Lineage may or may not recover the data depending on whether
+metadata/persist/keystore are left untouched. True data safety requires a full
+backup first. "Skip userdata in rawprogram" alone does not guarantee the data
+survives the round trip.
