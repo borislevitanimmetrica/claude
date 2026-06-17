@@ -1,0 +1,402 @@
+===== IMEI =====
+Result: Parcel(	fffffffc ffffffff 00000000  '............')
+===== remoteproc (is the modem subsystem up?) =====
+/sys/class/remoteproc/remoteproc* name=  state=
+===== dmesg: modem/subsystem bring-up =====
+[    8.601131] subsys-pil-tz 5ab0000.qcom,venus: Direct firmware load for venus.b03 failed with error -2
+[    8.601135] subsys-pil-tz 5ab0000.qcom,venus: Falling back to sysfs fallback for: venus.b03
+[    8.601480] subsys-pil-tz 5ab0000.qcom,venus: Direct firmware load for venus.b04 failed with error -2
+[    8.601488] subsys-pil-tz 5ab0000.qcom,venus: Falling back to sysfs fallback for: venus.b04
+[    8.602484] subsys-pil-tz 5ab0000.qcom,venus: Direct firmware load for venus.b05 failed with error -2
+[    8.602488] subsys-pil-tz 5ab0000.qcom,venus: Direct firmware load for venus.b07 failed with error -2
+[    8.602491] subsys-pil-tz 5ab0000.qcom,venus: Direct firmware load for venus.b06 failed with error -2
+[    8.602492] subsys-pil-tz 5ab0000.qcom,venus: Falling back to sysfs fallback for: venus.b07
+[    8.602495] subsys-pil-tz 5ab0000.qcom,venus: Falling back to sysfs fallback for: venus.b05
+[    8.602496] subsys-pil-tz 5ab0000.qcom,venus: Falling back to sysfs fallback for: venus.b06
+[    8.602667] subsys-pil-tz 5ab0000.qcom,venus: Direct firmware load for venus.b08 failed with error -2
+[    8.602670] subsys-pil-tz 5ab0000.qcom,venus: Falling back to sysfs fallback for: venus.b08
+[    8.602700] subsys-pil-tz 5ab0000.qcom,venus: Direct firmware load for venus.b09 failed with error -2
+[    8.602702] subsys-pil-tz 5ab0000.qcom,venus: Falling back to sysfs fallback for: venus.b09
+[    8.602740] subsys-pil-tz 5ab0000.qcom,venus: Direct firmware load for venus.b10 failed with error -2
+[    8.602743] subsys-pil-tz 5ab0000.qcom,venus: Falling back to sysfs fallback for: venus.b10
+[    8.602816] subsys-pil-tz 5ab0000.qcom,venus: Direct firmware load for venus.b19 failed with error -2
+[    8.602820] subsys-pil-tz 5ab0000.qcom,venus: Falling back to sysfs fallback for: venus.b19
+[    8.605429] rmt_storage:INFO:rmt_storage_alloc_buff_cb: Received req_size: 2621440! avail: 2621440
+[    8.700091] subsys-pil-tz soc:qcom,kgsl-hyp: a615_zap: Brought out of reset
+[    8.700112] subsys-pil-tz: subsys_powerup(): pil_boot is successful from a615_zap and waiting for error ready
+[    8.819257] coresight-remote-etm soc:modem_etm0: Connection established between QMI handle and 2 service
+[    8.819538] coresight-remote-etm soc:modem_etm1: Connection established between QMI handle and 11 service
+[    8.838639] subsys-pil-tz 5ab0000.qcom,venus: venus: Brought out of reset
+[    8.838662] subsys-pil-tz: subsys_powerup(): pil_boot is successful from venus and waiting for error ready
+[    9.019456] holi-asoc-snd soc:qcom,msm-audio-apr:qcom,q6core-audio:sound: wcd_mbhc_init: cross_conn 0
+[    9.019476] holi-asoc-snd soc:qcom,msm-audio-apr:qcom,q6core-audio:sound: wcd_mbhc_init: missing oplus,mbhc-check-irq-en in dt node
+[    9.019481] holi-asoc-snd soc:qcom,msm-audio-apr:qcom,q6core-audio:sound: wcd_mbhc_init: headset_micbias_alwayon 1
+[    9.019500] holi-asoc-snd soc:qcom,msm-audio-apr:qcom,q6core-audio:sound: wcd_mbhc_init: missing oplus,mbhc-headset-detect-mode in dt node
+[    9.250107] Sending QMI_IPA_INIT_MODEM_DRIVER_REQ_V01
+[    9.264292] QMI_IPA_INIT_MODEM_DRIVER_REQ_V01 response received
+[    9.545445] DATARMNETf3298dab6f(): Exiting rmnet SHS module
+[    9.666827] service-notifier: root_service_service_ind_cb: Indication received from msm/modem/wlan_pd, state: 0x1fffffff, trans-id: 1
+[    9.667030] service-notifier: send_ind_ack: Indication ACKed for transid 1, service msm/modem/wlan_pd, instance 180!
+[    9.690735] DATARMNET0f6d85e415(): rmnet_offload exiting
+[    9.762280] DATARMNET163e93649e(): Starting rmnet SHS module 9731 
+[    9.842738] DATARMNETb1c42acd9c(): rmnet_offload initializing
+[    9.893487] rmnet_shs initializing rmnet_data0
+[    9.893530] rmnet_shs init with 0
+[    9.893573] DATARMNET7dec24813e(): Initializing on device rmnet_data0
+[    9.978523] rmnet_ctl driver probed
+[   10.083498] ipa-wan ipa3_wwan_ioctl:1996 dev(rmnet_data0) register to IPA
+[   10.459697] holi-asoc-snd soc:qcom,msm-audio-apr:qcom,q6core-audio:sound: wcd_mbhc_start: qcom,msm-mbhc-usbc-audio-supported in dt node is missing or false
+[   10.459699] holi-asoc-snd soc:qcom,msm-audio-apr:qcom,q6core-audio:sound: wcd_mbhc_start: skipping USB c analog configuration
+[   10.565491] holi-asoc-snd soc:qcom,msm-audio-apr:qcom,q6core-audio:sound: ASoC: source widget VA MIC BIAS1 overwritten
+[   10.590852] input: holi-qrdsku1-snd-card Headset Jack as /devices/platform/soc/soc:qcom,msm-audio-apr/soc:qcom,msm-audio-apr:qcom,q6core-audio/soc:qcom,msm-audio-apr:qcom,q6core-audio:sound/sound/card0/input4
+[   10.592453] input: holi-qrdsku1-snd-card Button Jack as /devices/platform/soc/soc:qcom,msm-audio-apr/soc:qcom,msm-audio-apr:qcom,q6core-audio/soc:qcom,msm-audio-apr:qcom,q6core-audio:sound/sound/card0/input5
+[   10.593337] holi-asoc-snd soc:qcom,msm-audio-apr:qcom,q6core-audio:sound: msm_asoc_machine_probe: Sound card holi-qrdsku1-snd-card registered
+[   12.057848] rmnet_shs:  mask: 0x7d maplen: 6
+[   13.755024] <sensor_feedback>adsp_value = 1, node_type=0
+[   18.053271] Modules linked in: rmnet_offload rmnet_shs wlan(C) native_dlkm platform_dlkm camera machine_dlkm aw87xxx_dlkm aw882xx_dlkm wcd938x_dlkm wcd937x_dlkm bt_fm_slim wcd937x_slave_dlkm pinctrl_lpi_dlkm rx_macro_dlkm tfa98xx_v6_dlkm rdbg btpower adsp_loader_dlkm va_macro_dlkm stub_dlkm wsa881x_analog_dlkm wcd938x_slave_dlkm mbhc_dlkm rmnet_core rmnet_ctl wcd9xxx_dlkm sia81xx_dlkm pa_manager_dlkm tx_macro_dlkm swr_ctrl_dlkm wcd_core_dlkm bolero_cdc_dlkm swr_dlkm q6_dlkm apr_dlkm q6_notifier_dlkm q6_pdr_dlkm snd_event_dlkm [last unloaded: rmnet_offload]
+[   27.490812] ipa-wan ipa3_wwan_ioctl:2138 r_rmnet_data0 is an invalid iface name
+[   48.389681] msm_adsp_init_mixer_ctl_adm_pp_event_queue: failed to get kctl.
+[   48.399757] tfa98xx_adsp_send_calib_values(): tfa98xx_adsp_send_calib_values:Device 0x34, nr 4, cal value is 5976
+[   48.399765] tfa98xx_adsp_send_calib_values(): tfa98xx_adsp_send_calib_values:Device 0x34 cal value is 0x5f9db(5.976 ohm)
+[   48.399768] tfa98xx_adsp_send_calib_values(): tfa98xx_adsp_send_calib_values:Device 0x34, nr 7, tfa98xx->is_use_freq=0
+[   48.399771] tfa98xx_adsp_send_calib_values(): tfa98xx_adsp_send_calib_values:tfa98xx_device_count=1  bytes[0]=1
+[   48.399773] tfa98xx_adsp_send_calib_values(): calibration value send to host DSP.
+[   48.442605] q6asm_find_cal_by_buf_number: Can't find ASM Cal for cal_index 2 app_type 69937 buffer_number 8
+[   51.640919] msm_adsp_clean_mixer_ctl_adm_pp_event_queue: failed to get kctl.
+===== SIM / service state =====
+    mServiceState={mVoiceRegState=1(OUT_OF_SERVICE), mDataRegState=1(OUT_OF_SERVICE), mChannelNumber=0, duplexMode()=0, mCellBandwidths=[], mOperatorAlphaLong=null, mOperatorAlphaShort=null, isManualNetworkSelection=false(automatic), getRilVoiceRadioTechnology=0(Unknown), getRilDataRadioTechnology=0(Unknown), mCssIndicator=unsupported, mIsEmergencyOnly=false, isUsingCarrierAggregation=false, mArfcnRsrpBoost=0, mNetworkRegistrationInfos=[], mNrFrequencyRange=0, mOperatorAlphaLongRaw=null, mOperatorAlphaShortRaw=null, mIsDataRoamingFromRegistration=false, mIsIwlanPreferred=false, mIsUsingNonTerrestrialNetwork=false}
+    mSignalStrength=null
+    mDataConnectionState=-1
+===== radio log tail =====
+--------- beginning of radio
+06-17 10:13:45.754  2547  2547 D CSST    : isPhoneRegisteredForWifiCalling: false
+06-17 10:13:45.754  2547  2547 D Phone-0 : isWifiCallingEnabled =false
+06-17 10:13:45.754  2547  2547 I CSST    : EmergencyNetworkNotification: sendMessage() w/values: ,-1,false,false
+06-17 10:13:45.755  2547  2547 I CSST    : canceling notifications: 1001
+06-17 10:13:45.755  2547  2547 D Phone-0 : [0] SubId-1,get allowed network types user: value = GPRS|EDGE|UMTS|CDMA|CDMA - EvDo rev. 0|CDMA - EvDo rev. A|CDMA - 1xRTT|HSDPA|HSUPA|HSPA|CDMA - EvDo rev. B|LTE|CDMA - eHRPD|HSPA+|GSM|TD_SCDMA|LTE_CA|NR
+06-17 10:13:45.755  2547  2547 D PhoneFactory: calculatePreferredNetworkType: phoneId = 0 networkType = 916479
+06-17 10:13:45.756  2547  2547 D Phone-0 : [0] Allowed network types for 'carrier' reason is changed by carrier config = GPRS|EDGE|UMTS|CDMA|CDMA - EvDo rev. 0|CDMA - EvDo rev. A|CDMA - 1xRTT|HSDPA|HSUPA|HSPA|CDMA - EvDo rev. B|LTE|CDMA - eHRPD|HSPA+|GSM|TD_SCDMA|LTE_CA
+06-17 10:13:45.756  2547  2547 D Phone-0 : [0] SubId-1,get allowed network types carrier: value = GPRS|EDGE|UMTS|CDMA|CDMA - EvDo rev. 0|CDMA - EvDo rev. A|CDMA - 1xRTT|HSDPA|HSUPA|HSPA|CDMA - EvDo rev. B|LTE|CDMA - eHRPD|HSPA+|GSM|TD_SCDMA|LTE_CA
+06-17 10:13:45.757  2547  2547 I CSST    : isNrSupported:  carrierConfigEnabled: true, AccessFamilySupported: false, isNrNetworkTypeAllowed: false
+06-17 10:13:45.757  2547  2547 I CSST    : PrefNetworkNotification: sendMessage() w/values: ,false,false,-1,false,false
+06-17 10:13:45.758  2547  2723 D RILJ    : isSatelliteEnabledForCarrier: SatelliteModemInterface is used. [PHONE0]
+06-17 10:13:45.758  2547  2547 I CSST    : canceling notifications: 1000
+06-17 10:13:45.758  2547  2547 D Phone-0 : isWifiCallingEnabled =false
+06-17 10:13:45.758  2547  2547 D CSST    : isPhoneRegisteredForWifiCalling: false
+06-17 10:13:45.758  2547  2547 D Phone-0 : isWifiCallingEnabled =false
+06-17 10:13:45.759  2547  2547 I CSST    : EmergencyNetworkNotification: sendMessage() w/values: ,-1,false,false
+06-17 10:13:45.759  2547  2547 I CSST    : canceling notifications: 1001
+06-17 10:13:45.760  2547  2547 D EmergencyNumberTracker: [0]updateRadioEmergencyNumberListAndNotify(): receiving [[EmergencyNumber: 112, countryIso=, mnc=, src=sim , routing=unknown, categories=, urns=], [EmergencyNumber: 911, countryIso=, mnc=, src=sim , routing=unknown, categories=, urns=], [EmergencyNumber: #911, countryIso=, mnc=, src=def , routing=unknown, categories=, urns=], [EmergencyNumber: *911, countryIso=, mnc=, src=def , routing=unknown, categories=, urns=]]
+06-17 10:13:45.765  2547  2547 D EmergencyNumberTracker: [0]notifyEmergencyNumberList(): notified
+06-17 10:13:45.766  2547  2547 D RILJ    : [0008]> SEND_DEVICE_STATE 1:true [PHONE0]
+06-17 10:13:45.767  2547  2547 D RILJ    : [0009]> SEND_DEVICE_STATE 2:false [PHONE0]
+06-17 10:13:45.768  2547  2547 D RILJ    : [0010]> SEND_DEVICE_STATE 0:false [PHONE0]
+06-17 10:13:45.768  2547  2711 D RILJ    : [0008]< SEND_DEVICE_STATE  [PHONE0]
+06-17 10:13:45.768  2547  2547 D RILJ    : [0011]> SET_UNSOLICITED_RESPONSE_FILTER -1 [PHONE0]
+06-17 10:13:45.769  2547  2547 D RILJ    : [0012]> SET_LINK_CAPACITY_REPORTING_CRITERIA [PHONE0]
+06-17 10:13:45.770  2547  2711 D RILJ    : [0009]< SEND_DEVICE_STATE  [PHONE0]
+06-17 10:13:45.771  2547  2547 D RILJ    : [0013]> SET_LINK_CAPACITY_REPORTING_CRITERIA [PHONE0]
+06-17 10:13:45.772  2547  2547 D RILJ    : [0014]> SET_LINK_CAPACITY_REPORTING_CRITERIA [PHONE0]
+06-17 10:13:45.772  2547  2547 D RILJ    : [0015]> SET_LINK_CAPACITY_REPORTING_CRITERIA [PHONE0]
+06-17 10:13:45.773  2547  2547 D RILJ    : [0016]> SET_LINK_CAPACITY_REPORTING_CRITERIA [PHONE0]
+06-17 10:13:45.773  2547  2711 D RILJ    : [0010]< SEND_DEVICE_STATE  [PHONE0]
+06-17 10:13:45.773  2547  2547 D NetworkTypeController: [0] DefaultState: process EVENT_INITIALIZE
+06-17 10:13:45.773  2547  2711 D RILJ    : [0012]< SET_LINK_CAPACITY_REPORTING_CRITERIA error 6 [PHONE0]
+06-17 10:13:45.773  2547  2711 D RilRequest: [0012]< SET_LINK_CAPACITY_REPORTING_CRITERIA error: com.android.internal.telephony.CommandException: REQUEST_NOT_SUPPORTED ret= result=null
+06-17 10:13:45.774  2547  2711 D RILJ    : [0013]< SET_LINK_CAPACITY_REPORTING_CRITERIA  [PHONE0]
+06-17 10:13:45.774  2547  2547 D RadioConfig: RIL_REQUEST_GET_HAL_DEVICE_CAPABILITIES > REQUEST_NOT_SUPPORTED
+06-17 10:13:45.774  2547  2547 D RILUtils: Radio Hal Version = 1.5
+06-17 10:13:45.775  2547  2723 E RadioInterfaceCapabilityController: setupRadioInterfaceCapabilities: com.android.internal.telephony.CommandException: REQUEST_NOT_SUPPORTED
+06-17 10:13:45.775  2547  2711 D RILJ    : [0014]< SET_LINK_CAPACITY_REPORTING_CRITERIA  [PHONE0]
+06-17 10:13:45.775  2547  2723 D RadioInterfaceCapabilityController: setupRadioInterfaceCapabilities: mRadioInterfaceCapabilities now setup
+06-17 10:13:45.775  2547  2711 D RILJ    : [0015]< SET_LINK_CAPACITY_REPORTING_CRITERIA error 6 [PHONE0]
+06-17 10:13:45.775  2547  2711 D RilRequest: [0015]< SET_LINK_CAPACITY_REPORTING_CRITERIA error: com.android.internal.telephony.CommandException: REQUEST_NOT_SUPPORTED ret= result=null
+06-17 10:13:45.776  2547  2711 D RILJ    : [0016]< SET_LINK_CAPACITY_REPORTING_CRITERIA  [PHONE0]
+06-17 10:13:45.777  1618  1726 W TelephonyRegistry: Pid 2547 has exceeded half the number of permissible registered listeners. Now at 47
+06-17 10:13:45.777  2547  2711 D RILJ    : [0011]< SET_UNSOLICITED_RESPONSE_FILTER  [PHONE0]
+06-17 10:13:45.777  2547  2547 D NetworkTypeController: [0] mOverrideTimerRules: {connected={mState=connected, mOverrideType=NR_NSA, mPrimaryTimers={}, mSecondaryTimers={}}, not_restricted_rrc_con={mState=not_restricted_rrc_con, mOverrideType=NR_NSA, mPrimaryTimers={}, mSecondaryTimers={}}, legacy={mState=legacy, mOverrideType=NONE, mPrimaryTimers={}, mSecondaryTimers={}}, not_restricted_rrc_idle={mState=not_restricted_rrc_idle, mOverrideType=NR_NSA, mPrimaryTimers={}, mSecondaryTimers={}}, restricted={mState=restricted, mOverrideType=NONE, mPrimaryTimers={}, mSecondaryTimers={}}, connected_mmwave={mState=connected_mmwave, mOverrideType=NR_NSA, mPrimaryTimers={}, mSecondaryTimers={}}, connected_rrc_idle={mState=connected_rrc_idle, mOverrideType=NR_NSA, mPrimaryTimers={}, mSecondaryTimers={}}}
+06-17 10:13:45.777  2547  2547 D NetworkTypeController: [0] Physical channel configs updated: anchorNrCell=-1, nrBandwidths=[], nrBands=[], configs=null
+06-17 10:13:45.778  2547  2547 D NetworkTypeController: [0] DefaultState: process EVENT_UPDATE
+06-17 10:13:45.779  2547  2547 D NetworkTypeController: [0] Entering LegacyState
+06-17 10:13:45.781  1618  1726 W TelephonyRegistry: Pid 2547 has exceeded half the number of permissible registered listeners. Now at 48
+06-17 10:13:45.785  2547  2547 D DSMGR-0 : mIsDataEnabled=false, prevDataEnabled=false
+06-17 10:13:45.785  2547  2547 D DSMGR-0 : notifyDataEnabledChanged: enabled=false, reason=UNKNOWN, callingPackage=com.android.phone
+06-17 10:13:45.788  2547  2547 D DSM-I-0 : onServiceConnected: ComponentInfo{vendor.qti.iwlan/vendor.qti.iwlan.IWlanDataService}
+06-17 10:13:45.793  1618  1726 W TelephonyRegistry: Pid 2547 has exceeded half the number of permissible registered listeners. Now at 49
+06-17 10:13:45.794  2547  2547 D CarrierResolver: handleMessage: 2
+06-17 10:13:45.794  2547  2547 D GsmCdmaPhone: [0] onVoiceRegStateOrRatChanged
+06-17 10:13:45.794  2547  2547 D GsmCdmaPhone: [0] getCsCallRadioTech, current vrs=1, vrat=0
+06-17 10:13:45.794  2547  2547 D GsmCdmaPhone: [0] getCsCallRadioTech, result calcVrat=0
+06-17 10:13:45.795  2547  2547 D ImsPhone: [0] handleMessage what=82
+06-17 10:13:45.795  2547  2547 D ImsPhone: [0] EVENT_DEFAULT_PHONE_DATA_STATE_CHANGED
+06-17 10:13:45.795  2547  2547 D ImsPhone: [0] updateDataServiceState: defSs = {mVoiceRegState=1(OUT_OF_SERVICE), mDataRegState=1(OUT_OF_SERVICE), mChannelNumber=-1, duplexMode()=0, mCellBandwidths=[], mOperatorAlphaLong=null, mOperatorAlphaShort=null, isManualNetworkSelection=false(automatic), getRilVoiceRadioTechnology=0(Unknown), getRilDataRadioTechnology=0(Unknown), mCssIndicator=unsupported, mIsEmergencyOnly=false, isUsingCarrierAggregation=false, mArfcnRsrpBoost=0, mNetworkRegistrationInfos=[NetworkRegistrationInfo{ domain=CS transportType=WWAN registrationState=UNKNOWN networkRegistrationState=UNKNOWN roamingType=NOT_ROAMING accessNetworkTechnology=UNKNOWN rejectCause=0 emergencyEnabled=false availableServices=[] cellIdentity=null voiceSpecificInfo=null dataSpecificInfo=null nrState=**** rRplmn= isUsingCarrierAggregation=false isNonTerrestrialNetwork=TERRESTRIAL}, NetworkRegistrationInfo{ domain=PS transportType=WWAN registrationState=UNKNOWN networkRegistrationState=UNKNOWN roamingType=NOT_ROAMING accessNetworkTechnology=UNKNOWN rejectCause=0 emergencyEnabled=false availableServices=[] cellIdentity=null voiceSpecificInfo=null dataSpecificInfo=null nrState=**** rRplmn= isUsingCarrierAggregation=false isNonTerrestrialNetwork=TERRESTRIAL}, NetworkRegistrationInfo{ domain=PS transportType=WLAN registrationState=UNKNOWN networkRegistrationState=UNKNOWN roamingType=NOT_ROAMING accessNetworkTechnology=UNKNOWN rejectCause=0 emergencyEnabled=false availableServices=[] cellIdentity=null voiceSpecificInfo=null dataSpecificInfo=null nrState=**** rRplmn= isUsingCarrierAggregation=false isNonTerrestrialNetwork=TERRESTRIAL}], mNrFrequencyRange=0, mOperatorAlphaLongRaw=null, mOperatorAlphaShortRaw=null, mIsDataRoamingFromRegistration=false, mIsIwlanPreferred=false, mIsUsingNonTerrestrialNetwork=false} imsSs = {mVoiceRegState=1(OUT_OF_SERVICE), mDataRegState=1(OUT_OF_SERVICE), mChannelNumber=-1, duplexMode()=0, mCellBandwidths=[], mOperatorAlphaLong=null, mOperatorAlphaShort=null, isManualNetworkSelection=false(automatic), getRilVoiceRadioTechnology=0(Unknown), getRilDataRadioTechnology=0(Unknown), mCssIndicator=unsupported, mIsEmergencyOnly=false, isUsingCarrierAggregation=false, mArfcnRsrpBoost=0, mNetworkRegistrationInfos=[NetworkRegistrationInfo{ domain=CS transportType=WWAN registrationState=UNKNOWN networkRegistrationState=UNKNOWN roamingType=NOT_ROAMING accessNetworkTechnology=UNKNOWN rejectCause=0 emergencyEnabled=false availableServices=[] cellIdentity=null voiceSpecificInfo=null dataSpecificInfo=null nrState=**** rRplmn= isUsingCarrierAggregation=false isNonTerrestrialNetwork=TERRESTRIAL}, NetworkRegistrationInfo{ domain=PS transportType=WWAN registrationState=UNKNOWN networkRegistrationState=UNKNOWN roamingType=NOT_ROAMING accessNetworkTechnology=UNKNOWN rejectCause=0 emergencyEnabled=false availableServices=[] cellIdentity=null voiceSpecificInfo=null dataSpecificInfo=null nrState=**** rRplmn= isUsingCarrierAggregation=false isNonTerrestrialNetwork=TERRESTRIAL}, NetworkRegistrationInfo{ domain=PS transportType=WLAN registrationState=UNKNOWN networkRegistrationState=UNKNOWN roamingType=NOT_ROAMING accessNetworkTechnology=UNKNOWN rejectCause=0 emergencyEnabled=false availableServices=[] cellIdentity=null voiceSpecificInfo=null dataSpecificInfo=null nrState=**** rRplmn= isUsingCarrierAggregation=false isNonTerrestrialNetwork=TERRESTRIAL}], mNrFrequencyRange=0, mOperatorAlphaLongRaw=null, mOperatorAlphaShortRaw=null, mIsDataRoamingFromRegistration=false, mIsIwlanPreferred=false, mIsUsingNonTerrestrialNetwork=false}
+06-17 10:13:45.795  2547  2547 D ImsPhone: [0] handleMessage what=82
+06-17 10:13:45.795  2547  2547 D ImsPhone: [0] EVENT_DEFAULT_PHONE_DATA_STATE_CHANGED
+06-17 10:13:45.795  2547  2547 D ImsPhone: [0] updateDataServiceState: defSs = {mVoiceRegState=1(OUT_OF_SERVICE), mDataRegState=1(OUT_OF_SERVICE), mChannelNumber=-1, duplexMode()=0, mCellBandwidths=[], mOperatorAlphaLong=null, mOperatorAlphaShort=null, isManualNetworkSelection=false(automatic), getRilVoiceRadioTechnology=0(Unknown), getRilDataRadioTechnology=0(Unknown), mCssIndicator=unsupported, mIsEmergencyOnly=false, isUsingCarrierAggregation=false, mArfcnRsrpBoost=0, mNetworkRegistrationInfos=[NetworkRegistrationInfo{ domain=CS transportType=WWAN registrationState=UNKNOWN networkRegistrationState=UNKNOWN roamingType=NOT_ROAMING accessNetworkTechnology=UNKNOWN rejectCause=0 emergencyEnabled=false availableServices=[] cellIdentity=null voiceSpecificInfo=null dataSpecificInfo=null nrState=**** rRplmn= isUsingCarrierAggregation=false isNonTerrestrialNetwork=TERRESTRIAL}, NetworkRegistrationInfo{ domain=PS transportType=WWAN registrationState=UNKNOWN networkRegistrationState=UNKNOWN roamingType=NOT_ROAMING accessNetworkTechnology=UNKNOWN rejectCause=0 emergencyEnabled=false availableServices=[] cellIdentity=null voiceSpecificInfo=null dataSpecificInfo=null nrState=**** rRplmn= isUsingCarrierAggregation=false isNonTerrestrialNetwork=TERRESTRIAL}, NetworkRegistrationInfo{ domain=PS transportType=WLAN registrationState=UNKNOWN networkRegistrationState=UNKNOWN roamingType=NOT_ROAMING accessNetworkTechnology=UNKNOWN rejectCause=0 emergencyEnabled=false availableServices=[] cellIdentity=null voiceSpecificInfo=null dataSpecificInfo=null nrState=**** rRplmn= isUsingCarrierAggregation=false isNonTerrestrialNetwork=TERRESTRIAL}], mNrFrequencyRange=0, mOperatorAlphaLongRaw=null, mOperatorAlphaShortRaw=null, mIsDataRoamingFromRegistration=false, mIsIwlanPreferred=false, mIsUsingNonTerrestrialNetwork=false} imsSs = {mVoiceRegState=1(OUT_OF_SERVICE), mDataRegState=1(OUT_OF_SERVICE), mChannelNumber=-1, duplexMode()=0, mCellBandwidths=[], mOperatorAlphaLong=null, mOperatorAlphaShort=null, isManualNetworkSelection=false(automatic), getRilVoiceRadioTechnology=0(Unknown), getRilDataRadioTechnology=0(Unknown), mCssIndicator=unsupported, mIsEmergencyOnly=false, isUsingCarrierAggregation=false, mArfcnRsrpBoost=0, mNetworkRegistrationInfos=[NetworkRegistrationInfo{ domain=CS transportType=WWAN registrationState=UNKNOWN networkRegistrationState=UNKNOWN roamingType=NOT_ROAMING accessNetworkTechnology=UNKNOWN rejectCause=0 emergencyEnabled=false availableServices=[] cellIdentity=null voiceSpecificInfo=null dataSpecificInfo=null nrState=**** rRplmn= isUsingCarrierAggregation=false isNonTerrestrialNetwork=TERRESTRIAL}, NetworkRegistrationInfo{ domain=PS transportType=WWAN registrationState=UNKNOWN networkRegistrationState=UNKNOWN roamingType=NOT_ROAMING accessNetworkTechnology=UNKNOWN rejectCause=0 emergencyEnabled=false availableServices=[] cellIdentity=null voiceSpecificInfo=null dataSpecificInfo=null nrState=**** rRplmn= isUsingCarrierAggregation=false isNonTerrestrialNetwork=TERRESTRIAL}, NetworkRegistrationInfo{ domain=PS transportType=WLAN registrationState=UNKNOWN networkRegistrationState=UNKNOWN roamingType=NOT_ROAMING accessNetworkTechnology=UNKNOWN rejectCause=0 emergencyEnabled=false availableServices=[] cellIdentity=null voiceSpecificInfo=null dataSpecificInfo=null nrState=**** rRplmn= isUsingCarrierAggregation=false isNonTerrestrialNetwork=TERRESTRIAL}], mNrFrequencyRange=0, mOperatorAlphaLongRaw=null, mOperatorAlphaShortRaw=null, mIsDataRoamingFromRegistration=false, mIsIwlanPreferred=false, mIsUsingNonTerrestrialNetwork=false}
+06-17 10:13:45.795  2547  2547 D PhoneSwitcher: No active subscriptions: resetting preferred phone to 0 for emergency
+06-17 10:13:45.795  2547  2547 D PhoneSwitcher: evaluating due to netRequest phone[0] 0->-1
+06-17 10:13:45.795  2547  2547 D PhoneSwitcher: sendRilCommands: setPreferredDataModem - phoneId: 0
+06-17 10:13:45.795  2547  2547 D RadioConfig: [0017]> SET_PREFERRED_DATA_MODEM 0
+06-17 10:13:45.796  2547  2547 D TNP     : onNetworkNeeded: Not applied. [NetworkRequest [ REQUEST id=48, [ Capabilities: INTERNET&NOT_RESTRICTED&TRUSTED&NOT_VCN_MANAGED&NOT_BANDWIDTH_CONSTRAINED Uid: 10143 RequestorUid: 10143 RequestorPkg: com.android.systemui UnderlyingNetworks: Null] ], mPriority=0, state=UNSATISFIED, mAttachedDataNetwork=null, created time=10:13:45.795, evaluation result=null]
+06-17 10:13:45.796  2547  2547 D TNP     : onNetworkNeeded: Not applied. [NetworkRequest [ REQUEST id=22, [ Capabilities: INTERNET&NOT_RESTRICTED&TRUSTED&NOT_VCN_MANAGED&NOT_BANDWIDTH_CONSTRAINED Uid: 10201 RequestorUid: 1000 RequestorPkg: android UnderlyingNetworks: Null] ], mPriority=0, state=UNSATISFIED, mAttachedDataNetwork=null, created time=10:13:45.796, evaluation result=null]
+06-17 10:13:45.796  2547  2547 D TNP     : onNetworkNeeded: Not applied. [NetworkRequest [ REQUEST id=46, [ Capabilities: INTERNET&NOT_RESTRICTED&TRUSTED&NOT_VCN_MANAGED&NOT_BANDWIDTH_CONSTRAINED Uid: 10143 RequestorUid: 10143 RequestorPkg: com.android.systemui UnderlyingNetworks: Null] ], mPriority=0, state=UNSATISFIED, mAttachedDataNetwork=null, created time=10:13:45.796, evaluation result=null]
+06-17 10:13:45.796  2547  2547 D TNP     : onNetworkNeeded: Not applied. [NetworkRequest [ REQUEST id=36, [ Capabilities: INTERNET&NOT_RESTRICTED&TRUSTED&NOT_VCN_MANAGED&NOT_BANDWIDTH_CONSTRAINED Uid: 1000 RequestorUid: 1000 RequestorPkg: android UnderlyingNetworks: Null] ], mPriority=0, state=UNSATISFIED, mAttachedDataNetwork=null, created time=10:13:45.796, evaluation result=null]
+06-17 10:13:45.797  2547  2547 D TNP     : onNetworkNeeded: Not applied. [NetworkRequest [ REQUEST id=1, [ Capabilities: INTERNET&NOT_RESTRICTED&TRUSTED&NOT_VPN&NOT_VCN_MANAGED&NOT_BANDWIDTH_CONSTRAINED RequestorUid: 1000 RequestorPkg: android UnderlyingNetworks: Null] ], mPriority=0, state=UNSATISFIED, mAttachedDataNetwork=null, created time=10:13:45.796, evaluation result=null]
+06-17 10:13:45.797  2547  2547 D TNP     : onNetworkNeeded: Not applied. [NetworkRequest [ REQUEST id=13, [ Transports: SATELLITE Capabilities: INTERNET&NOT_RESTRICTED&TRUSTED&NOT_VPN&NOT_VCN_MANAGED Uids: <{10106-10106, 10192-10192, 10193-10193, 10211-10211}> UnderlyingNetworks: Null] ], mPriority=0, state=UNSATISFIED, mAttachedDataNetwork=null, created time=10:13:45.797, evaluation result=null]
+06-17 10:13:45.797  2547  2547 D TNP     : onNetworkNeeded: Not applied. [NetworkRequest [ REQUEST id=34, [ Capabilities: INTERNET&NOT_RESTRICTED&TRUSTED&NOT_VCN_MANAGED&NOT_BANDWIDTH_CONSTRAINED Uid: 10143 RequestorUid: 10143 RequestorPkg: com.android.systemui UnderlyingNetworks: Null] ], mPriority=0, state=UNSATISFIED, mAttachedDataNetwork=null, created time=10:13:45.797, evaluation result=null]
+06-17 10:13:45.797  2547  2547 D TNP     : onNetworkNeeded: Not applied. [NetworkRequest [ REQUEST id=42, [ Capabilities: INTERNET&NOT_RESTRICTED&TRUSTED&NOT_VCN_MANAGED&NOT_BANDWIDTH_CONSTRAINED Uid: 1073 RequestorUid: 1073 RequestorPkg: com.android.networkstack UnderlyingNetworks: Null] ], mPriority=0, state=UNSATISFIED, mAttachedDataNetwork=null, created time=10:13:45.797, evaluation result=null]
+06-17 10:13:45.797  2547  2547 D TNP     : onNetworkNeeded: Not applied. [NetworkRequest [ REQUEST id=30, [ Transports: SATELLITE Capabilities: INTERNET&NOT_RESTRICTED&TRUSTED&NOT_VCN_MANAGED Uid: 10106 RequestorUid: 1000 RequestorPkg: android UnderlyingNetworks: Null] ], mPriority=0, state=UNSATISFIED, mAttachedDataNetwork=null, created time=10:13:45.797, evaluation result=null]
+06-17 10:13:45.798  2547  2547 D TNP     : onNetworkNeeded: Not applied. [NetworkRequest [ BACKGROUND_REQUEST id=2, [ Transports: CELLULAR Capabilities: INTERNET&NOT_RESTRICTED&TRUSTED&NOT_VPN&NOT_VCN_MANAGED&NOT_BANDWIDTH_CONSTRAINED RequestorUid: 1000 RequestorPkg: android UnderlyingNetworks: Null] ], mPriority=0, state=UNSATISFIED, mAttachedDataNetwork=null, created time=10:13:45.798, evaluation result=null]
+06-17 10:13:45.798  2547  2547 D TNP     : onNetworkNeeded: Not applied. [NetworkRequest [ REQUEST id=20, [ Capabilities: INTERNET&NOT_RESTRICTED&TRUSTED&NOT_VCN_MANAGED&NOT_BANDWIDTH_CONSTRAINED Uid: 10202 RequestorUid: 1000 RequestorPkg: android UnderlyingNetworks: Null] ], mPriority=0, state=UNSATISFIED, mAttachedDataNetwork=null, created time=10:13:45.798, evaluation result=null]
+06-17 10:13:45.798  2547  2711 D RadioConfigResponse: [0017]< SET_PREFERRED_DATA_MODEM
+06-17 10:13:45.798  2547  2547 D TNP     : onNetworkNeeded: Not applied. [NetworkRequest [ REQUEST id=58, [ Capabilities: INTERNET&NOT_RESTRICTED&TRUSTED&NOT_VCN_MANAGED&NOT_BANDWIDTH_CONSTRAINED Uid: 1001 RequestorUid: 1001 RequestorPkg: com.android.phone UnderlyingNetworks: Null] ], mPriority=0, state=UNSATISFIED, mAttachedDataNetwork=null, created time=10:13:45.798, evaluation result=null]
+06-17 10:13:45.798  2547  2547 D TNP     : onNetworkNeeded: Not applied. [NetworkRequest [ REQUEST id=26, [ Capabilities: INTERNET&NOT_RESTRICTED&TRUSTED&NOT_VCN_MANAGED&NOT_BANDWIDTH_CONSTRAINED Uid: 10102 RequestorUid: 1000 RequestorPkg: android UnderlyingNetworks: Null] ], mPriority=0, state=UNSATISFIED, mAttachedDataNetwork=null, created time=10:13:45.798, evaluation result=null]
+06-17 10:13:45.798  2547  2547 D TNP     : onNetworkNeeded: Not applied. [NetworkRequest [ REQUEST id=32, [ Capabilities: INTERNET&NOT_RESTRICTED&TRUSTED&NOT_VCN_MANAGED&NOT_BANDWIDTH_CONSTRAINED Uid: 10204 RequestorUid: 1000 RequestorPkg: android UnderlyingNetworks: Null] ], mPriority=0, state=UNSATISFIED, mAttachedDataNetwork=null, created time=10:13:45.798, evaluation result=null]
+06-17 10:13:45.798  2547  2547 D TNP     : onNetworkNeeded: Not applied. [NetworkRequest [ REQUEST id=39, [ Capabilities: INTERNET&NOT_RESTRICTED&TRUSTED&NOT_VCN_MANAGED&NOT_BANDWIDTH_CONSTRAINED Uid: 10143 RequestorUid: 10143 RequestorPkg: com.android.systemui UnderlyingNetworks: Null] ], mPriority=0, state=UNSATISFIED, mAttachedDataNetwork=null, created time=10:13:45.798, evaluation result=null]
+06-17 10:13:45.798  2547  2547 D TNP     : onNetworkNeeded: Not applied. [NetworkRequest [ REQUEST id=24, [ Capabilities: INTERNET&NOT_RESTRICTED&TRUSTED&NOT_VCN_MANAGED&NOT_BANDWIDTH_CONSTRAINED Uid: 10123 RequestorUid: 1000 RequestorPkg: android UnderlyingNetworks: Null] ], mPriority=0, state=UNSATISFIED, mAttachedDataNetwork=null, created time=10:13:45.798, evaluation result=null]
+06-17 10:13:45.799  2547  2547 D TNP     : onNetworkNeeded: Not applied. [NetworkRequest [ REQUEST id=56, [ Capabilities: INTERNET&NOT_RESTRICTED&TRUSTED&NOT_VCN_MANAGED&NOT_BANDWIDTH_CONSTRAINED Uid: 1001 RequestorUid: 1001 RequestorPkg: com.android.phone UnderlyingNetworks: Null] ], mPriority=0, state=UNSATISFIED, mAttachedDataNetwork=null, created time=10:13:45.798, evaluation result=null]
+06-17 10:13:45.801  2547  2547 D DataService: Data service created
+06-17 10:13:45.808  2547  2547 D DebugService: DebugService DebugService:
+06-17 10:13:45.810  2547  2547 E GsmCdmaPhone: [0] reapplyUiccAppsEnablementIfNeeded: slot state=null
+06-17 10:13:45.810  2547  2547 D GsmSMSDispatcher: GsmSMSDispatcher: subId = -1 slotId = 0
+06-17 10:13:45.810  2547  2547 D SST-0   : EVENT_ICC_CHANGED: SIM absent
+06-17 10:13:45.811  2547  2547 D SST-0   : cancelAllNotifications: mPrevSubId=-1
+06-17 10:13:45.811  2547  2547 D SST-0   : getCarrierDisplayNameLegacy+
+06-17 10:13:45.811  2547  2547 D SST-0   : updateCarrierDisplayName: isWifiCallingEnabled=false combinedRegState=OUT_OF_SERVICE {mVoiceRegState=1(OUT_OF_SERVICE), mDataRegState=1(OUT_OF_SERVICE), mChannelNumber=-1, duplexMode()=0, mCellBandwidths=[], mOperatorAlphaLong=null, mOperatorAlphaShort=null, isManualNetworkSelection=false(automatic), getRilVoiceRadioTechnology=0(Unknown), getRilDataRadioTechnology=0(Unknown), mCssIndicator=unsupported, mIsEmergencyOnly=false, isUsingCarrierAggregation=false, mArfcnRsrpBoost=0, mNetworkRegistrationInfos=[NetworkRegistrationInfo{ domain=CS transportType=WWAN registrationState=UNKNOWN networkRegistrationState=UNKNOWN roamingType=NOT_ROAMING accessNetworkTechnology=UNKNOWN rejectCause=0 emergencyEnabled=false availableServices=[] cellIdentity=null voiceSpecificInfo=null dataSpecificInfo=null nrState=**** rRplmn= isUsingCarrierAggregation=false isNonTerrestrialNetwork=TERRESTRIAL}, NetworkRegistrationInfo{ domain=PS transportType=WWAN registrationState=UNKNOWN networkRegistrationState=UNKNOWN roamingType=NOT_ROAMING accessNetworkTechnology=UNKNOWN rejectCause=0 emergencyEnabled=false availableServices=[] cellIdentity=null voiceSpecificInfo=null dataSpecificInfo=null nrState=**** rRplmn= isUsingCarrierAggregation=false isNonTerrestrialNetwork=TERRESTRIAL}, NetworkRegistrationInfo{ domain=PS transportType=WLAN registrationState=UNKNOWN networkRegistrationState=UNKNOWN roamingType=NOT_ROAMING accessNetworkTechnology=UNKNOWN rejectCause=0 emergencyEnabled=false availableServices=[] cellIdentity=null voiceSpecificInfo=null dataSpecificInfo=null nrState=**** rRplmn= isUsingCarrierAggregation=false isNonTerrestrialNetwork=TERRESTRIAL}], mNrFrequencyRange=0, mOperatorAlphaLongRaw=null, mOperatorAlphaShortRaw=null, mIsDataRoamingFromRegistration=false, mIsIwlanPreferred=false, mIsUsingNonTerrestrialNetwork=false}
+06-17 10:13:45.811  2547  2547 D SST-0   : updateCarrierDisplayName: satellitePlmn=null
+06-17 10:13:45.811  2547  2547 D SST-0   : updateCarrierDisplayName: radio is on but out of service, set plmn='No service'
+06-17 10:13:45.811  2547  2547 D SST-0   : updateCarrierDisplayName: rawSpn = 
+06-17 10:13:45.811  2547  2547 D SST-0   : getCarrierDisplayNameLegacy-
+06-17 10:13:45.811  2547  2547 D CarrierResolver: handleMessage: 2
+06-17 10:13:45.812  2547  2547 D SST-0   : SubscriptionListener.onSubscriptionInfoChanged
+06-17 10:13:45.812  2547  2547 D TNP     : Subscription changed.
+06-17 10:13:45.812  2547  2547 D TNP     : reevaluateNetworkRequests: subscription changed.
+06-17 10:13:45.813  2547  2547 D Phone-0 : isImsRegistered =false
+06-17 10:13:45.813  2547  2547 E Phone-0 : [0] getUserHandle: ex=java.lang.IllegalArgumentException: [getSubscriptionUserHandle]: Invalid subscriptionId: -1
+06-17 10:13:45.864  2547  2547 D ImsManagerIM [0]: ImsService not up yet - timeout waiting for connection.
+06-17 10:13:45.910  2547  2547 D GsmCdmaCallTracker: [0] update phone state, old=IDLE new=IDLE
+06-17 10:13:45.910  2547  2547 D GsmInboundSmsHandler: IdleState.processMessage: processing EVENT_RELEASE_WAKELOCK
+06-17 10:13:45.911  2547  2547 D GsmInboundSmsHandler: IdleState.processMessage: EVENT_RELEASE_WAKELOCK: mWakeLock released
+06-17 10:13:45.911  2547  2547 D CdmaInboundSmsHandler: IdleState.processMessage: processing EVENT_RELEASE_WAKELOCK
+06-17 10:13:45.911  2547  2547 D CdmaInboundSmsHandler: IdleState.processMessage: EVENT_RELEASE_WAKELOCK: mWakeLock released
+06-17 10:13:45.913  2547  2547 D NetworkService: network service created
+06-17 10:13:45.920  2547  2547 D NRM-I-0 : service ComponentInfo{vendor.qti.iwlan/vendor.qti.iwlan.IWlanNetworkService} for transport WLAN is now connected.
+06-17 10:13:45.921  2547  2547 D ADSC    : OPPT switch excluded: primary phone doesn't enable the feature!
+06-17 10:13:45.922  2547  2547 D ADSC    : updateListenerRegistrations: only have one active subscription
+06-17 10:13:45.922  2547  2547 D ADSC    : unregisterAllEventsForPhone: unregistered listeners for phone 0
+06-17 10:13:45.922  2547  2547 D DSRM-0  : onMobileDataEnabledChanged: DataEnabled:false,DataStalled:false
+06-17 10:13:45.922  2547  2547 D ImsPhoneCallTracker: [0] onDataEnabledChanged: enabled=false, reason=-1
+06-17 10:13:45.922  2547  2547 D ImsPhoneCallTracker: [0] Ignore data disabled - carrier policy indicates that data is not metered for ViLTE calls.
+06-17 10:13:45.922  2547  2547 D DNC-0   : onDataEnabledChanged: enabled=false
+06-17 10:13:45.922  2547  2547 D DNC-0   : onDataServiceBindingChanged: WLAN data service is bound.
+06-17 10:13:45.923  2547  2547 D ADSC    : OPPT switch excluded: primary phone doesn't enable the feature!
+06-17 10:13:45.923  2547  2547 D ADSC    : updateListenerRegistrations: only have one active subscription
+06-17 10:13:45.923  2547  2547 D PhoneSwitcher: onDdsSwitchResponse: DDS switch success on phoneId = 0
+06-17 10:13:45.923  2547  2547 D ADSC    : OPPT switch excluded: primary phone doesn't enable the feature!
+06-17 10:13:45.923  2547  2547 D PhoneSwitcher: notifyPreferredDataSubIdChanged to -1
+06-17 10:13:45.923  1618  1726 D TelephonyRegistry: notifyActiveDataSubIdChanged: activeDataSubId=-1
+06-17 10:13:45.925  2547  2547 D DSM-C-0 : onServiceConnected: ComponentInfo{com.android.phone/com.android.internal.telephony.data.CellularDataService}
+06-17 10:13:45.926  2547  2547 D GsmCdmaPhone: [0] EVENT_SUBSCRIPTIONS_CHANGED
+06-17 10:13:45.926  2547  2547 I NullCipherNotifier: Ignoring setSubscriptionMapping. Notifier is disabled.
+06-17 10:13:45.930  2547  2882 D CellularDataService: Cellular data service created for slot 0
+06-17 10:13:45.932  2547  2547 D RILJ    : [0018]> GET_ACTIVITY_INFO [PHONE0]
+06-17 10:13:45.934  2547  2547 D TNP     : onNetworkNeeded: Not applied. [NetworkRequest [ REQUEST id=63, [ Capabilities: INTERNET&NOT_RESTRICTED&TRUSTED&NOT_VCN_MANAGED&NOT_BANDWIDTH_CONSTRAINED Uid: 1000 RequestorUid: 10143 RequestorPkg: com.android.systemui UnderlyingNetworks: Null] ], mPriority=0, state=UNSATISFIED, mAttachedDataNetwork=null, created time=10:13:45.934, evaluation result=null]
+06-17 10:13:45.935  2547  2547 E Phone-0 : [0] getUserHandle: ex=java.lang.IllegalArgumentException: [getSubscriptionUserHandle]: Invalid subscriptionId: -1
+06-17 10:13:45.941  2547  2711 D RILJ    : [0018]< GET_ACTIVITY_INFO ModemActivityInfo{ mTimestamp=18800 mSleepTimeMs=0 mIdleTimeMs=8737 mActivityStatsTechSpecificInfo=[{mRat=UNKNOWN,mFrequencyRange=UNKNOWN,mTxTimeMs[]=[0, 0, 0, 0, 0],mRxTimeMs=0}]} [PHONE0]
+06-17 10:13:45.991  2547  2547 D ImsManagerIM [0]: ImsService not up yet - timeout waiting for connection.
+06-17 10:13:46.002  2547  2547 D NRM-C-0 : service ComponentInfo{com.android.phone/com.android.internal.telephony.CellularNetworkService} for transport WWAN is now connected.
+06-17 10:13:46.002  2547  2547 D ADSC    : OPPT switch excluded: primary phone doesn't enable the feature!
+06-17 10:13:46.002  2547  2547 D ADSC    : OPPT switch excluded: primary phone doesn't enable the feature!
+06-17 10:13:46.002  2547  2547 E ADSC    : onEvaluateAutoDataSwitch: switch requires two active subscriptions.
+06-17 10:13:46.003  2547  2547 D DNC-0   : onReevaluateExistingDataNetworks: No existing data networks to re-evaluate.
+06-17 10:13:46.003  2547  2547 D DSM-I-0 : notifyUserDataEnabled
+06-17 10:13:46.003  2547  2547 D DSM-I-0 : Data service user data toggle notification is not enabled.
+06-17 10:13:46.003  2547  2547 D DSM-I-0 : notifyUserDataRoamingEnabled
+06-17 10:13:46.003  2547  2547 D DSM-I-0 : Data service user data toggle notification is not enabled.
+06-17 10:13:46.003  2547  2547 D DRM-0   : Remove all retry and throttling entries, reason=DATA_SERVICE_BOUND
+06-17 10:13:46.003  2547  2547 D TNP     : Preferred data sub phone id changed to 0
+06-17 10:13:46.003  2547  2547 D TNP     : reevaluateNetworkRequests: Preferred data subscription changed.
+06-17 10:13:46.004  2547  2547 D DNC-0   : onDataServiceBindingChanged: WWAN data service is bound.
+06-17 10:13:46.004  2547  2547 D DSM-C-0 : notifyUserDataEnabled
+06-17 10:13:46.004  2547  2547 D DSM-C-0 : Data service user data toggle notification is not enabled.
+06-17 10:13:46.004  2547  2547 D DSM-C-0 : notifyUserDataRoamingEnabled
+06-17 10:13:46.004  2547  2547 D DSM-C-0 : Data service user data toggle notification is not enabled.
+06-17 10:13:46.004  2547  2547 D DRM-0   : Remove all retry and throttling entries, reason=DATA_SERVICE_BOUND
+06-17 10:13:46.297  2547  2763 D RILJ    : [0019]> GSM_SET_BROADCAST_CONFIG with 7 configs :  [PHONE0]
+06-17 10:13:46.297  2547  2763 D RILJ    : SmsBroadcastConfigInfo: Id [4352,4354] Code [0,255] ENABLED [PHONE0]
+06-17 10:13:46.297  2547  2763 D RILJ    : SmsBroadcastConfigInfo: Id [4355,4355] Code [0,255] DISABLED [PHONE0]
+06-17 10:13:46.297  2547  2763 D RILJ    : SmsBroadcastConfigInfo: Id [4356,4356] Code [0,255] ENABLED [PHONE0]
+06-17 10:13:46.297  2547  2763 D RILJ    : SmsBroadcastConfigInfo: Id [4370,4379] Code [0,255] ENABLED [PHONE0]
+06-17 10:13:46.297  2547  2763 D RILJ    : SmsBroadcastConfigInfo: Id [4380,4382] Code [0,255] DISABLED [PHONE0]
+06-17 10:13:46.297  2547  2763 D RILJ    : SmsBroadcastConfigInfo: Id [4383,4392] Code [0,255] ENABLED [PHONE0]
+06-17 10:13:46.297  2547  2763 D RILJ    : SmsBroadcastConfigInfo: Id [4393,4395] Code [0,255] DISABLED [PHONE0]
+06-17 10:13:46.355  2547  2711 D RILJ    : [0019]< GSM_SET_BROADCAST_CONFIG  [PHONE0]
+06-17 10:13:46.359  2547  2763 D RILJ    : [0020]> GSM_BROADCAST_ACTIVATION activate = true [PHONE0]
+06-17 10:13:46.360  2547  2711 D RILJ    : [0020]< GSM_BROADCAST_ACTIVATION  [PHONE0]
+06-17 10:13:48.026  1618  2217 W TelephonyRegistry: Pid 1618 has exceeded half the number of permissible registered listeners. Now at 29
+06-17 10:13:48.099  1618  2217 W TelephonyRegistry: Pid 1618 has exceeded half the number of permissible registered listeners. Now at 30
+06-17 10:13:48.137  1618  2217 W TelephonyRegistry: Pid 1618 has exceeded half the number of permissible registered listeners. Now at 31
+06-17 10:13:50.566  1618  1726 W TelephonyRegistry: Pid 2547 has exceeded half the number of permissible registered listeners. Now at 50
+06-17 10:13:50.567  1618  1726 D TelephonyRegistry: listen ooscl: hasNotifyOpptSubInfoChangedOccurred==false no callback
+06-17 10:13:50.581  1618  2294 W TelephonyRegistry: Pid 2547 has exceeded half the number of permissible registered listeners. Now at 51
+06-17 10:13:50.647  2547  2547 D TNP     : onNetworkNeeded: Not applied. [NetworkRequest [ REQUEST id=66, [ Capabilities: INTERNET&NOT_RESTRICTED&TRUSTED&NOT_VCN_MANAGED&NOT_BANDWIDTH_CONSTRAINED Uid: 10100 RequestorUid: 10100 RequestorPkg: com.qualcomm.qti.cne UnderlyingNetworks: Null] ], mPriority=0, state=UNSATISFIED, mAttachedDataNetwork=null, created time=10:13:50.647, evaluation result=null]
+06-17 10:13:51.574  2547  2547 D TNP     : onNetworkNeeded: Not applied. [NetworkRequest [ REQUEST id=73, [ Transports: SATELLITE Capabilities: INTERNET&NOT_RESTRICTED&TRUSTED&NOT_VCN_MANAGED Uid: 10106 RequestorUid: 10106 RequestorPkg: com.google.android.gms UnderlyingNetworks: Null] ], mPriority=0, state=UNSATISFIED, mAttachedDataNetwork=null, created time=10:13:51.574, evaluation result=null]
+06-17 10:13:53.591  2547  2778 D TelephonyCountryDetector: onCapabilitiesChanged: [ Transports: WIFI Capabilities: NOT_METERED&INTERNET&NOT_RESTRICTED&TRUSTED&NOT_VPN&NOT_ROAMING&FOREGROUND&NOT_CONGESTED&NOT_SUSPENDED&NOT_VCN_MANAGED&NOT_BANDWIDTH_CONSTRAINED LinkUpBandwidth>=12000Kbps LinkDnBandwidth>=60000Kbps TransportInfo: <SSID: <unknown ssid>, BSSID: 02:00:00:00:00:00, MAC: 02:00:00:00:00:00, IP: /192.168.1.19, Security type: 2, Supplicant state: COMPLETED, Wi-Fi standard: 11ac, RSSI: -48, Link speed: 433Mbps, Tx Link speed: 433Mbps, Max Supported Tx Link speed: 433Mbps, Rx Link speed: 433Mbps, Max Supported Rx Link speed: 433Mbps, Frequency: 5220MHz, Net ID: -1, Metered hint: false, score: 82, isUsable: true, CarrierMerged: false, SubscriptionId: -1, IsPrimary: 1, Trusted: true, Restricted: false, Ephemeral: false, OEM paid: false, OEM private: false, OSU AP: false, FQDN: <none>, Provider friendly name: <none>, Requesting package name: <none><none>MLO Information: , Is TID-To-Link negotiation supported by the AP: false, AP MLD Address: <none>, AP MLO Link Id: <none>, AP MLO Affiliated links: <none>, Vendor Data: <none>> SignalStrength: -48 SSID: "Immetrica-5GHz1" UnderlyingNetworks: Null]
+06-17 10:13:53.591  2547  2778 D TelephonyCountryDetector: isWifiConnected: false
+06-17 10:13:53.591  2547  2723 D TelephonyCountryDetector: handleEventWifiConnectivityStateChanged: false
+06-17 10:13:53.591  2547  2723 D TelephonyCountryDetector: getCurrentNetworkCountryIso: invalid countryIso= for phoneId=0, subId=-1
+06-17 10:13:53.591  2547  2723 D TelephonyCountryDetector: isWifiNetworkConnected: false
+06-17 10:13:53.591  2547  2723 D TelephonyCountryDetector: Location update was not requested yet
+06-17 10:13:53.599  2547  2547 D RILJ    : [0021]> SEND_DEVICE_STATE 2:true [PHONE0]
+06-17 10:13:53.601  2547  2711 D RILJ    : [0021]< SEND_DEVICE_STATE  [PHONE0]
+06-17 10:13:53.606  2547  2547 D RILJ    : [0022]> SET_UNSOLICITED_RESPONSE_FILTER 32 [PHONE0]
+06-17 10:13:53.607  2547  2547 E TNP     : onNetworkUnneeded: Unable to get phone. phoneId=-1
+06-17 10:13:53.607  2547  2547 E TNP     : onNetworkUnneeded: Unable to get phone. phoneId=-1
+06-17 10:13:53.607  2547  2547 E TNP     : onNetworkUnneeded: Unable to get phone. phoneId=-1
+06-17 10:13:53.607  2547  2547 D NetworkTypeController: [0] LegacyState: process EVENT_PHYSICAL_CHANNEL_CONFIG_NOTIF_CHANGED
+06-17 10:13:53.607  2547  2547 D NetworkTypeController: [0] DefaultState: process EVENT_PHYSICAL_CHANNEL_CONFIG_NOTIF_CHANGED
+06-17 10:13:53.607  2547  2547 D NetworkTypeController: [0] mIsPhysicalChannelConfigOn changed to: false
+06-17 10:13:53.607  2547  2547 D NetworkTypeController: [0] Reset timers since physical channel config indications are off.
+06-17 10:13:53.616  2547  2711 D RILJ    : [0022]< SET_UNSOLICITED_RESPONSE_FILTER  [PHONE0]
+06-17 10:13:53.746  2547  2547 E TNP     : onNetworkUnneeded: Unable to get phone. phoneId=-1
+06-17 10:13:53.746  2547  2547 E TNP     : onNetworkUnneeded: Unable to get phone. phoneId=-1
+06-17 10:13:53.746  2547  2547 E TNP     : onNetworkUnneeded: Unable to get phone. phoneId=-1
+06-17 10:13:53.747  2547  2547 E TNP     : onNetworkUnneeded: Unable to get phone. phoneId=-1
+06-17 10:13:53.747  2547  2547 E TNP     : onNetworkUnneeded: Unable to get phone. phoneId=-1
+06-17 10:13:53.747  2547  2547 E TNP     : onNetworkUnneeded: Unable to get phone. phoneId=-1
+06-17 10:13:53.747  2547  2547 E TNP     : onNetworkUnneeded: Unable to get phone. phoneId=-1
+06-17 10:13:53.747  2547  2547 E TNP     : onNetworkUnneeded: Unable to get phone. phoneId=-1
+06-17 10:13:53.747  2547  2547 E TNP     : onNetworkUnneeded: Unable to get phone. phoneId=-1
+06-17 10:13:53.747  2547  2547 E TNP     : onNetworkUnneeded: Unable to get phone. phoneId=-1
+06-17 10:13:53.748  2547  2547 E TNP     : onNetworkUnneeded: Unable to get phone. phoneId=-1
+06-17 10:13:53.748  2547  2547 E TNP     : onNetworkUnneeded: Unable to get phone. phoneId=-1
+06-17 10:13:53.748  2547  2547 E TNP     : onNetworkUnneeded: Unable to get phone. phoneId=-1
+06-17 10:13:53.748  2547  2547 E TNP     : onNetworkUnneeded: Unable to get phone. phoneId=-1
+06-17 10:13:53.748  2547  2547 E TNP     : onNetworkUnneeded: Unable to get phone. phoneId=-1
+06-17 10:13:53.748  2547  2547 E TNP     : onNetworkUnneeded: Unable to get phone. phoneId=-1
+06-17 10:13:53.760  2547  2778 D TelephonyCountryDetector: onCapabilitiesChanged: [ Transports: WIFI Capabilities: NOT_METERED&INTERNET&NOT_RESTRICTED&TRUSTED&NOT_VPN&VALIDATED&NOT_ROAMING&FOREGROUND&NOT_CONGESTED&NOT_SUSPENDED&NOT_VCN_MANAGED&NOT_BANDWIDTH_CONSTRAINED LinkUpBandwidth>=12000Kbps LinkDnBandwidth>=60000Kbps TransportInfo: <SSID: <unknown ssid>, BSSID: 02:00:00:00:00:00, MAC: 02:00:00:00:00:00, IP: /192.168.1.19, Security type: 2, Supplicant state: COMPLETED, Wi-Fi standard: 11ac, RSSI: -48, Link speed: 433Mbps, Tx Link speed: 433Mbps, Max Supported Tx Link speed: 433Mbps, Rx Link speed: 433Mbps, Max Supported Rx Link speed: 433Mbps, Frequency: 5220MHz, Net ID: -1, Metered hint: false, score: 82, isUsable: true, CarrierMerged: false, SubscriptionId: -1, IsPrimary: 1, Trusted: true, Restricted: false, Ephemeral: false, OEM paid: false, OEM private: false, OSU AP: false, FQDN: <none>, Provider friendly name: <none>, Requesting package name: <none><none>MLO Information: , Is TID-To-Link negotiation supported by the AP: false, AP MLD Address: <none>, AP MLO Link Id: <none>, AP MLO Affiliated links: <none>, Vendor Data: <none>> SignalStrength: -48 SSID: "Immetrica-5GHz1" UnderlyingNetworks: Null]
+06-17 10:13:53.761  2547  2778 D TelephonyCountryDetector: isWifiConnected: true
+06-17 10:13:53.761  2547  2723 D TelephonyCountryDetector: handleEventWifiConnectivityStateChanged: true
+06-17 10:13:53.761  2547  2723 D TelephonyCountryDetector: evaluateNotifyWifiConnectivityStateChangedEvent: wifi connectivity state has changed to true
+06-17 10:13:53.761  2547  2723 D TelephonyCountryDetector: getCurrentNetworkCountryIso: invalid countryIso= for phoneId=0, subId=-1
+06-17 10:13:53.761  2547  2723 D TelephonyCountryDetector: isWifiNetworkConnected: true
+06-17 10:13:53.762  2547  2723 D TelephonyCountryDetector: Registering for location updates
+06-17 10:13:53.783  2547  2723 D TelephonyCountryDetector: onLocationChanged: false
+06-17 10:13:53.788  2547  2723 D Phone-0 : [0] notifyCarrierRoamingNtnEligibleStateChanged eligible:false
+06-17 10:13:53.788  1618  2149 E TelephonyRegistry: Invalid phone ID -1 for -1
+06-17 10:13:55.493  2547  2778 D TelephonyCountryDetector: onCapabilitiesChanged: [ Transports: WIFI Capabilities: NOT_METERED&INTERNET&NOT_RESTRICTED&TRUSTED&NOT_VPN&VALIDATED&NOT_ROAMING&FOREGROUND&NOT_CONGESTED&NOT_SUSPENDED&NOT_VCN_MANAGED&NOT_BANDWIDTH_CONSTRAINED LinkUpBandwidth>=12000Kbps LinkDnBandwidth>=60000Kbps TransportInfo: <SSID: <unknown ssid>, BSSID: 02:00:00:00:00:00, MAC: 02:00:00:00:00:00, IP: /192.168.1.19, Security type: 2, Supplicant state: COMPLETED, Wi-Fi standard: 11ac, RSSI: -49, Link speed: 433Mbps, Tx Link speed: 433Mbps, Max Supported Tx Link speed: 433Mbps, Rx Link speed: 433Mbps, Max Supported Rx Link speed: 433Mbps, Frequency: 5220MHz, Net ID: -1, Metered hint: false, score: 82, isUsable: true, CarrierMerged: false, SubscriptionId: -1, IsPrimary: 1, Trusted: true, Restricted: false, Ephemeral: false, OEM paid: false, OEM private: false, OSU AP: false, FQDN: <none>, Provider friendly name: <none>, Requesting package name: <none><none>MLO Information: , Is TID-To-Link negotiation supported by the AP: false, AP MLD Address: <none>, AP MLO Link Id: <none>, AP MLO Affiliated links: <none>, Vendor Data: <none>> SignalStrength: -49 SSID: "Immetrica-5GHz1" UnderlyingNetworks: Null]
+06-17 10:13:55.493  2547  2778 D TelephonyCountryDetector: isWifiConnected: true
+06-17 10:13:55.494  2547  2723 D TelephonyCountryDetector: handleEventWifiConnectivityStateChanged: true
+06-17 10:13:55.494  2547  2723 D TelephonyCountryDetector: getCurrentNetworkCountryIso: invalid countryIso= for phoneId=0, subId=-1
+06-17 10:13:55.494  2547  2723 D TelephonyCountryDetector: isWifiNetworkConnected: true
+06-17 10:13:55.495  2547  2723 D TelephonyCountryDetector: Already registered for location updates
+06-17 10:14:08.699  2547  2778 D TelephonyCountryDetector: onCapabilitiesChanged: [ Transports: WIFI Capabilities: NOT_METERED&INTERNET&NOT_RESTRICTED&TRUSTED&NOT_VPN&VALIDATED&NOT_ROAMING&FOREGROUND&NOT_CONGESTED&NOT_SUSPENDED&NOT_VCN_MANAGED&NOT_BANDWIDTH_CONSTRAINED LinkUpBandwidth>=12000Kbps LinkDnBandwidth>=60000Kbps TransportInfo: <SSID: <unknown ssid>, BSSID: 02:00:00:00:00:00, MAC: 02:00:00:00:00:00, IP: /192.168.1.19, Security type: 2, Supplicant state: COMPLETED, Wi-Fi standard: 11ac, RSSI: -52, Link speed: 433Mbps, Tx Link speed: 433Mbps, Max Supported Tx Link speed: 433Mbps, Rx Link speed: 433Mbps, Max Supported Rx Link speed: 433Mbps, Frequency: 5220MHz, Net ID: -1, Metered hint: false, score: 81, isUsable: true, CarrierMerged: false, SubscriptionId: -1, IsPrimary: 1, Trusted: true, Restricted: false, Ephemeral: false, OEM paid: false, OEM private: false, OSU AP: false, FQDN: <none>, Provider friendly name: <none>, Requesting package name: <none><none>MLO Information: , Is TID-To-Link negotiation supported by the AP: false, AP MLD Address: <none>, AP MLO Link Id: <none>, AP MLO Affiliated links: <none>, Vendor Data: <none>> SignalStrength: -52 SSID: "Immetrica-5GHz1" UnderlyingNetworks: Null]
+06-17 10:14:08.699  2547  2778 D TelephonyCountryDetector: isWifiConnected: true
+06-17 10:14:08.700  2547  2723 D TelephonyCountryDetector: handleEventWifiConnectivityStateChanged: true
+06-17 10:14:08.700  2547  2723 D TelephonyCountryDetector: getCurrentNetworkCountryIso: invalid countryIso= for phoneId=0, subId=-1
+06-17 10:14:08.700  2547  2723 D TelephonyCountryDetector: isWifiNetworkConnected: true
+06-17 10:14:08.700  2547  2723 D TelephonyCountryDetector: Already registered for location updates
+06-17 10:14:12.732  2547  2723 D PinStorage: onUserUnlocked - Device is unlocked
+06-17 10:14:12.735  2547  2723 D PinStorage: KeyStore: alias PinStorage_longTerm_ua_key exists
+06-17 10:14:12.735  2547  2547 D SmsBroadcastUndelivered: Received broadcast android.intent.action.USER_UNLOCKED
+06-17 10:14:12.735  2547  2723 D PinStorage: onDeviceReady
+06-17 10:14:12.742  2547  2547 D SmsDispatchersController: Received broadcast android.intent.action.USER_UNLOCKED
+06-17 10:14:12.746  2547  2723 D PinStorage: KeyStore: alias PinStorage_shortTerm_key does not exist - Nothing to do
+06-17 10:14:12.748  2547  3764 D SmsBroadcastUndelivered: scanning raw table for undelivered messages
+06-17 10:14:12.778  2547  3764 D SmsBroadcastUndelivered: finished scanning raw table in 30 ms
+06-17 10:14:12.822  2547  2547 D CAT     : BootCompletedReceiver: [ACTION_BOOT_COMPLETED]
+06-17 10:14:12.823  2547  2547 D CAT     : StkAppService: onCreate()+
+06-17 10:14:12.824  2547  2547 D CAT     : StkAppService: simCount: 1
+06-17 10:14:12.824  2547  2547 D CAT     : StkAppService: slotId: 0
+06-17 10:14:12.826  2547  2547 D CAT     : StkAppService: onStart sim id: 0, op: 5, *****
+06-17 10:14:12.826  2547  2547 D CAT     : StkAppService: mStkService is: -1
+06-17 10:14:12.844  2547  2547 D CAT     : StkAppService: onDestroy()
+06-17 10:14:13.581  1618  1815 W TelephonyRegistry: Pid 1618 has exceeded half the number of permissible registered listeners. Now at 32
+06-17 10:14:16.325  2547  2547 D RILJ    : [0023]> GET_CELL_INFO_LIST [PHONE0]
+06-17 10:14:16.327  2547  2711 D RILJ    : [0023]< GET_CELL_INFO_LIST error 1 [PHONE0]
+06-17 10:14:16.327  2547  2711 D RilRequest: [0023]< GET_CELL_INFO_LIST error: com.android.internal.telephony.CommandException: RADIO_NOT_AVAILABLE ret=[] result={ when=-49s186ms what=43 target=com.android.internal.telephony.ServiceStateTracker async=false heapIndex=-1 }
+06-17 10:14:16.328  2547  2547 D SST-0   : EVENT_GET_CELL_INFO_LIST: error ret null, e=com.android.internal.telephony.CommandException: RADIO_NOT_AVAILABLE
+06-17 10:14:20.181  2547  2723 D TelephonyCountryDetector: onLocationChanged: true
+06-17 10:14:20.825  2547  3016 D TelephonyCountryDetector: onGeocode: addresses is available
+06-17 10:14:20.825  2547  2723 D TelephonyCountryDetector: Set location country code to: US
+===== qcril/uim/efs/nv/card errors (main+system) =====
+06-17 10:14:24.283  2525  2545 I NfcRegisteredAidCache: resolveAidConflictLocked: Sim based service is removed due to unknown sim type
+06-17 10:14:24.283  2525  2545 I NfcRegisteredAidCache: resolveAidConflictLocked: Sim based service is removed due to unknown sim type
+06-17 10:14:24.284  2525  2545 I NfcRegisteredAidCache: resolveAidConflictLocked: Sim based service is removed due to unknown sim type
+06-17 10:14:24.293  2525  2545 I NfcRegisteredAidCache: resolveAidConflictLocked: Sim based service is removed due to unknown sim type
+06-17 10:14:24.293  2525  2545 I NfcRegisteredAidCache: resolveAidConflictLocked: Sim based service is removed due to unknown sim type
+06-17 10:14:24.296  2525  2545 E NfcRoutingOptionManager: getAlternativeRouteIfSimIsInvalid: sim is invalid
+06-17 10:14:24.296  2525  2545 E NfcRoutingOptionManager: getAlternativeRouteIfSimIsInvalid: sim is invalid
+06-17 10:14:24.300  2525  2545 I NfcCardEmulationManager: onPreferredPaymentServiceChanged
+06-17 10:14:24.300  2525  2545 I NfcRegisteredAidCache: resolveAidConflictLocked: Sim based service is removed due to unknown sim type
+06-17 10:14:24.300  2525  2545 I NfcRegisteredAidCache: resolveAidConflictLocked: Sim based service is removed due to unknown sim type
+06-17 10:14:24.300  2525  2545 I NfcRegisteredAidCache: resolveAidConflictLocked: Sim based service is removed due to unknown sim type
+06-17 10:14:24.300  2525  2545 I NfcRegisteredAidCache: resolveAidConflictLocked: Sim based service is removed due to unknown sim type
+06-17 10:14:24.300  2525  2545 I NfcRegisteredAidCache: resolveAidConflictLocked: Sim based service is removed due to unknown sim type
+06-17 10:14:24.300  2525  2545 I NfcRegisteredAidCache: resolveAidConflictLocked: Sim based service is removed due to unknown sim type
+06-17 10:14:24.300  2525  2545 I NfcRegisteredAidCache: resolveAidConflictLocked: Sim based service is removed due to unknown sim type
+06-17 10:14:24.300  2525  2545 E NfcRoutingOptionManager: getAlternativeRouteIfSimIsInvalid: sim is invalid
+06-17 10:14:24.300  2525  2545 E NfcRoutingOptionManager: getAlternativeRouteIfSimIsInvalid: sim is invalid
+06-17 10:14:24.360   622   635 D DrmLibTime: QSEE Time Listener: time_get_modem_time
+06-17 10:14:24.360   622   635 D DrmLibTime: QSEE Time Listener: Checking if ATS_MODEM is set or not.
+06-17 10:14:24.360   622   635 D DrmLibTime: QSEE Time Listener: ATS_MODEM is not set. Fallback to Android system time.
+06-17 10:14:24.506  3062  3189 I Pay     : IdCardOperation: SYNC_CREDMAN_REGISTRY_REQUEST, evho [CONTEXT service_id=198 ]
+06-17 10:14:24.710  4747  5277 I AdrenoGLES-0: Remote Branch                    : refs/tags/AU_LINUX_ANDROID_LA.UM.9.14.11.00.00.571.148
+06-17 10:14:24.814  3062  4885 W IDCredApiStub: 	at m32.sim.a(:com.google.android.gms.optional_identity_credentials_platform@262031025@26.20.31 (100400-0):110)
+06-17 10:14:24.866  5348  5426 I WindowExtensionsImpl: Initializing Window Extensions, vendor API level=9, activity embedding enabled=true
+06-17 10:14:25.253   622   635 D DrmLibTime: QSEE Time Listener: time_get_modem_time
+06-17 10:14:25.253   622   635 D DrmLibTime: QSEE Time Listener: Checking if ATS_MODEM is set or not.
+06-17 10:14:25.254   622   635 D DrmLibTime: QSEE Time Listener: ATS_MODEM is not set. Fallback to Android system time.
+06-17 10:14:26.805  1618  2217 D WifiScoreCard: BSSID update SIGNAL_POLL ID: 128763131 SSID: "Immetrica-5GHz1", BSSID: 9c:5c:8e:ba:0d:24, MAC: 16:83:d7:8e:22:45, IP: /192.168.1.19, Security type: 2, Supplicant state: COMPLETED, Wi-Fi standard: 11ac, RSSI: -46, Link speed: 433Mbps, Tx Link speed: 433Mbps, Max Supported Tx Link speed: 433Mbps, Rx Link speed: 433Mbps, Max Supported Rx Link speed: 433Mbps, Frequency: 5220MHz, Net ID: 1, Metered hint: false, score: 83, isUsable: true, CarrierMerged: false, SubscriptionId: -1, IsPrimary: 1, Trusted: true, Restricted: false, Ephemeral: false, OEM paid: false, OEM private: false, OSU AP: false, FQDN: <none>, Provider friendly name: <none>, Requesting package name: <none>"Immetrica-5GHz1"wpa2-pskMLO Information: , Is TID-To-Link negotiation supported by the AP: false, AP MLD Address: <none>, AP MLO Link Id: <none>, AP MLO Affiliated links: <none>, Vendor Data: <none>
+06-17 10:14:26.805  1618  2217 D WifiScoreCard: txRate: 182 txSpeed: 433
+06-17 10:14:26.805  1618  2217 D WifiScoreCard: network update SIGNAL_POLL "Immetrica-5GHz1" ID: 902854094 RSSI -46 txSpeed 433
+06-17 10:14:27.908  2525  2525 I NfcRegisteredAidCache: resolveAidConflictLocked: Sim based service is removed due to unknown sim type
+06-17 10:14:27.908  2525  2525 I NfcRegisteredAidCache: resolveAidConflictLocked: Sim based service is removed due to unknown sim type
+06-17 10:14:27.908  2525  2525 I NfcRegisteredAidCache: resolveAidConflictLocked: Sim based service is removed due to unknown sim type
+06-17 10:14:27.908  2525  2525 I NfcRegisteredAidCache: resolveAidConflictLocked: Sim based service is removed due to unknown sim type
+06-17 10:14:27.908  2525  2525 I NfcRegisteredAidCache: resolveAidConflictLocked: Sim based service is removed due to unknown sim type
+06-17 10:14:27.908  2525  2525 I NfcRegisteredAidCache: resolveAidConflictLocked: Sim based service is removed due to unknown sim type
+06-17 10:14:27.909  2525  2525 I NfcRegisteredAidCache: resolveAidConflictLocked: Sim based service is removed due to unknown sim type
+06-17 10:14:27.909  2525  2525 E NfcRoutingOptionManager: getAlternativeRouteIfSimIsInvalid: sim is invalid
+06-17 10:14:27.909  2525  2525 E NfcRoutingOptionManager: getAlternativeRouteIfSimIsInvalid: sim is invalid
+06-17 10:14:27.911  2525  2525 I NfcCardEmulationManager: onPreferredPaymentServiceChanged
+06-17 10:14:27.911  2525  2525 I NfcRegisteredAidCache: resolveAidConflictLocked: Sim based service is removed due to unknown sim type
+06-17 10:14:27.911  2525  2525 I NfcRegisteredAidCache: resolveAidConflictLocked: Sim based service is removed due to unknown sim type
+06-17 10:14:27.911  2525  2525 I NfcRegisteredAidCache: resolveAidConflictLocked: Sim based service is removed due to unknown sim type
+06-17 10:14:27.911  2525  2525 I NfcRegisteredAidCache: resolveAidConflictLocked: Sim based service is removed due to unknown sim type
+06-17 10:14:27.911  2525  2525 I NfcRegisteredAidCache: resolveAidConflictLocked: Sim based service is removed due to unknown sim type
+06-17 10:14:27.911  2525  2525 I NfcRegisteredAidCache: resolveAidConflictLocked: Sim based service is removed due to unknown sim type
+06-17 10:14:27.911  2525  2525 I NfcRegisteredAidCache: resolveAidConflictLocked: Sim based service is removed due to unknown sim type
+06-17 10:14:27.912  2525  2525 E NfcRoutingOptionManager: getAlternativeRouteIfSimIsInvalid: sim is invalid
+06-17 10:14:27.912  2525  2525 E NfcRoutingOptionManager: getAlternativeRouteIfSimIsInvalid: sim is invalid
+06-17 10:14:29.817  1618  2217 D WifiScoreCard: BSSID update SIGNAL_POLL ID: 128763131 SSID: "Immetrica-5GHz1", BSSID: 9c:5c:8e:ba:0d:24, MAC: 16:83:d7:8e:22:45, IP: /192.168.1.19, Security type: 2, Supplicant state: COMPLETED, Wi-Fi standard: 11ac, RSSI: -47, Link speed: 433Mbps, Tx Link speed: 433Mbps, Max Supported Tx Link speed: 433Mbps, Rx Link speed: 433Mbps, Max Supported Rx Link speed: 433Mbps, Frequency: 5220MHz, Net ID: 1, Metered hint: false, score: 83, isUsable: true, CarrierMerged: false, SubscriptionId: -1, IsPrimary: 1, Trusted: true, Restricted: false, Ephemeral: false, OEM paid: false, OEM private: false, OSU AP: false, FQDN: <none>, Provider friendly name: <none>, Requesting package name: <none>"Immetrica-5GHz1"wpa2-pskMLO Information: , Is TID-To-Link negotiation supported by the AP: false, AP MLD Address: <none>, AP MLO Link Id: <none>, AP MLO Affiliated links: <none>, Vendor Data: <none>
+06-17 10:14:29.817  1618  2217 D WifiScoreCard: txRate: 107 txSpeed: 433
+06-17 10:14:29.817  1618  2217 D WifiScoreCard: network update SIGNAL_POLL "Immetrica-5GHz1" ID: 902854094 RSSI -47 txSpeed 433
+06-17 10:14:32.866  1618  2217 D WifiScoreCard: BSSID update SIGNAL_POLL ID: 128763131 SSID: "Immetrica-5GHz1", BSSID: 9c:5c:8e:ba:0d:24, MAC: 16:83:d7:8e:22:45, IP: /192.168.1.19, Security type: 2, Supplicant state: COMPLETED, Wi-Fi standard: 11ac, RSSI: -48, Link speed: 433Mbps, Tx Link speed: 433Mbps, Max Supported Tx Link speed: 433Mbps, Rx Link speed: 433Mbps, Max Supported Rx Link speed: 433Mbps, Frequency: 5220MHz, Net ID: 1, Metered hint: false, score: 83, isUsable: true, CarrierMerged: false, SubscriptionId: -1, IsPrimary: 1, Trusted: true, Restricted: false, Ephemeral: false, OEM paid: false, OEM private: false, OSU AP: false, FQDN: <none>, Provider friendly name: <none>, Requesting package name: <none>"Immetrica-5GHz1"wpa2-pskMLO Information: , Is TID-To-Link negotiation supported by the AP: false, AP MLD Address: <none>, AP MLO Link Id: <none>, AP MLO Affiliated links: <none>, Vendor Data: <none>
+06-17 10:14:32.866  1618  2217 D WifiScoreCard: txRate: 42 txSpeed: 433
+06-17 10:14:32.866  1618  2217 D WifiScoreCard: network update SIGNAL_POLL "Immetrica-5GHz1" ID: 902854094 RSSI -48 txSpeed 433
+06-17 10:14:34.404   622   635 D DrmLibTime: QSEE Time Listener: time_get_modem_time
+06-17 10:14:34.404   622   635 D DrmLibTime: QSEE Time Listener: Checking if ATS_MODEM is set or not.
+06-17 10:14:34.406   622   635 D DrmLibTime: QSEE Time Listener: ATS_MODEM is not set. Fallback to Android system time.
+06-17 10:14:34.990   622   635 D DrmLibTime: QSEE Time Listener: time_get_modem_time
+06-17 10:14:34.990   622   635 D DrmLibTime: QSEE Time Listener: Checking if ATS_MODEM is set or not.
+06-17 10:14:34.992   622   635 D DrmLibTime: QSEE Time Listener: ATS_MODEM is not set. Fallback to Android system time.
+06-17 10:14:35.903  1618  2217 D WifiScoreCard: BSSID update SIGNAL_POLL ID: 128763131 SSID: "Immetrica-5GHz1", BSSID: 9c:5c:8e:ba:0d:24, MAC: 16:83:d7:8e:22:45, IP: /192.168.1.19, Security type: 2, Supplicant state: COMPLETED, Wi-Fi standard: 11ac, RSSI: -51, Link speed: 433Mbps, Tx Link speed: 433Mbps, Max Supported Tx Link speed: 433Mbps, Rx Link speed: 433Mbps, Max Supported Rx Link speed: 433Mbps, Frequency: 5220MHz, Net ID: 1, Metered hint: false, score: 80, isUsable: true, CarrierMerged: false, SubscriptionId: -1, IsPrimary: 1, Trusted: true, Restricted: false, Ephemeral: false, OEM paid: false, OEM private: false, OSU AP: false, FQDN: <none>, Provider friendly name: <none>, Requesting package name: <none>"Immetrica-5GHz1"wpa2-pskMLO Information: , Is TID-To-Link negotiation supported by the AP: false, AP MLD Address: <none>, AP MLO Link Id: <none>, AP MLO Affiliated links: <none>, Vendor Data: <none>
+06-17 10:14:35.903  1618  2217 D WifiScoreCard: txRate: 16 txSpeed: 433
+06-17 10:14:35.903  1618  2217 D WifiScoreCard: network update SIGNAL_POLL "Immetrica-5GHz1" ID: 902854094 RSSI -51 txSpeed 433
+06-17 10:14:36.086   622   635 D DrmLibTime: QSEE Time Listener: time_get_modem_time
+06-17 10:14:36.086   622   635 D DrmLibTime: QSEE Time Listener: Checking if ATS_MODEM is set or not.
+06-17 10:14:36.088   622   635 D DrmLibTime: QSEE Time Listener: ATS_MODEM is not set. Fallback to Android system time.
+06-17 10:14:38.183   622   635 D DrmLibTime: QSEE Time Listener: time_get_modem_time
+06-17 10:14:38.184   622   635 D DrmLibTime: QSEE Time Listener: Checking if ATS_MODEM is set or not.
+06-17 10:14:38.185   622   635 D DrmLibTime: QSEE Time Listener: ATS_MODEM is not set. Fallback to Android system time.
+06-17 10:14:38.941  1618  2217 D WifiScoreCard: BSSID update SIGNAL_POLL ID: 128763131 SSID: "Immetrica-5GHz1", BSSID: 9c:5c:8e:ba:0d:24, MAC: 16:83:d7:8e:22:45, IP: /192.168.1.19, Security type: 2, Supplicant state: COMPLETED, Wi-Fi standard: 11ac, RSSI: -49, Link speed: 433Mbps, Tx Link speed: 433Mbps, Max Supported Tx Link speed: 433Mbps, Rx Link speed: 433Mbps, Max Supported Rx Link speed: 433Mbps, Frequency: 5220MHz, Net ID: 1, Metered hint: false, score: 80, isUsable: true, CarrierMerged: false, SubscriptionId: -1, IsPrimary: 1, Trusted: true, Restricted: false, Ephemeral: false, OEM paid: false, OEM private: false, OSU AP: false, FQDN: <none>, Provider friendly name: <none>, Requesting package name: <none>"Immetrica-5GHz1"wpa2-pskMLO Information: , Is TID-To-Link negotiation supported by the AP: false, AP MLD Address: <none>, AP MLO Link Id: <none>, AP MLO Affiliated links: <none>, Vendor Data: <none>
+06-17 10:14:38.941  1618  2217 D WifiScoreCard: txRate: 6 txSpeed: 433
+06-17 10:14:38.941  1618  2217 D WifiScoreCard: network update SIGNAL_POLL "Immetrica-5GHz1" ID: 902854094 RSSI -49 txSpeed 433
+06-17 10:14:39.874  4772  4772 I Finsky  : [2] PSS: pre-archiving flag condition is false, simplified pre-archiving is false, ranking condition is true, profile condition is true, restore count condition is true, external disablement of pre-archiving is false, all conditions except flag are true, all conditions are false
+06-17 10:14:41.956  1618  2217 D WifiScoreCard: BSSID update SIGNAL_POLL ID: 128763131 SSID: "Immetrica-5GHz1", BSSID: 9c:5c:8e:ba:0d:24, MAC: 16:83:d7:8e:22:45, IP: /192.168.1.19, Security type: 2, Supplicant state: COMPLETED, Wi-Fi standard: 11ac, RSSI: -49, Link speed: 433Mbps, Tx Link speed: 433Mbps, Max Supported Tx Link speed: 433Mbps, Rx Link speed: 433Mbps, Max Supported Rx Link speed: 433Mbps, Frequency: 5220MHz, Net ID: 1, Metered hint: false, score: 79, isUsable: true, CarrierMerged: false, SubscriptionId: -1, IsPrimary: 1, Trusted: true, Restricted: false, Ephemeral: false, OEM paid: false, OEM private: false, OSU AP: false, FQDN: <none>, Provider friendly name: <none>, Requesting package name: <none>"Immetrica-5GHz1"wpa2-pskMLO Information: , Is TID-To-Link negotiation supported by the AP: false, AP MLD Address: <none>, AP MLO Link Id: <none>, AP MLO Affiliated links: <none>, Vendor Data: <none>
+06-17 10:14:41.956  1618  2217 D WifiScoreCard: txRate: 3 txSpeed: 433
+06-17 10:14:41.957  1618  2217 D WifiScoreCard: network update SIGNAL_POLL "Immetrica-5GHz1" ID: 902854094 RSSI -49 txSpeed -1
+06-17 10:14:42.260   622   635 D DrmLibTime: QSEE Time Listener: time_get_modem_time
+06-17 10:14:42.260   622   635 D DrmLibTime: QSEE Time Listener: Checking if ATS_MODEM is set or not.
+06-17 10:14:42.264   622   635 D DrmLibTime: QSEE Time Listener: ATS_MODEM is not set. Fallback to Android system time.
