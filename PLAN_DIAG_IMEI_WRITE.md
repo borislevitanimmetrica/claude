@@ -105,3 +105,36 @@ a serial/USB port, stick with the USB-gadget method above.)
   live_modemst*.img backups for rollback. Do NOT erase/format EFS.
 - persist.vendor.radio.imei is cosmetic only — ignore it; the real fix is the
   EFS/NV write landing and surviving a reboot (verify via *#06#, not that prop).
+
+
+
+## UPDATE 2026-06-18: Lineage-side diag exposure is kernel-blocked
+
+Results of Phase 1 attempts on the live LineageOS device (root + setenforce 0):
+- `setprop sys.usb.config diag,adb` -> kills BOTH adb and diag; no port enumerates.
+  OPlus USB HAL maps "diag" to ffs.diag (needs a diag-router daemon Lineage lacks)
+  => invalid gadget.
+- configfs: UDC unbinds OK (`echo "" > UDC` -> empty), but
+  `ln -s functions/diag.diag configs/b.1/f_diag` returns **EPERM even unbound, as
+  root, permissive** => OPlus KERNEL hardening blocks adding the diag function.
+- `/dev/diag` does NOT exist on this build (earlier "diag alive" was a different/
+  custom kernel).
+- `setprop persist.sys.adddevdiag 1` sets but has NO effect (no OPlus init on Lineage).
+
+Gadget facts: g1, UDC=4e00000.dwc3, config dir b.1, only function0->ffs.adb linked.
+Available function instances include diag.diag (kernel f_diag) + ffs.diag, but the
+kernel refuses to link diag.diag into the config.
+
+### Remaining cheap Lineage probe
+Check if the diagchar DRIVER is present but just missing its /dev node:
+`cat /proc/devices | grep -i diag` ; if a major exists, `mknod /dev/diag c <maj> 0`
+to reopen the on-device diag route (then on-device NV/EFS client).
+
+### If diagchar driver absent -> Phase 5 (stock) is required
+EDL -> install SIGNED stock (firehose VIP-OK with OFP digests) -> boot stock (diag
+infra + adddevdiag + *#801* work there; FTM permits NV writes) -> qfenix DIAG write
+of IMEI -> re-flash LineageOS (OTA preserves modem/modemst/persist, so IMEI
+survives). Quick pre-check: `adb reboot ftm` may bring up a diag port on its own.
+
+Status: blocked on getting ANY diag channel to the (healthy) modem. The IMEI write
+itself is ready (imei_nv550.bin; qfenix nvwrite/efspush) the moment a channel opens.
