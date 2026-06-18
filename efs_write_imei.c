@@ -202,14 +202,23 @@ static int efs_put(int fd, u8 method){
     xmemcpy(&cmd[23],EFS_PATH,pl);   /* path + nul */
     size_t reqlen=14+9+pl;
     u8 rsp[128]; int n=diag_txn(fd,cmd,reqlen,rsp,sizeof(rsp));
-    if(n<8){ putln_("PUT: short/no response"); return 1; }
-    /* tolerate a stray leading byte before 0x4B */
-    int off=0; if(rsp[0]!=DIAG_SUBSYS_CMD_F && n>1 && rsp[1]==DIAG_SUBSYS_CMD_F) off=1;
-    if(rsp[off]!=DIAG_SUBSYS_CMD_F){ puts_("PUT: unexpected cmd=0x"); puthex8(rsp[off]); nl_(); return 1; }
-    short errno_; xmemcpy(&errno_,&rsp[off+6],2);
-    puts_("PUT errno="); putu((unsigned long)(errno_<0?-errno_:errno_)); if(errno_<0)puts_(" (neg)"); nl_();
+    if(n<2){ putln_("PUT: short/no response"); return 1; }
+    if(rsp[0]==0x13){ putln_("PUT REJECTED: BAD_CMD 0x13 - modem refuses EFS2 (0x4B) in this mode"); return 2; }
+    if(rsp[0]!=DIAG_SUBSYS_CMD_F){ puts_("PUT: unexpected cmd=0x"); puthex8(rsp[0]); nl_(); return 1; }
+    short errno_; xmemcpy(&errno_,&rsp[6],2);
+    puts_("PUT errno="); putu((unsigned long)(errno_<0?-errno_:errno_)); nl_();
     if(errno_==0){ putln_("*** SUCCESS: ue_imei_i written. adb reboot, then *#06# ***"); return 0; }
     return 1;
+}
+
+/* DIAG_SPC_F (0x41): try to unlock restricted diag with the Service Programming Code */
+static int send_spc(int fd, const char *spc6){
+    u8 cmd[7]; cmd[0]=0x41;
+    for(int i=0;i<6;i++) cmd[1+i]=(u8)spc6[i];
+    u8 rsp[64]; int n=diag_txn(fd,cmd,7,rsp,sizeof(rsp));
+    if(n>=1 && rsp[0]==0x13){ putln_("SPC: BAD_CMD (0x41 not accepted)"); return -1; }
+    if(n>=2 && rsp[0]==0x41){ puts_("SPC status="); putu(rsp[1]); putln_(rsp[1]?" (unlocked)":" (rejected)"); return rsp[1]?0:-1; }
+    putln_("SPC: no/unknown response"); return -1;
 }
 
 static int run(void){
@@ -217,6 +226,8 @@ static int run(void){
     int fd=xopen("/dev/diag");
     if(fd<0){ puts_("open /dev/diag failed errno="); putu((unsigned long)-fd); nl_(); return 1; }
     switch_md(fd);
+    putln_("SPC unlock (000000)...");
+    send_spc(fd, "000000");
 
     u8 method=EFS_STD;
     putln_("HELLO(ALT 0x3E)...");

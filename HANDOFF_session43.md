@@ -86,3 +86,43 @@ Repo branch `session-43-efs-write`: `efs_write_imei.c` + `BUILD_efs_write_imei.m
 - Stock EngineerMode CANNOT write IMEI on this device (APK analysis); not an option.
 - For the freestanding client: always build with -ffreestanding -fno-builtin (else memset
   link error or self-recursion).
+
+
+
+## UPDATE — first EFS2 attempt: modem rejects EFS2 too (BAD_CMD). Diag is locked down.
+Ran efs_write_imei (clang-r*, -ffreestanding -fno-builtin; builds clean, static aarch64).
+RESULT: the "PUT errno=0 SUCCESS" was a **FALSE POSITIVE** (parser bug, now fixed).
+Real responses all begin with 0x13 = DIAG_BAD_CMD_F:
+  HELLO ALT -> `13 4b 3e ...`   HELLO STD -> `13 4b 13 ...`   PUT -> `13 4b 13 26 ...`
+i.e. the modem echoes the command after 0x13 = it does NOT accept cmd 0x4B
+(EFS2 subsystem), exactly as it rejects 0x26/0x27 (legacy NV). After reboot:
+*#06# still null, no bars, SIM greyed. NOTHING was written.
+
+Parser fix committed: efs_put now treats a leading 0x13 as BAD_CMD (returns 2),
+and only accepts a response whose first byte is 0x4B (no more "stray byte" off=1
+fudge that misread the BAD_CMD echo as errno=0).
+
+Meaning: this modem's diag command set is **locked/stripped** in normal mode —
+both NV (0x26/0x27) and EFS2 (0x4B) return BAD_CMD. The /dev/diag transport works
+(modem responds), but the command handlers are gated.
+
+## REVISED NEXT STEPS (in order)
+1. **Diag unlock via SPC**, then retry EFS2/NV (cheap, on-device, no reboot/data risk):
+   - DIAG_SPC_F: send `41 30 30 30 30 30 30` (0x41 + "000000"); expect `41 01`=unlocked.
+   - If that BAD_CMDs too, try DIAG_PASSWORD_F (0x46) + 8-byte password.
+   - TODO in efs_write_imei.c: add send_spc() (build 0x41+SPC via diag_txn, check resp[0]==0x41 && resp[1]==1) and call it after switch_md(), before HELLO/PUT. Then re-test EFS2 PUT and also a legacy NV_WRITE_F(0x27) retry.
+2. **FTM (Factory Test Mode)** if SPC doesn't open it: `adb reboot ftm` (abl/xbl are stock
+   so should honor it). After boot: re-`insmod diagchar.ko`, `setenforce 0`, re-run
+   efs_write_imei. FTM enables the modem's provisioning command handlers.
+3. **EDL -> signed stock -> FTM -> write -> re-flash Lineage** if FTM unreachable on
+   Lineage. Stock modem image + FTM has full diag. Lineage OTA preserves modem/persist
+   so a restored IMEI survives. Back up /data first (stock may wipe FBE userdata).
+4. **Risk to acknowledge**: if the production modem image has the NV/EFS diag handlers
+   *removed* (not just mode-gated), no unlock/FTM on this image will help; only a
+   different (stock/FTM) modem state with the handlers present would — failing that,
+   diag-based IMEI write is not possible on this device and the IMEI is unrecoverable
+   without OEM/authenticated tooling.
+
+## STATUS LINE
+efs_write_imei.c builds & runs & transports correctly; modem rejects the write verb.
+Blocked on UNLOCKING the modem's diag command set (SPC -> FTM -> stock/FTM).
