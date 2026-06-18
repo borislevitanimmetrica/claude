@@ -74,6 +74,13 @@ static void hex_dump(const char *lbl, const u8 *p, int n){
     for(int i=0;i<n;i++){ if(!(i%16))puts_("  "); puthex8(p[i]); putc_(' '); if((i+1)%16==0)nl_(); }
     if(n%16)nl_();
 }
+/* libc-named mem* so -O2 compiler-emitted calls link under -nostdlib.
+   MUST be built with -fno-builtin so these bodies don't self-recurse. */
+void *memset(void *s, int c, size_t n){ u8 *p=s; while(n--)*p++=(u8)c; return s; }
+void *memcpy(void *d, const void *s, size_t n){ u8 *dp=d; const u8 *sp=s; while(n--)*dp++=*sp++; return d; }
+void *memmove(void *d, const void *s, size_t n){ u8 *dp=d; const u8 *sp=s;
+    if(dp<sp){ while(n--)*dp++=*sp++; } else { dp+=n; sp+=n; while(n--)*--dp=*--sp; } return d; }
+
 static void xmemset(void *s,u8 c,size_t n){ u8 *p=s; while(n--)*p++=c; }
 static void xmemcpy(void *d,const void *s,size_t n){ u8 *dp=d; const u8 *sp=s; while(n--)*dp++=*sp++; }
 static size_t xstrlen(const char *s){ size_t n=0; while(s[n])n++; return n; }

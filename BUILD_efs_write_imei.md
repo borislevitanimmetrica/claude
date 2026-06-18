@@ -9,9 +9,9 @@ The source is freestanding aarch64 (no libc), like nv_write_imei.c. Reuse whatev
 command built `/phone/tmp/nv_write_imei`. Typically:
 
 ```
-CC=$(ls /phone/lineage/prebuilts/clang/host/linux-x86/*/bin/clang 2>/dev/null | head -1)
+CC=$(ls -d /phone/lineage/prebuilts/clang/host/linux-x86/clang-r*/bin/clang 2>/dev/null | tail -1)
 $CC --target=aarch64-linux-android31 -nostdlib -static -O2 \
-    -fno-stack-protector -o efs_write_imei efs_write_imei.c
+    -ffreestanding -fno-builtin -fno-stack-protector -o efs_write_imei efs_write_imei.c
 # (or: aarch64-linux-gnu-gcc -nostdlib -static -O2 -o efs_write_imei efs_write_imei.c)
 file efs_write_imei      # expect: ELF 64-bit aarch64, statically linked
 ```
