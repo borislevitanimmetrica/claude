@@ -38,9 +38,20 @@ echo "Building fh_loader (arm64 Mach-O)..."
 #                                Defining it to "zu" gives clang a single string
 #                                literal to parse, and `%zu` is the portable spec
 #                                for size_t on macOS/Linux.
+#   -Dstat64=stat (macOS only) : macOS doesn't expose `struct stat64` (its `struct stat`
+#                                is already 64-bit when _FILE_OFFSET_BITS=64). Aliasing
+#                                makes the two `struct stat64 buf;` declarations valid.
+#                                Linux has `struct stat64` natively, so we MUST NOT
+#                                define this there (would be a redefinition).
 #   -Wno-... -Wno-...          : silence the now-redundant warnings cleanly.
+EXTRA_FLAGS=()
+case "$(uname -s)" in
+  Darwin) EXTRA_FLAGS+=(-Dstat64=stat) ;;
+esac
+
 clang++ -std=c++17 -O2 -w -fpermissive -D_FILE_OFFSET_BITS=64 \
   -DSIZE_T_FORMAT='"zu"' \
+  "${EXTRA_FLAGS[@]}" \
   -Wno-reserved-user-defined-literal \
   -Wno-format-security \
   fh_loader.cpp fh_loader_sha.cpp \
