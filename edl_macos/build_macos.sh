@@ -13,8 +13,36 @@ if ! command -v clang++ >/dev/null 2>&1; then
   exit 1
 fi
 
+echo "Patching legacy 'ptr == \\\"\\\\0\\\"' comparisons (5 sites; idempotent)..."
+# Qualcomm's source has five places where `(char*)ptr == '\0'` is used to mean
+# "ptr is null". gcc-11 silently treated '\0' as the null-pointer constant; clang
+# refuses ("comparison between pointer and integer"). Replace with `NULL` literally.
+# Anchored to the full surrounding tokens so we never touch a real char comparison.
+PATCH_SED=(
+  -e "s/(pch != '\\\\0')/(pch != NULL)/"
+  -e "s/(Dest == '\\\\0')/(Dest == NULL)/"
+  -e "s/(Source == '\\\\0')/(Source == NULL)/"
+  -e "s/(pch == '\\\\0')/(pch == NULL)/"
+  -e "s/(FileAndPath == '\\\\0' || strlen(FileAndPath) == 0)/(FileAndPath == NULL || strlen(FileAndPath) == 0)/"
+)
+# macOS sed needs '' after -i (or BSD sed's no-arg form). Use a portable approach:
+# write to a temp file and replace.
+sed "${PATCH_SED[@]}" fh_loader.cpp > fh_loader.cpp.tmp && mv fh_loader.cpp.tmp fh_loader.cpp
+
 echo "Building fh_loader (arm64 Mach-O)..."
+# Notes on the flags:
+#   -fpermissive               : five legacy "ptr == '\0'" comparisons in fh_loader.cpp
+#   -DSIZE_T_FORMAT='"zu"'     : the source uses `"%"SIZE_T_FORMAT` (a Microsoft-era
+#                                idiom that pasted "%I64u" on Windows). Modern clang
+#                                rejects literal-juxtaposed-with-identifier as a UDL.
+#                                Defining it to "zu" gives clang a single string
+#                                literal to parse, and `%zu` is the portable spec
+#                                for size_t on macOS/Linux.
+#   -Wno-... -Wno-...          : silence the now-redundant warnings cleanly.
 clang++ -std=c++17 -O2 -w -fpermissive -D_FILE_OFFSET_BITS=64 \
+  -DSIZE_T_FORMAT='"zu"' \
+  -Wno-reserved-user-defined-literal \
+  -Wno-format-security \
   fh_loader.cpp fh_loader_sha.cpp \
   -o fh_loader
 
