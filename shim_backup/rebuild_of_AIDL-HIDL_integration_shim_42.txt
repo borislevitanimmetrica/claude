@@ -1,0 +1,33 @@
+Files I edited (for any rebuild)
+
+All under /phone/lineage/hardware/interfaces/radio/aidl/compat/libradiocompat/. Backups have .preimei.bak or .preremedy1.bak suffixes alongside.
+
+
+File	New / Modified	Backup file
+
+Android.bp	modified — added "ImeiProvisioning.cpp", to srcs: list of android.hardware.radio-library.compat cc_library	Android.bp.preimei.bak
+
+CallbackManager.cpp	modified — #include <libradiocompat/ImeiProvisioning.h> near the top; new IMEI block in delayedSetterThread() after setResponseFunctions(...).assertOk() and before mDelayedSetterDeadline = std::nullopt;	CallbackManager.cpp.preimei.bak
+
+include/libradiocompat/CallbackManager.h	modified — #include <atomic> after <thread>; two new private members std::atomic<bool> mImeiProvisioned{false}; and std::atomic<int32_t> mImeiProvisionSerial{0x10000000};	include/libradiocompat/CallbackManager.h.preimei.bak
+
+ImeiProvisioning.cpp	NEW	ImeiProvisioning.cpp.preremedy1.bak (the sendOemRilRequestRaw original; current file uses nvWriteItem after Remedy 1)
+
+include/libradiocompat/ImeiProvisioning.h	NEW	(none — file is original creation)
+
+
+
+Rebuild with: lunch lineage_gunnar-bp4a-userdebug (NOT -v-), then mma -j$(nproc) android.hardware.radio-library.compat android.hardware.radio-service.compat. Artifacts land at out/target/product/gunnar/vendor/{lib64,lib}/hw/ and out/target/product/gunnar/vendor/bin/hw/.
+
+#Files to keep tracked for any further round
+
+All under /phone/lineage/hardware/interfaces/radio/aidl/compat/libradiocompat/ (backups have .preimei.bak / .preremedy1.bak):
+
+    Android.bp
+    CallbackManager.cpp
+    include/libradiocompat/CallbackManager.h
+    ImeiProvisioning.cpp (NEW — currently uses nvWriteItem)
+    include/libradiocompat/ImeiProvisioning.h (NEW)
+
+Deploy paths confirmed: /vendor/lib64/android.hardware.radio-library.compat.so (no hw/) and /vendor/bin/hw/android.hardware.radio-service.compat. Update the handoff doc accordingly.
+
