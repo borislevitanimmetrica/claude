@@ -1,0 +1,1111 @@
+<!DOCTYPE html PUBLIC "-//W3C//DTD XHTML 1.0 Transitional//EN" "http://www.w3.org/TR/xhtml1/DTD/xhtml1-transitional.dtd">
+<html xmlns="http://www.w3.org/1999/xhtml"><head id="Head1">
+<meta http-equiv="content-type" content="text/html; charset=UTF-8"><title>
+	Press Release Page | Press Information Bureau
+</title><link href="Press%20Release%20Page%20_%20Press%20Information%20Bureau_files/style_Nica.css" rel="stylesheet" type="text/css"><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><link rel="alternate stylesheet" href="Press%20Release%20Page%20_%20Press%20Information%20Bureau_files/change_Nica.css" media="screen" title="change"><link rel="alternate stylesheet" href="Press%20Release%20Page%20_%20Press%20Information%20Bureau_files/green_Nica.css" media="screen" title="green"><link rel="alternate stylesheet" href="Press%20Release%20Page%20_%20Press%20Information%20Bureau_files/yellow_Nica.css" media="screen" title="yellow"><link rel="stylesheet" type="text/css" href="Press%20Release%20Page%20_%20Press%20Information%20Bureau_files/prtint_Nica.css" media="print"><link rel="stylesheet" href="Press%20Release%20Page%20_%20Press%20Information%20Bureau_files/style3.1_Nica.css" type="text/css">
+
+
+      <script type="text/javascript" async="" src="Press%20Release%20Page%20_%20Press%20Information%20Bureau_files/analytics_Nica.js"></script><script type="text/javascript" async="" src="Press%20Release%20Page%20_%20Press%20Information%20Bureau_files/js_Nica"></script><script src="Press%20Release%20Page%20_%20Press%20Information%20Bureau_files/jquery.min_Nica.js" type="text/javascript"></script>
+      <link rel="preconnect" href="https://fonts.googleapis.com/"><link rel="preconnect" href="https://fonts.gstatic.com/" crossorigin="true"><link href="Press%20Release%20Page%20_%20Press%20Information%20Bureau_files/css2_Nica.css" rel="stylesheet">
+
+      <script type="text/javascript">
+            $(document).ready(function () {
+                  function getParameterByName(name) {
+                        var url = window.location.href;
+                        name = name.replace(/[\[\]]/g, '\\$&');
+                        var regex = new RegExp('[?&]' + name + '(=([^&#]*)|&|#|$)'),
+                              results = regex.exec(url);
+                        if (!results) return null;
+                        if (!results[2]) return '';
+                        return decodeURIComponent(results[2].replace(/\+/g, ' '));
+                  }
+                  // Get the IDs from the current page's URL
+                  let prid = parseInt(getParameterByName('PRID'), 10);
+
+                  if (!isNaN(prid) && prid > 0) {
+                        $.ajax({
+                              type: "POST",
+                              url: "AjaxMethod.aspx/UpdatePRHitCount",
+                              async: false,
+                              data: JSON.stringify({ 'PermId': prid }),
+                              contentType: "application/json; charset=utf-8",
+                              dataType: "json",
+                              success: function (response) {
+                                    console.log(response);
+                              },
+                              error: function (error) {
+                                    console.log("Error in AJAX request", error);
+                              }
+                        });
+                  } else {
+                        console.log("Invalid parameters:", prid);
+                  }
+
+            });
+      </script>
+      <style type="text/css">
+            .table-responsive {
+                  width: 100%;
+                  overflow-x: auto;
+            }
+
+            .banner {
+                  display: flex;
+                  justify-content: space-between;
+                  align-items: center;
+                  background-color: #000;
+                  color: #fff;
+                  padding: 20px;
+            }
+
+            full-width {
+                  width: 100%;
+            }
+
+            .logo-left, .logo-center, .countdown {
+                  display: flex;
+                  align-items: center;
+            }
+
+                  .logo-left img, .logo-center img {
+                        height: 70px;
+                  }
+
+            .countdown {
+                  text-align: center;
+                  background-color: #444;
+                  border-radius: 10px;
+                  padding: 10px;
+                  border: 2px solid grey;
+            }
+
+            .firstnumber {
+                  color: #000000;
+                  position: absolute;
+                  top: 50px;
+                  right: 90px;
+                  font-size: 30px;
+            }
+
+            .secondnumber {
+                  position: absolute;
+                  color: #000000;
+                  right: 45px;
+                  top: 50px;
+                  font-size: 30px;
+            }
+
+            .countdown .days {
+                  font-size: 35px;
+                  color: gold;
+            }
+
+            .countdown p {
+                  margin: 0;
+            }
+
+            .countdown .text {
+                  font-size: 16px;
+            }
+
+            a {
+                  word-break: break-all;
+            }
+
+            iframe, img {
+                  max-width: 100%;
+            }
+
+            @media(max-width:1199px) {
+                  .firstnumber {
+                        top: 40px;
+                        right: 72px;
+                        font-size: 30px;
+                  }
+
+                  .secondnumber {
+                        right: 35px;
+                        top: 40px;
+                        font-size: 30px;
+                  }
+            }
+
+            @media(max-width:990px) {
+                  .firstnumber {
+                        top: 25px;
+                        right: 54px;
+                        font-size: 30px;
+                  }
+
+                  .secondnumber {
+                        right: 25px;
+                        top: 25px;
+                        font-size: 30px;
+                  }
+            }
+
+            @media(max-width:768px) {
+                  .countdown, .days {
+                        font-size: 12px !important;
+                  }
+
+
+                  .firstnumber {
+                        top: 25%;
+                        right: 8%;
+                        font-size: 30px;
+                  }
+
+                  .secondnumber {
+                        right: 4.5%;
+                        top: 25%;
+                        font-size: 30px;
+                  }
+            }
+
+            @media(max-width:475px) {
+                  .countdown, .days {
+                        font-size: 10px !important;
+                        top: 20%;
+                  }
+
+                  .bannerimgdiv {
+                        padding: 0 !important;
+                  }
+
+                  .bannerimg {
+                        width: 108% !important;
+                  }
+            }
+      </style>
+      <script type="text/javascript">
+            $(function () {
+                  $("[id*=printPDF]").click(function () {
+                        $("[id*=hfGridHtml]").val($("#PdfDiv").html());
+                  });
+            });
+            $(function () {
+                  $("[id*=printPDFEvent]").click(function () {
+                        $("[id*=hfGridHtml]").val($("#PdfDiv").html());
+                  });
+            });
+      </script>
+
+      <script async="" src="Press%20Release%20Page%20_%20Press%20Information%20Bureau_files/js_002_Nica"></script>
+      <script>
+
+            window.dataLayer = window.dataLayer || [];
+
+            function gtag() { dataLayer.push(arguments); }
+
+            gtag('js', new Date());
+
+
+
+            gtag('config', 'UA-112591026-1');
+
+      </script>
+
+<meta property="og:title" content="Television Rating Policy, 2026 to Strengthen Transparency, Independence and Accountability in India's TV Audience Measurement System"><meta property="og:url" content="www.pib.gov.in/Pressreleaseshare.aspx?PRID=2288841"><meta property="og:description" content="The Ministry of Information &amp; Broadcasting (MIB) has released the TV Ratings Policy 2026, which sets"><meta property="og:image" content="https:/pib.gov.in/images/indian-emblem.png">
+                                <script>!function(e){var n="https://s.go-mpulse.net/boomerang/";if("False"=="True")e.BOOMR_config=e.BOOMR_config||{},e.BOOMR_config.PageParams=e.BOOMR_config.PageParams||{},e.BOOMR_config.PageParams.pci=!0,n="https://s2.go-mpulse.net/boomerang/";if(window.BOOMR_API_key="C4E7H-KSCMC-422L4-W3EM5-U36MF",function(){function e(){if(!i){var e=document.createElement("script");e.id="boomr-scr-as",e.src=window.BOOMR.url,e.async=!0,o.parentNode.appendChild(e),i=!0}}function t(e){i=!0;var n,t,a,r,d=document,O=window;if(window.BOOMR.snippetMethod=e?"if":"i",t=function(e,n){var t=d.createElement("script");t.id=n||"boomr-if-as",t.src=window.BOOMR.url,BOOMR_lstart=(new Date).getTime(),e=e||d.body,e.appendChild(t)},!window.addEventListener&&window.attachEvent&&navigator.userAgent.match(/MSIE [67]\./))return window.BOOMR.snippetMethod="s",void t(o.parentNode,"boomr-async");a=document.createElement("IFRAME"),a.src="about:blank",a.title="",a.role="presentation",a.loading="eager",r=(a.frameElement||a).style,r.width=0,r.height=0,r.border=0,r.display="none",o.parentNode.appendChild(a);try{O=a.contentWindow,d=O.document.open()}catch(_){n=document.domain,a.src="javascript:var d=document.open();d.domain='"+n+"';void(0);",O=a.contentWindow,d=O.document.open()}if(n)d._boomrl=function(){this.domain=n,t()},d.write("<bo"+"dy onload='document._boomrl();'>");else if(O._boomrl=function(){t()},O.addEventListener)O.addEventListener("load",O._boomrl,!1);else if(O.attachEvent)O.attachEvent("onload",O._boomrl);d.close()}function a(e){window.BOOMR_onload=e&&e.timeStamp||(new Date).getTime()}if(!window.BOOMR||!window.BOOMR.version&&!window.BOOMR.snippetExecuted){window.BOOMR=window.BOOMR||{},window.BOOMR.snippetStart=(new Date).getTime(),window.BOOMR.snippetExecuted=!0,window.BOOMR.snippetVersion=12,window.BOOMR.url=n+"C4E7H-KSCMC-422L4-W3EM5-U36MF";var o=document.currentScript||document.getElementsByTagName("script")[0],i=!1,r=document.createElement("link");if(r.relList&&"function"==typeof r.relList.supports&&r.relList.supports("preload")&&"as"in r)window.BOOMR.snippetMethod="p",r.href=window.BOOMR.url,r.rel="preload",r.as="script",r.addEventListener("load",e),r.addEventListener("error",function(){t(!0)}),setTimeout(function(){if(!i)t(!0)},3e3),BOOMR_lstart=(new Date).getTime(),o.parentNode.appendChild(r);else t(!1);if(window.addEventListener)window.addEventListener("load",a,!1);else if(window.attachEvent)window.attachEvent("onload",a)}}(),"".length>0)if(e&&"performance"in e&&e.performance&&"function"==typeof e.performance.setResourceTimingBufferSize)e.performance.setResourceTimingBufferSize();!function(){if(BOOMR=e.BOOMR||{},BOOMR.plugins=BOOMR.plugins||{},!BOOMR.plugins.AK){var n=""=="true"?1:0,t="",a="jbk4qmixzz4se2tjsdga-f-ac3130c37-clientnsv4-s.akamaihd.net",o="false"=="true"?2:1,i={"ak.v":"41","ak.cp":"1825201","ak.ai":parseInt("1215205",10),"ak.ol":"0","ak.cr":15,"ak.ipv":4,"ak.proto":"h3","ak.rid":"4dea321","ak.r":44266,"ak.a2":n,"ak.m":"dscb","ak.n":"ff","ak.cport":57442,"ak.gh":"23.220.248.167","ak.quicv":"0x00000001","ak.tlsv":"tls1.3","ak.0rtt":"","ak.0rtt.ed":"","ak.csrc":"-","ak.acc":"","ak.t":"1785303244","ak.ak":"hOBiQwZUYzCg5VSAfCLimQ==ZF3Y8tIPlzSklNT8rGFkkTqtW7obgSqV0RTQ85f3qz3AXS5S8S8Qmt7GM9nyynXPLYNSVGs7Luunu5U7J/W4UiR6zDIo2wKuUH6oUFFkEm65ADd9fcanuoATPtNHE57JeW9ew+iu+T3tuCajbIctoTPbAgaX0f8bQtu6OJJVFcy5bxSr1YD3t39+qdIwPAhl2N7GyrCfPBRGGfNpQ44YUSz3XlTt9X92L8Yi62WT9pWMP0/Ps/03Kugl50gan88Y4y4JSlSxqPW3CdPWn6kOFBKGWdqqthGHHg7kvvCMfCIhq+DetSpTBowqnf79sOkNMIkm4kIXT3zptUcVqiD1g71f30PMmXGEO7CXCA7iZUU0hkucUj0IFCBHsf4PG8KsH5HNdEpixdVYg+ZMSehq2S9flwz5s2XK/wCCezGL8Sk=","ak.pv":"9","ak.dpoabenc":"","ak.tf":o};if(""!==t)i["ak.ruds"]=t;var r={i:!1,av:function(n){var t="http.initiator";if(n&&(!n[t]||"spa_hard"===n[t]))i["ak.feo"]=void 0!==e.aFeoApplied?1:0,BOOMR.addVar(i)},rv:function(){var e=["ak.cport","ak.cr","ak.csrc","ak.gh","ak.ipv","ak.m","ak.n","ak.ol","ak.proto","ak.quicv","ak.tlsv","ak.0rtt","ak.0rtt.ed","ak.r","ak.acc","ak.t","ak.tf"];BOOMR.removeVar(e)}};BOOMR.plugins.AK={akVars:i,akDNSPreFetchDomain:a,init:function(){if(!r.i){var e=BOOMR.subscribe;e("before_beacon",r.av,null,null),e("onbeacon",r.rv,null,null),r.i=!0}return this},is_complete:function(){return!0}}}}()}(window);</script><link href="Press%20Release%20Page%20_%20Press%20Information%20Bureau_files/C4E7H-KSCMC-422L4-W3EM5-U36MF_Nica" rel="preload" as="script"><script id="boomr-scr-as" src="Press%20Release%20Page%20_%20Press%20Information%20Bureau_files/C4E7H-KSCMC-422L4-W3EM5-U36MF_Nica" async=""></script><meta http-equiv="origin-trial" content="A6MWCkFp/4goXtWiSJNfo09g03RCQpXkuDZDGnlApjvSPZL4CIhvZx3xGfg6bCT4TRppCXmFXWDEkxA7DO3nZgQAAACGeyJvcmlnaW4iOiJodHRwczovL2dvLW1wdWxzZS5uZXQ6NDQzIiwiZmVhdHVyZSI6IlNvZnROYXZpZ2F0aW9uSGV1cmlzdGljcyIsImV4cGlyeSI6MTcwOTY4MzE5OSwiaXNTdWJkb21haW4iOnRydWUsImlzVGhpcmRQYXJ0eSI6dHJ1ZX0="><meta http-equiv="origin-trial" content="A2uWz2bbyoykT6h7LZQlNUdwVAFfb3IL5LU+YR1qxtW5T1dCRKjJ5/h3zur1LmuLWk0B1kyAAwyCxJzDCzNxUAQAAAB6eyJvcmlnaW4iOiJodHRwczovL2FrYW1haS5jb206NDQzIiwiZmVhdHVyZSI6IkJhY2tGb3J3YXJkQ2FjaGVOb3RSZXN0b3JlZFJlYXNvbnMiLCJleHBpcnkiOjE2OTE1MzkxOTksImlzVGhpcmRQYXJ0eSI6dHJ1ZX0="><link id="dnsprefetchlink" rel="dns-prefetch" href="https://jbk4qmixzz4se2tjsdga-f-ac3130c37-clientnsv4-s.akamaihd.net/"></head>
+<body>
+      <form method="post" action="./PressReleasePage.aspx?PRID=2288841&amp;reg=48&amp;lang=2" id="form1">
+<div class="aspNetHidden">
+<input type="hidden" name="sc_HiddenField" id="sc_HiddenField" value=";;AjaxControlToolkit, Version=3.5.7.123, Culture=neutral, PublicKeyToken=28f01b0e84b6d53e:en-US:5a4df314-b4a2-4da2-a207-9284f1b1e96c:de1feab2:f2c8e708:720a52bf:f9cec9bc:589eaa30:a67c2700:ab09e3fe:87104b7c:8613aea7:3202a5a2:be6fb298">
+<input type="hidden" name="__EVENTTARGET" id="__EVENTTARGET" value="">
+<input type="hidden" name="__EVENTARGUMENT" id="__EVENTARGUMENT" value="">
+<input type="hidden" name="__VIEWSTATE" id="__VIEWSTATE" value="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">
+</div>
+
+<script type="text/javascript">
+//<![CDATA[
+var theForm = document.forms['form1'];
+if (!theForm) {
+    theForm = document.form1;
+}
+function __doPostBack(eventTarget, eventArgument) {
+    if (!theForm.onsubmit || (theForm.onsubmit() != false)) {
+        theForm.__EVENTTARGET.value = eventTarget;
+        theForm.__EVENTARGUMENT.value = eventArgument;
+        theForm.submit();
+    }
+}
+//]]>
+</script>
+
+
+<script src="Press%20Release%20Page%20_%20Press%20Information%20Bureau_files/WebResource_Nica.js" type="text/javascript"></script>
+
+
+<script src="Press%20Release%20Page%20_%20Press%20Information%20Bureau_files/ScriptResource_Nica.js" type="text/javascript"></script>
+<script src="Press%20Release%20Page%20_%20Press%20Information%20Bureau_files/ScriptResource_002_Nica.js" type="text/javascript"></script>
+<script src="Press%20Release%20Page%20_%20Press%20Information%20Bureau_files/PressReleasePage_Nica.js" type="text/javascript"></script>
+<div class="aspNetHidden">
+
+	<input type="hidden" name="__VIEWSTATEGENERATOR" id="__VIEWSTATEGENERATOR" value="59B53027">
+	<input type="hidden" name="__VIEWSTATEENCRYPTED" id="__VIEWSTATEENCRYPTED" value="">
+	<input type="hidden" name="__EVENTVALIDATION" id="__EVENTVALIDATION" value="qqg3zrYkgDGhslqj9i6N9f0iEHHqY5nmJaCaZBFly97SOWWa+cbPQtzbQPxq4Dy5jNVfyR2Z+6YZKrLCj/GRC50jkI0Z0L3oiDDdSiByszIDXPAJ3UXvg813Z6yDnxT4d/p5itnKSCOEkimOmz6CODYQbDKrPJ9uvmrwivGvM/X5ZS13+owxvmnjRetHZBkqZWB2EPvNfuhJUpnWXmiOKgXN8S8jLfA1NYw6ryIcF+c/SWZQVDiVj3N70oweYw9iYGLPyvZONz97twFIhfzFHcx1Mke0Pkbe2pv/PG6G/Ow9DGJH">
+</div>
+                              
+            <div id="templateCss"></div>
+            <script type="text/javascript">
+//<![CDATA[
+Sys.WebForms.PageRequestManager._initialize('sc', 'form1', ['tupdate12','update12'], [], [], 90, '');
+//]]>
+</script>
+
+            <input type="hidden" name="hfGridHtml" id="hfGridHtml">
+            <div class="container" style="margin-bottom: 50px;">
+                  <div id="accessories">
+
+                        
+                        <div class="pull-right" style="display: flex">
+                              <div id="voll"></div>
+                              <div id="vollDT"></div>
+                              
+                              
+<div class="print-icons">
+<input type="image" name="Print1$print" id="Print1_print" aria-label="Print" src="Press%20Release%20Page%20_%20Press%20Information%20Bureau_files/printer_icon_Nica.png" alt="print page button" style="padding: 5px 10px 5px 10px;">
+</div>
+                        </div>
+                  </div>
+                  <input type="hidden" name="hydpermid" id="hydpermid" value="2288841">
+                  
+
+
+
+                  <div class="innner-page-main-about-us-content-right-part">
+
+                        <div id="MinistryName" class="MinistryNameSubhead text-center">
+                              Ministry of Information &amp; Broadcasting
+                        </div>
+                        
+                        <div id="lg_g"><div class="log_oo">  <img src="Press%20Release%20Page%20_%20Press%20Information%20Bureau_files/ph202183101_Nica.png" alt="azadi ka amrit mahotsav"> </div></div>
+
+
+
+
+
+                        <div class="text-center event-heading-background">
+                              
+                              <h2 id="Titleh2">
+                                    Television Rating Policy, 2026 to 
+Strengthen Transparency, Independence and Accountability in India's TV 
+Audience Measurement System
+                              </h2>
+                              <h3 id="Subtitleh3">
+                                    <span id="ltrSubtitle"><br>New Policy Reduces Net Worth Requirement, Expands Metered Homes and Introduces Periodic Establishment Surveys <br><br>Policy Mandates Independent Audits, Cross-Holding Restrictions and Graded Penalties to Ensure Credible TV Audience Measurement<br></span>
+                              </h3>
+                        </div>
+
+                        <div id="PrDateTime" class="ReleaseDateSubHeaddateTime text-center pt20">
+                              प्रविष्टि तिथि:
+                24 JUL 2026 3:50PM by PIB Delhi
+                        </div>
+                        
+                        <div class="pt20">
+                        </div>
+                        <input type="hidden" name="hydphotoUrl" id="hydphotoUrl">
+                        
+                        <p style="text-align:justify"><span style="font-family:Times New Roman,Times,serif"><span style="font-size:16px">The
+ Ministry of Information &amp; Broadcasting (MIB) has released the TV 
+Ratings Policy 2026, which sets out comprehensive guidelines for 
+regulating television ratings in India. The policy defines clear 
+standards for the registration, operation, audit, and oversight of 
+agencies providing TV rating services, with the aim of ensuring 
+transparency, independence and accountability in audience measurement. </span></span></p>
+
+<p style="text-align:justify"><span style="font-family:Times New Roman,Times,serif"><span style="font-size:16px">The TV Rating Policy 2026 replaced the existing Guidelines for TV Rating Agencies in India dated 16th January 2014. </span></span></p>
+
+<p style="text-align:justify"><span style="font-family:Times New Roman,Times,serif"><span style="font-size:16px">The major reforms introduced under the Policy include: </span></span></p>
+
+<ol style="list-style-type:lower-roman; margin-left:40px">
+	<li style="text-align:justify"><span style="font-family:Times New Roman,Times,serif"><span style="font-size:16px">Reduction of net worth criteria from Rs. 20 Crores to Rs. 5 Crores; </span></span></li>
+	<li style="text-align:justify"><span style="font-family:Times New Roman,Times,serif"><span style="font-size:16px">Technology-neutral
+ audience measurement across multiple platforms including connected TVs 
+and TV channels available on OTT Platforms; </span></span></li>
+	<li style="text-align:justify"><span style="font-family:Times New Roman,Times,serif"><span style="font-size:16px">Increased sample size by expansion of metered homes from 50,000 to 80,000; </span></span></li>
+	<li style="text-align:justify"><span style="font-family:Times New Roman,Times,serif"><span style="font-size:16px">Periodic establishment surveys every three years; </span></span></li>
+	<li style="text-align:justify"><span style="font-family:Times New Roman,Times,serif"><span style="font-size:16px">Exclusion of landing page in computation of viewership data; </span></span></li>
+	<li style="text-align:justify"><span style="font-family:Times New Roman,Times,serif"><span style="font-size:16px">Annual independent audits; and </span></span></li>
+	<li style="text-align:justify"><span style="font-family:Times New Roman,Times,serif"><span style="font-size:16px">A graded penalty framework for non-compliance.</span></span></li>
+</ol>
+
+<p style="text-align:justify"><span style="font-family:Times New Roman,Times,serif"><span style="font-size:16px">The
+ prescribed safeguards include cross-holding restrictions, requirement 
+of at least 33% independent directors on the board of the agency, 
+prohibition of consultancy or advisory activities that may create 
+conflicts of interest, security clearance requirements, audit and 
+transparency obligations to ensure the functional and operational 
+independence of rating agencies. </span></span></p>
+
+<p style="text-align:justify"><span style="font-family:Times New Roman,Times,serif"><span style="font-size:16px">Under
+ this Policy, any entity in the business of television ratings in India 
+has to comply with certain additional requirements and to register under
+ the new Policy. </span></span></p>
+
+<p style="text-align:justify"><span style="font-family:Times New Roman,Times,serif"><span style="font-size:16px">As
+ on date, no entity is registered under the new Policy. The Television 
+Ratings Policy, 2026 places no restriction on the number of agencies 
+that may be registered to provide TV rating services. </span></span></p>
+
+<p style="text-align:justify"><span style="font-family:Times New Roman,Times,serif"><span style="font-size:16px"><strong>This
+ information was provided by the Minister of State for Information and 
+Broadcasting and Parliamentary Affairs, Dr. L. Murugan, in a written 
+reply to an Unstarred Question in the Rajya Sabha raised by Dr. John 
+Brittas.</strong></span></span></p>
+
+<p style="margin-left:.25in; text-align:center"><span style="font-family:Times New Roman,Times,serif"><span style="font-size:16px">****</span></span></p>
+
+<p><span style="font-family:Times New Roman,Times,serif"><span style="font-size:16px"><strong>Mahesh Kumar/ Vivek Vishwash</strong></span></span></p>
+
+
+                        
+                        <div id="reel_pic">
+                        </div>
+
+
+
+                        
+                        <br>
+                        <span id="ReleaseId">(रिलीज़ आईडी: 2288841)</span>
+                        <span id="lblViews">	आगंतुक पटल  : 878</span>
+                        <div>
+                              
+                        </div>
+                        
+
+                        <span id="lblRefPhoto"></span>
+
+                        <div class="BackgroundRelease">
+                              
+                        </div>
+                        <div>
+                              
+                        </div>
+                        <div class="ReleaseLang">इस विज्ञप्ति को इन भाषाओं में पढ़ें: 
+                        
+                                    
+                                    <a href="https://pib.gov.in/PressReleasePage.aspx?PRID=2289018" target="_blank">
+                                          Urdu </a>
+                              
+                                    ,
+                              
+                                    
+                                    <a href="https://pib.gov.in/PressReleasePage.aspx?PRID=2288918" target="_blank">
+                                          हिन्दी </a>
+                              
+                                    ,
+                              
+                                    
+                                    <a href="https://pib.gov.in/PressReleasePage.aspx?PRID=2288896" target="_blank">
+                                          Bengali-TR </a>
+                              
+                                    ,
+                              
+                                    
+                                    <a href="https://pib.gov.in/PressReleasePage.aspx?PRID=2289036" target="_blank">
+                                          Assamese </a>
+                              
+                                    ,
+                              
+                                    
+                                    <a href="https://pib.gov.in/PressReleasePage.aspx?PRID=2289635" target="_blank">
+                                          Punjabi </a>
+                              
+                                    ,
+                              
+                                    
+                                    <a href="https://pib.gov.in/PressReleasePage.aspx?PRID=2288926" target="_blank">
+                                          Gujarati </a>
+                              
+                                    ,
+                              
+                                    
+                                    <a href="https://pib.gov.in/PressReleasePage.aspx?PRID=2289131" target="_blank">
+                                          Tamil </a>
+                              
+                                    ,
+                              
+                                    
+                                    <a href="https://pib.gov.in/PressReleasePage.aspx?PRID=2289099" target="_blank">
+                                          Telugu </a>
+                              
+                                    ,
+                              
+                                    
+                                    <a href="https://pib.gov.in/PressReleasePage.aspx?PRID=2288921" target="_blank">
+                                          Kannada </a>
+                              
+                                    ,
+                              
+                                    
+                                    <a href="https://pib.gov.in/PressReleasePage.aspx?PRID=2289215" target="_blank">
+                                          Malayalam </a>
+                              
+                        </div>
+
+                        <div class="RelTag">
+                              <ul>
+                                    
+                              </ul>
+                        </div>
+                        <div class="clear">
+                        </div>
+                        <div id="RelLink" class="RelLink">
+                              <ul>
+                                    
+                                    
+                              </ul>
+                        </div>
+                        <center>
+                              
+                        </center>
+                  </div>
+
+                  <div id="update12">
+	
+                              
+                              <input type="hidden" name="Hidden" id="Hidden">
+                              <div id="P_CategoryManagement" class="ModalWindow" style="border-width: 0px; height: 60%; width: 60%; overflow: auto; display: none; position: fixed; z-index: 100001;">
+		
+                                    <div>
+                                          <input type="image" name="btnClose" id="btnClose" src="Press%20Release%20Page%20_%20Press%20Information%20Bureau_files/close_flat_icon_Nica.png">
+                                    </div>
+                                    <div id="description">
+                                    </div>
+                                    <div class="text-center">
+                                          <h2>
+                                                
+                                                <br>
+                                                
+                                          </h2>
+                                    </div>
+                                    <br>
+                                    <div class="clear">
+                                    </div>
+                                    
+                              
+	</div>
+                        
+<div id="mpe_backgroundElement" style="display: none; position: fixed; left: 0px; top: 0px; z-index: 10000;" class="modalBackground"></div></div>
+            </div>
+            
+            <div id="PdfDiv" style="display: none;">
+                  <div class="table-responsive"><table width="100%">
+                        <tbody><tr>
+                              <td style="font-weight: 200; text-align: center">
+                                    Ministry of Information &amp; Broadcasting
+                                    <div style="height: 30px; width: 100%;">
+                                    </div>
+                                    <div style="font-weight: 200; text-align: center; font-size: 30px;">
+                                          Television Rating Policy, 2026
+ to Strengthen Transparency, Independence and Accountability in India's 
+TV Audience Measurement System
+                                    </div>
+                                    <div style="height: 30px; width: 100%;">
+                                    </div>
+                                    <div style="font-weight: 200; text-align: center; font-size: 30px;">
+                                          <div style="height:30px;width:100%;"></div>New Policy Reduces Net Worth Requirement, Expands Metered Homes and Introduces Periodic Establishment Surveys <div style="height:30px;width:100%;"></div><div style="height:30px;width:100%;"></div>Policy Mandates Independent Audits, Cross-Holding Restrictions and Graded Penalties to Ensure Credible TV Audience Measurement<div style="height:30px;width:100%;"></div>
+                                    </div>
+                                    <div style="height: 30px; width: 100%;">
+                                    </div>
+                                    <div style="text-align: center; font-size: 14px;">
+                                          प्रविष्टि तिथि:
+                        24 JUL 2026 3:50PM by PIB Delhi
+                                    </div>
+                                    <div style="height: 30px; width: 100%;">
+                                    </div>
+                                    <div style="font-weight: 200; text-align: left; font-size: 16px;">
+                                          <p style="text-align:justify"><span style="font-family:Times New Roman,Times,serif"><span style="font-size:16px">The
+ Ministry of Information &amp; Broadcasting (MIB) has released the TV 
+Ratings Policy 2026, which sets out comprehensive guidelines for 
+regulating television ratings in India. The policy defines clear 
+standards for the registration, operation, audit, and oversight of 
+agencies providing TV rating services, with the aim of ensuring 
+transparency, independence and accountability in audience measurement. </span></span></p>
+
+<p style="text-align:justify"><span style="font-family:Times New Roman,Times,serif"><span style="font-size:16px">The TV Rating Policy 2026 replaced the existing Guidelines for TV Rating Agencies in India dated 16th January 2014. </span></span></p>
+
+<p style="text-align:justify"><span style="font-family:Times New Roman,Times,serif"><span style="font-size:16px">The major reforms introduced under the Policy include: </span></span></p>
+
+<ol style="list-style-type:lower-roman; margin-left:40px">
+	<li style="text-align:justify"><span style="font-family:Times New Roman,Times,serif"><span style="font-size:16px">Reduction of net worth criteria from Rs. 20 Crores to Rs. 5 Crores; </span></span></li>
+	<li style="text-align:justify"><span style="font-family:Times New Roman,Times,serif"><span style="font-size:16px">Technology-neutral
+ audience measurement across multiple platforms including connected TVs 
+and TV channels available on OTT Platforms; </span></span></li>
+	<li style="text-align:justify"><span style="font-family:Times New Roman,Times,serif"><span style="font-size:16px">Increased sample size by expansion of metered homes from 50,000 to 80,000; </span></span></li>
+	<li style="text-align:justify"><span style="font-family:Times New Roman,Times,serif"><span style="font-size:16px">Periodic establishment surveys every three years; </span></span></li>
+	<li style="text-align:justify"><span style="font-family:Times New Roman,Times,serif"><span style="font-size:16px">Exclusion of landing page in computation of viewership data; </span></span></li>
+	<li style="text-align:justify"><span style="font-family:Times New Roman,Times,serif"><span style="font-size:16px">Annual independent audits; and </span></span></li>
+	<li style="text-align:justify"><span style="font-family:Times New Roman,Times,serif"><span style="font-size:16px">A graded penalty framework for non-compliance.</span></span></li>
+</ol>
+
+<p style="text-align:justify"><span style="font-family:Times New Roman,Times,serif"><span style="font-size:16px">The
+ prescribed safeguards include cross-holding restrictions, requirement 
+of at least 33% independent directors on the board of the agency, 
+prohibition of consultancy or advisory activities that may create 
+conflicts of interest, security clearance requirements, audit and 
+transparency obligations to ensure the functional and operational 
+independence of rating agencies. </span></span></p>
+
+<p style="text-align:justify"><span style="font-family:Times New Roman,Times,serif"><span style="font-size:16px">Under
+ this Policy, any entity in the business of television ratings in India 
+has to comply with certain additional requirements and to register under
+ the new Policy. </span></span></p>
+
+<p style="text-align:justify"><span style="font-family:Times New Roman,Times,serif"><span style="font-size:16px">As
+ on date, no entity is registered under the new Policy. The Television 
+Ratings Policy, 2026 places no restriction on the number of agencies 
+that may be registered to provide TV rating services. </span></span></p>
+
+<p style="text-align:justify"><span style="font-family:Times New Roman,Times,serif"><span style="font-size:16px"><strong>This
+ information was provided by the Minister of State for Information and 
+Broadcasting and Parliamentary Affairs, Dr. L. Murugan, in a written 
+reply to an Unstarred Question in the Rajya Sabha raised by Dr. John 
+Brittas.</strong></span></span></p>
+
+<p style="margin-left:.25in; text-align:center"><span style="font-family:Times New Roman,Times,serif"><span style="font-size:16px">****</span></span></p>
+
+<p><span style="font-family:Times New Roman,Times,serif"><span style="font-size:16px"><strong>Mahesh Kumar/ Vivek Vishwash</strong></span></span></p>
+
+                                    </div>
+                                    <div style="height: 30px; width: 100%;">
+                                    </div>
+                                    <div style="height: 30px; width: 100%;">
+                                    </div>
+                                    <div style="font-weight: 100; text-align: left; font-size: 16px;">
+                                          (रिलीज़ आईडी: 2288841)
+                                    </div>
+                                    <div style="height: 30px; width: 100%;">
+                                    </div>
+                              </td>
+                        </tr>
+                        <tr>
+                              <td style="font-weight: 200; text-align: center; font-size: 24px;"></td>
+                        </tr>
+                  </tbody></table></div>
+            </div>
+            <div class="clearfix">
+            </div>
+
+            
+
+            <div class="section1">
+                  <div id="frst_t" style="display: none;">
+                        <div id="arr_rm"><div class="sticky-social_mb"><ul class="social_mb"><a href="http://www.facebook.com/share.php?u=https://pib.gov.in/PressReleasePage.aspx?PRID=2288841" target="_blank"><li class="fb_b"><img src="Press%20Release%20Page%20_%20Press%20Information%20Bureau_files/facebook_Nica.jpg" alt="Share on facebook" width="40"></li></a><a href="https://twitter.com/intent/tweet?url=https://pib.gov.in/PressReleasePage.aspx?PRID=2288841&amp;text=Television%20Rating%20Policy,%202026%20to%20Strengthen%20Transparency,%20Independence%20and%20Accountability%20in%20India" s="" tv="" audience="" measurement="" system'="" target="_blank"><li class="twitter_r"><img src="Press%20Release%20Page%20_%20Press%20Information%20Bureau_files/ph2023818240601_Nica.jpg" alt="Share on twitter" width="40"> </li></a><a href="https://api.whatsapp.com/send?text=https://pib.gov.in/PressReleasePage.aspx?PRID=2288841" target="_blank"><li class="whatsapp_r"><img src="Press%20Release%20Page%20_%20Press%20Information%20Bureau_files/whatsapp1_Nica.png" alt="Share on whatsapp" width="40"></li></a><a href="https://mail.google.com/mail/?view=cm&amp;fs=1&amp;tf=1&amp;to=&amp;su=Television%20Rating%20Policy,%202026%20to%20Strengthen%20Transparency,%20Independence%20and%20Accountability%20in%20India" s="" tv="" audience="" measurement="" system&body="https://pib.gov.in/PressReleasePage.aspx?PRID=2288841&amp;ui=2&amp;tf=1&amp;pli=1'" title="Share by Email" target="_blank"><li class="fa-envelope_r"><img src="Press%20Release%20Page%20_%20Press%20Information%20Bureau_files/email1_Nica.png" alt="Share on email" width="40"></li></a><a href="https://www.linkedin.com/shareArticle?mini=true&amp;url=https://pib.gov.in/PressReleasePage.aspx?PRID=2288841&amp;title=Television%20Rating%20Policy,%202026%20to%20Strengthen%20Transparency,%20Independence%20and%20Accountability%20in%20India" s="" tv="" audience="" measurement="" system&summary="My%20favorite%20developer%20program&amp;source=LinkedIn'" target="_blank"><li class="fa-linkedin_r"><img src="Press%20Release%20Page%20_%20Press%20Information%20Bureau_files/linkedin_Nica.png" alt="Share on linkedin" width="40"></li></a></ul></div></div>
+                  </div>
+                  <div id="second_t" style="display: block;">
+                        <div id="sndr_rm"><div class="sticky-social"><ul class="social"><a href="http://www.facebook.com/share.php?u=https://pib.gov.in/PressReleasePage.aspx?PRID=2288841" target="_blank"><li class="fb_b"><img src="Press%20Release%20Page%20_%20Press%20Information%20Bureau_files/facebook_Nica.jpg" alt="Share on facebook" width="35"></li></a><a href="https://twitter.com/intent/tweet?url=https://pib.gov.in/PressReleasePage.aspx?PRID=2288841&amp;text=Television%20Rating%20Policy,%202026%20to%20Strengthen%20Transparency,%20Independence%20and%20Accountability%20in%20India" s="" tv="" audience="" measurement="" system'="" target="_blank"><li class="twitter_r"><img src="Press%20Release%20Page%20_%20Press%20Information%20Bureau_files/ph2023818240601_Nica.jpg" alt="Share on twitter" width="35"> </li></a><a href="https://api.whatsapp.com/send?text=https://pib.gov.in/PressReleasePage.aspx?PRID=2288841" target="_blank"><li class="whatsapp_r"><img src="Press%20Release%20Page%20_%20Press%20Information%20Bureau_files/whatsapp1_Nica.png" alt="Share on whatsapp" width="35"></li></a><a href="https://mail.google.com/mail/?view=cm&amp;fs=1&amp;tf=1&amp;to=&amp;su=Television%20Rating%20Policy,%202026%20to%20Strengthen%20Transparency,%20Independence%20and%20Accountability%20in%20India" s="" tv="" audience="" measurement="" system&body="https://pib.gov.in/PressReleasePage.aspx?PRID=2288841&amp;ui=2&amp;tf=1&amp;pli=1'" title="Share by Email" target="_blank"><li class="fa-envelope_r"><img src="Press%20Release%20Page%20_%20Press%20Information%20Bureau_files/email1_Nica.png" alt="Share on email" width="35"></li></a><a href="https://www.linkedin.com/shareArticle?mini=true&amp;url=https://pib.gov.in/PressReleasePage.aspx?PRID=2288841&amp;title=Television%20Rating%20Policy,%202026%20to%20Strengthen%20Transparency,%20Independence%20and%20Accountability%20in%20India" s="" tv="" audience="" measurement="" system&summary="My%20favorite%20developer%20program&amp;source=LinkedIn'" target="_blank"><li class="fa-linkedin_r"><img src="Press%20Release%20Page%20_%20Press%20Information%20Bureau_files/linkedin_Nica.png" alt="Share on linkedin" width="35"></li></a></ul></div></div>
+                  </div>
+            </div>
+            <input type="hidden" name="ltrTitlee" id="ltrTitlee" value="Television Rating Policy, 2026 to Strengthen Transparency, Independence and Accountability in India's TV Audience Measurement System">
+            <input type="hidden" name="ltrSubtitlee" id="ltrSubtitlee" value="&lt;br/&gt;New Policy Reduces Net Worth Requirement, Expands Metered Homes and Introduces Periodic Establishment Surveys &lt;br/&gt;&lt;br/&gt;Policy Mandates Independent Audits, Cross-Holding Restrictions and Graded Penalties to Ensure Credible TV Audience Measurement&lt;br/&gt;">
+            <input type="hidden" name="ltrDescriptionn" id="ltrDescriptionn" value="&lt;p style=&quot;text-align:justify&quot;&gt;&lt;span style=&quot;font-family:Times New Roman,Times,serif&quot;&gt;&lt;span style=&quot;font-size:16px&quot;&gt;The Ministry of Information &amp;amp; Broadcasting (MIB) has released the TV Ratings Policy 2026, which sets out comprehensive guidelines for regulating television ratings in India. The policy defines clear standards for the registration, operation, audit, and oversight of agencies providing TV rating services, with the aim of ensuring transparency, independence and accountability in audience measurement. &lt;/span&gt;&lt;/span&gt;&lt;/p&gt;
+
+&lt;p style=&quot;text-align:justify&quot;&gt;&lt;span style=&quot;font-family:Times New Roman,Times,serif&quot;&gt;&lt;span style=&quot;font-size:16px&quot;&gt;The TV Rating Policy 2026 replaced the existing Guidelines for TV Rating Agencies in India dated 16th January 2014. &lt;/span&gt;&lt;/span&gt;&lt;/p&gt;
+
+&lt;p style=&quot;text-align:justify&quot;&gt;&lt;span style=&quot;font-family:Times New Roman,Times,serif&quot;&gt;&lt;span style=&quot;font-size:16px&quot;&gt;The major reforms introduced under the Policy include: &lt;/span&gt;&lt;/span&gt;&lt;/p&gt;
+
+
+	&lt;li style=&quot;text-align:justify&quot;&gt;&lt;span style=&quot;font-family:Times New Roman,Times,serif&quot;&gt;&lt;span style=&quot;font-size:16px&quot;&gt;Reduction of net worth criteria from Rs. 20 Crores to Rs. 5 Crores; &lt;/span&gt;&lt;/span&gt;&lt;/li&gt;
+	&lt;li style=&quot;text-align:justify&quot;&gt;&lt;span style=&quot;font-family:Times New Roman,Times,serif&quot;&gt;&lt;span style=&quot;font-size:16px&quot;&gt;Technology-neutral audience measurement across multiple platforms including connected TVs and TV channels available on OTT Platforms; &lt;/span&gt;&lt;/span&gt;&lt;/li&gt;
+	&lt;li style=&quot;text-align:justify&quot;&gt;&lt;span style=&quot;font-family:Times New Roman,Times,serif&quot;&gt;&lt;span style=&quot;font-size:16px&quot;&gt;Increased sample size by expansion of metered homes from 50,000 to 80,000; &lt;/span&gt;&lt;/span&gt;&lt;/li&gt;
+	&lt;li style=&quot;text-align:justify&quot;&gt;&lt;span style=&quot;font-family:Times New Roman,Times,serif&quot;&gt;&lt;span style=&quot;font-size:16px&quot;&gt;Periodic establishment surveys every three years; &lt;/span&gt;&lt;/span&gt;&lt;/li&gt;
+	&lt;li style=&quot;text-align:justify&quot;&gt;&lt;span style=&quot;font-family:Times New Roman,Times,serif&quot;&gt;&lt;span style=&quot;font-size:16px&quot;&gt;Exclusion of landing page in computation of viewership data; &lt;/span&gt;&lt;/span&gt;&lt;/li&gt;
+	&lt;li style=&quot;text-align:justify&quot;&gt;&lt;span style=&quot;font-family:Times New Roman,Times,serif&quot;&gt;&lt;span style=&quot;font-size:16px&quot;&gt;Annual independent audits; and &lt;/span&gt;&lt;/span&gt;&lt;/li&gt;
+	&lt;li style=&quot;text-align:justify&quot;&gt;&lt;span style=&quot;font-family:Times New Roman,Times,serif&quot;&gt;&lt;span style=&quot;font-size:16px&quot;&gt;A graded penalty framework for non-compliance.&lt;/span&gt;&lt;/span&gt;&lt;/li&gt;
+
+
+&lt;p style=&quot;text-align:justify&quot;&gt;&lt;span style=&quot;font-family:Times New Roman,Times,serif&quot;&gt;&lt;span style=&quot;font-size:16px&quot;&gt;The prescribed safeguards include cross-holding restrictions, requirement of at least 33% independent directors on the board of the agency, prohibition of consultancy or advisory activities that may create conflicts of interest, security clearance requirements, audit and transparency obligations to ensure the functional and operational independence of rating agencies. &lt;/span&gt;&lt;/span&gt;&lt;/p&gt;
+
+&lt;p style=&quot;text-align:justify&quot;&gt;&lt;span style=&quot;font-family:Times New Roman,Times,serif&quot;&gt;&lt;span style=&quot;font-size:16px&quot;&gt;Under this Policy, any entity in the business of television ratings in India has to comply with certain additional requirements and to register under the new Policy. &lt;/span&gt;&lt;/span&gt;&lt;/p&gt;
+
+&lt;p style=&quot;text-align:justify&quot;&gt;&lt;span style=&quot;font-family:Times New Roman,Times,serif&quot;&gt;&lt;span style=&quot;font-size:16px&quot;&gt;As on date, no entity is registered under the new Policy. The Television Ratings Policy, 2026 places no restriction on the number of agencies that may be registered to provide TV rating services. &lt;/span&gt;&lt;/span&gt;&lt;/p&gt;
+
+&lt;p style=&quot;text-align:justify&quot;&gt;&lt;span style=&quot;font-family:Times New Roman,Times,serif&quot;&gt;&lt;span style=&quot;font-size:16px&quot;&gt;&lt;strong&gt;This information was provided by the Minister of State for Information and Broadcasting and Parliamentary Affairs, Dr. L. Murugan, in a written reply to an Unstarred Question in the Rajya Sabha raised by Dr. John Brittas.&lt;/strong&gt;&lt;/span&gt;&lt;/span&gt;&lt;/p&gt;
+
+&lt;p style=&quot;margin-left:.25in; text-align:center&quot;&gt;&lt;span style=&quot;font-family:Times New Roman,Times,serif&quot;&gt;&lt;span style=&quot;font-size:16px&quot;&gt;****&lt;/span&gt;&lt;/span&gt;&lt;/p&gt;
+
+&lt;p&gt;&lt;span style=&quot;font-family:Times New Roman,Times,serif&quot;&gt;&lt;span style=&quot;font-size:16px&quot;&gt;&lt;strong&gt;Mahesh Kumar/ Vivek Vishwash&lt;/strong&gt;&lt;/span&gt;&lt;/span&gt;&lt;/p&gt;
+">
+            <script type="text/javascript">
+                  var mPlayer = document.getElementById("background_music");
+                  var mPlayAction = document.getElementById("playbutton");
+
+                  var isPlaying = false;
+
+                  function playAudio() {
+                        mPlayer.play();
+                        isPlaying = true;
+                        document.getElementById('stopA').style.display = "block";
+                        document.getElementById('playA').style.display = "none";
+                  }
+
+                  function pauseAudio() {
+                        mPlayer.pause();
+                        isPlaying = false;
+                        document.getElementById('playA').style.display = "block";
+                        document.getElementById('stopA').style.display = "none";
+                  }
+                  //function HandleAudio() {
+                  //    if (isPlaying == true) {
+                  //        //Playing already Pause it
+                  //        pauseAudio();
+                  //    } else {
+                  //        //Play the music
+                  //        playAudio();
+                  //    }
+                  //}
+            </script>
+            <script type="text/javascript">
+                  var synth = window.speechSynthesis;
+
+            
+                  function CleanHtml(html) {
+
+                        html = html.replace(/<script[\s\S]*?<\/script>/gi, '');
+
+                        return html;
+                  }
+                  function stripHtml(html) {
+                        let tmp = document.createElement("DIV");
+                        tmp.innerHTML = CleanHtml(html);
+                        return tmp.textContent || tmp.innerText || "";
+                  }
+            </script>
+            <script type="text/javascript">
+                  $(document).ready(function () {
+                        //for responsive tables
+                        $("table").each(function () {
+                              if (!$(this).closest(".table-responsive").length) {
+                                    $(this).wrap("<div class='table-responsive'></div>");
+                              }
+                        });
+
+                        var width = $(window).width();
+                        if (width < 768) {
+
+                              // Extra Small Device
+                              document.getElementById('frst_t').style.display = "block";
+                              document.getElementById('second_t').style.display = "none";
+
+                        } else if (width < 991) {
+                              document.getElementById('frst_t').style.display = "block";
+                              document.getElementById('second_t').style.display = "none";
+                              // Small Device
+
+                        } else if (width < 1199) {
+                              document.getElementById('frst_t').style.display = "none";
+                              document.getElementById('second_t').style.display = "block";
+                              // Medium Device
+
+                        } else {
+                              document.getElementById('frst_t').style.display = "none";
+                              document.getElementById('second_t').style.display = "block";
+                              // Large Device
+
+                        }
+                  });
+            </script>
+            <script type="text/javascript">
+                  $(document).ready(function () {
+                        var width = $(window).width();
+                        if (width < 768) {
+
+                              // Extra Small Device
+                              document.getElementById('frst_t').style.display = "block";
+                              document.getElementById('second_t').style.display = "none";
+
+                        } else if (width < 991) {
+                              document.getElementById('frst_t').style.display = "block";
+                              document.getElementById('second_t').style.display = "none";
+                              // Small Device
+
+                        } else if (width < 1199) {
+                              document.getElementById('frst_t').style.display = "none";
+                              document.getElementById('second_t').style.display = "block";
+                              // Medium Device
+
+                        } else {
+                              document.getElementById('frst_t').style.display = "none";
+                              document.getElementById('second_t').style.display = "block";
+                              // Large Device
+
+                        }
+                  });
+            </script>
+            
+            <style type="text/css">
+                  @media print {
+                        .sticky-social, .sticky-social_mb, .pull-right, #printPDF {
+                              display: none !important;
+                        }
+                  }
+
+                  .f_vl {
+                        padding-right: 30px;
+                        font-size: 17px;
+                        cursor: pointer;
+                  }
+
+                  .log_oo {
+                        // width: 20%;
+                        display: flex;
+                        justify-content: space-between;
+                  }
+
+                        .log_oo img {
+                              width: 150px;
+                              /*width: 100%;
+                    height: auto;*/
+                        }
+
+                  .sticky-social_mb {
+                        position: fixed;
+                        bottom: 0px;
+                        padding: 0px;
+                        margin: 0px;
+                        width: 100%;
+                  }
+
+                  .social_mb {
+                        list-style: none;
+                        display: flex;
+                        width: 100%;
+                        margin-bottom: -8px;
+                  }
+
+                        .social_mb a {
+                              padding: 8px 0px;
+                              font-size: 30px;
+                              transition: all 0.8s ease-in-out;
+                              width: 20% !important;
+                              text-align: center;
+                        }
+            </style>
+            <style type="text/css">
+                  .section1 {
+                        position: relative;
+                        padding: 10px 0px;
+                        width: 100%;
+                  }
+
+
+
+                  .sticky-social {
+                        position: fixed;
+                        top: 20px;
+                        left: 0px;
+                        padding: 0px;
+                        margin: 0px;
+                  }
+
+                  .social {
+                        list-style: none;
+                  }
+
+                        .social a li {
+                              padding: 8px 12px;
+                              font-size: 25px;
+                              transition: all 0.8s ease-in-out;
+                        }
+
+                              .social a li:hover {
+                                    margin-right: -30px;
+                                    box-shadow: 2px 5px 10px grey;
+                              }
+
+                                    .social a li:hover .fa {
+                                          margin-left: 20px;
+                                    }
+
+                  .fb_b {
+                        /* background-color: rgb(59, 89, 152);*/
+                        background-color: rgba(65,103,178,255);
+                  }
+
+                  .twitter_r {
+                        /* background-color: rgb(29, 161, 242);*/
+                        background-color: #000000;
+                  }
+
+                  .whatsapp_r {
+                        /* background-color: rgb(77, 194, 71);*/
+                        background-color: rgba(13,191,67,255);
+                  }
+
+                  .fa-envelope_r {
+                        /* background-color: rgb(219, 68, 55);*/
+                        background-color: #e2123d;
+                  }
+
+                  .fa-linkedin_r {
+                        background-color: rgb(0, 119, 181);
+                  }
+            </style>
+            <style type="text/css">
+                  @media only screen and (max-device-width: 767px) {
+                        p span img {
+                              max-width: 90% !important;
+                              height: auto !important;
+                        }
+
+                        p img {
+                              max-width: 90% !important;
+                              height: auto !important;
+                        }
+
+                        h2 {
+                              font-size: 20px !important;
+                              font-weight: 600 !important;
+                        }
+
+                        h3 {
+                              font-size: 18px !important;
+                              font-weight: 600 !important;
+                        }
+                  }
+            </style>
+            <style type="text/css">
+                  /* === Film Roll Badge Styling(IFFI2025 countdown) === */
+                  .film-roll-badge {
+                        position: absolute;
+                        top:82%;
+                        right: 20px;
+                        width: 230px;
+                        height: 70px;
+                        background: repeating-linear-gradient( to right, #9a2375 0px, #9a2375 18px, #6e2b8b 18px, #6e2b8b 36px );
+                        border-top: 8px solid #9a2375;
+                        border-bottom: 8px solid #9a2375;
+                        border-radius: 8px;
+                        overflow: hidden;
+                        box-shadow: 0 4px 12px rgba(0, 0, 0, 0.4);
+                        animation: moveFilm 8s linear infinite;
+                        z-index: 10;
+                  }
+
+                        /* film sprocket holes */
+                        .film-roll-badge::before,
+                        .film-roll-badge::after {
+                              content: "";
+                              position: absolute;
+                              width: 100%;
+                              height: 10px;
+                              background: repeating-linear-gradient( to right, #9a2375 0px, #9a2375 10px, #fff 10px, #fff 20px );
+                              left: 0;
+                              z-index: 2;
+                        }
+
+                        .film-roll-badge::before {
+                              top: -4px;
+                        }
+
+                        .film-roll-badge::after {
+                              bottom: -4px;
+                        }
+
+                  .film-roll-inner {
+                        position: relative;
+                        height: 100%;
+                        display: flex;
+                        align-items: center;
+                        justify-content: center;
+                        animation: flicker 2s infinite ease-in-out;
+                  }
+
+                  .countdown-text {
+                        font-size: 1.3rem;
+                        font-weight: 700;
+                        color: #fff;
+                        text-shadow: 0 0 6px rgba(255, 255, 255, 0.4), 0 0 10px #000;
+                        white-space: nowrap;
+                  }
+
+                  /* === Animations === */
+                  @keyframes moveFilm {
+                        0% {
+                              background-position: 0 0;
+                        }
+
+                        100% {
+                              background-position: 120px 0;
+                        }
+                  }
+
+                  @keyframes flicker {
+                        0%, 100% {
+                              opacity: 1;
+                        }
+
+                        50% {
+                              opacity: 0.9;
+                        }
+
+                        25% {
+                              opacity: 0.95;
+                        }
+
+                        75% {
+                              opacity: 0.85;
+                        }
+                  }
+
+                  /* === Responsive Adjustments === */
+                  @media (max-width: 1500px) {
+                        .film-roll-badge {
+                              top: 68%;
+                              right: 18px;
+                              /* width: 220px; */
+                              height: 65px;
+                              font-size: 0.85rem;
+                        }
+
+                        .press-section {
+                              margin-top: 35px;
+                        }
+                  }
+
+                  @media (max-width: 992px) {
+                        .film-roll-badge {
+                              top: 52%;
+                              right: 10px;
+                               width: 200px; 
+                              height: 60px;
+                        }
+                  }
+
+                  @media (max-width: 768px) {
+                        .film-roll-badge {
+                              top: 56%;
+                              right: 10px;
+                               width: 124px; 
+                              height: 55px;
+                        }
+
+                        .countdown-text {
+                              font-size: 0.9rem;
+                        }
+                  }
+
+                  @media (max-width: 576px) {
+                        .film-roll-badge {
+                              top: 59%;
+                              right: 5px;
+                              /* width: 160px; */
+                              height: 50px;
+                        }
+
+                        .countdown-text {
+                              font-size: 0.85rem;
+                        }
+                  }
+            </style>
+          <script type="text/javascript">
+                const festivalStart = new Date("2025-11-20T00:00:00").getTime();
+                const festivalEnd = new Date("2025-11-28T23:59:59").getTime();
+
+                const countdownElement = document.getElementById("countdown");
+
+                const interval = setInterval(() => {
+                      const now = new Date().getTime();
+
+                      // BEFORE FESTIVAL — show days + hours left
+                      if (now < festivalStart) {
+                            const diff = festivalStart - now;
+                            const days = Math.floor(diff / (1000 * 60 * 60 * 24));
+                            const hours = Math.floor((diff % (1000 * 60 * 60 * 24)) / (1000 * 60 * 60));
+
+                            countdownElement.innerHTML = `
+              ${days} Day${days !== 1 ? 's' : ''} 
+              ${hours} Hour${hours !== 1 ? 's' : ''} to go
+          `;
+
+                      }
+
+                      // DURING FESTIVAL — show 56th IFFI - Day X
+                      else if (now >= festivalStart && now <= festivalEnd) {
+                            const dayNumber = Math.floor((now - festivalStart) / (1000 * 60 * 60 * 24)) + 1;
+                            countdownElement.innerHTML = `56th IFFI - Day ${dayNumber}`;
+                      }
+
+                      // AFTER FESTIVAL — new message
+                      else {
+                            countdownElement.innerHTML = `✨ IFFI closes but never ends…`;
+
+                            // Width change logic
+                            const elements = document.querySelectorAll('.film-roll-badge');
+                            elements.forEach(el => el.style.width = "350px");
+
+                            clearInterval(interval);
+                      }
+
+                }, 1000);
+          </script>
+ <script type="text/javascript">
+
+               const miffStart = new Date("2026-06-15T00:00:00").getTime();
+               const miffEnd = new Date("2026-06-15T23:59:59").getTime();
+
+               const miffElement = document.getElementById("miff");
+
+               if (miffElement) {
+
+                   const miffInterval = setInterval(() => {
+
+                       const now = new Date().getTime();
+
+                       // Before MIFF
+                       if (now < miffStart) {
+
+                           const diff = miffStart - now;
+                           const days = Math.floor(diff / (1000 * 60 * 60 * 24));
+                           const hours = Math.floor((diff % (1000 * 60 * 60 * 24)) / (1000 * 60 * 60));
+
+        
+
+                   /*  miffElement.innerHTML = `${days} Day${days !== 1 ? 's' : ''} ${hours} Hour${hours !== 1 ? 's' : ''} to MIFF`;*/
+                           miffElement.innerHTML = `${days} Day${days === 1 ? '' : 's'} to MIFF ...`;
+
+
+                     }
+
+                       // During MIFF
+                       else if (now >= miffStart && now <= miffEnd) {
+
+                           const dayNumber =
+                               Math.floor((now - miffStart) / (1000 * 60 * 60 * 24)) + 1;
+
+                           miffElement.innerHTML = `19th MIFF - Day ${dayNumber}`;
+                       }
+
+                       // After MIFF
+                       else {
+
+                           miffElement.innerHTML = `✨ MIFF concludes, cinema lives on...`;
+
+                           document.querySelectorAll('.film-roll-badge')
+                               .forEach(el => el.style.width = "350px");
+
+                           clearInterval(miffInterval);
+                       }
+
+                   }, 1000);
+               }
+
+</script>
+
+      
+
+<script type="text/javascript">
+//<![CDATA[
+(function() {var fn = function() {$get("sc_HiddenField").value = '';Sys.Application.remove_init(fn);};Sys.Application.add_init(fn);})();Sys.Application.add_init(function() {
+    $create(Sys.Extended.UI.ModalPopupBehavior, {"BackgroundCssClass":"modalBackground","PopupControlID":"P_CategoryManagement","dynamicServicePath":"/PressReleasePage.aspx","id":"mpe"}, null, null, $get("Hidden"));
+});
+//]]>
+</script>
+<input type="hidden" name="__ncforminfo" value="j8h8x7obZRCzQKq8w5i5WZ1tABUO5-A8PnjIqo7hG6YF9BZjdmzuBk1sl8B6939EDBe6IYnJWxJhNJDznmM1PyV-ByVEL4OISewx3ZRIcw91WAeLQq-dqg=="></form>
+
+
+
+</body></html>
