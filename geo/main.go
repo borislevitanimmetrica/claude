@@ -38,6 +38,7 @@ type result struct {
 	attempts           int
 	likelyMobileCGN    bool
 	classificationNote *string
+	rdapLookup         *string
 }
 
 // classificationRules holds the contents of traceroute_hostname_rules,
@@ -128,10 +129,27 @@ func main() {
 	country := flag.String("country", "", "restrict to this country_iso_code (e.g. US); empty = no filter")
 	maxAttempts := flag.Int("max-attempts", 3, "retry with a new random address from the same range while status is incomplete, up to this many tries")
 	backtrackHops := flag.Int("backtrack-hops", 5, "how many responding hops back from the trace's far end to search for a usable carrier hostname")
+	rdapScriptFlag := flag.String("rdap-script", "./rdap-lookup.sh", "path to rdap-lookup.sh; run on the sampled IP as an ownership/location fallback when status is excluded-internal (empty string disables the fallback)")
 	flag.Parse()
 
 	if _, err := exec.LookPath("mtr"); err != nil {
 		log.Fatalf("mtr binary not found on PATH: %v", err)
+	}
+
+	// The RDAP fallback is only a last resort for excluded-internal
+	// results (see runRange). If the script isn't present we disable
+	// the fallback with a warning rather than aborting the whole run —
+	// the traceroute classification is still useful without it.
+	rdapScript := *rdapScriptFlag
+	if rdapScript != "" {
+		if _, err := os.Stat(rdapScript); err != nil {
+			log.Printf("warning: rdap script %q not usable (%v); excluded-internal RDAP fallback disabled", rdapScript, err)
+			rdapScript = ""
+		} else {
+			log.Printf("excluded-internal RDAP fallback enabled via %q", rdapScript)
+		}
+	} else {
+		log.Printf("excluded-internal RDAP fallback disabled (-rdap-script empty)")
 	}
 
 	databaseURL := os.Getenv("DATABASE_URL")
@@ -181,7 +199,7 @@ func main() {
 		go func() {
 			defer wg.Done()
 			for t := range jobs {
-				results <- runRange(t, *maxHops, *cycles, *interval, *useUDP, method, *maxAttempts, *backtrackHops, rules)
+				results <- runRange(t, *maxHops, *cycles, *interval, *useUDP, method, *maxAttempts, *backtrackHops, rules, rdapScript)
 			}
 		}()
 	}
@@ -205,9 +223,13 @@ func main() {
 			continue
 		}
 		written++
-		log.Printf("[%d/%d] %s -> sampled %s (%d attempts) status=%s last_hop=%v(#%d) hostname=%v note=%v",
+		rdapNote := "-"
+		if r.rdapLookup != nil {
+			rdapNote = firstLine(*r.rdapLookup)
+		}
+		log.Printf("[%d/%d] %s -> sampled %s (%d attempts) status=%s last_hop=%v(#%d) hostname=%v note=%v rdap=%q",
 			written, len(targets), r.network, r.sampledIP, r.attempts, r.status,
-			derefAddr(r.lastHopIP), r.lastHopNumber, derefStr(r.lastHopName), derefStr(r.classificationNote))
+			derefAddr(r.lastHopIP), r.lastHopNumber, derefStr(r.lastHopName), derefStr(r.classificationNote), rdapNote)
 	}
 
 	log.Printf("done: %d results written", written)
@@ -509,7 +531,7 @@ func isTerminal(status string) bool {
 	return status == "reached" || status == "unreachable" || strings.HasPrefix(status, "excluded-")
 }
 
-func runRange(t target, maxHops, cycles int, interval float64, useUDP bool, method string, maxAttempts, backtrackHops int, rules classificationRules) result {
+func runRange(t target, maxHops, cycles int, interval float64, useUDP bool, method string, maxAttempts, backtrackHops int, rules classificationRules, rdapScript string) result {
 	var best result
 	haveBest := false
 	tried := map[netip.Addr]bool{}
@@ -544,7 +566,53 @@ func runRange(t target, maxHops, cycles int, interval float64, useUDP bool, meth
 	}
 
 	best.attempts = totalAttempts
+
+	// RDAP ownership/location fallback.
+	//
+	// Only excluded-internal reaches here for RDAP: that status means the
+	// trace terminated inside carrier-internal backbone with no usable,
+	// customer-locating domain-resolvable carrier node. Those are exactly
+	// the customers served directly off a wholesale/trunk operator with no
+	// domain-resolvable routing equipment, whose city we can't read from a
+	// hostname. When such a node *does* exist the range resolves to
+	// "reached" instead and its domain-encoded location takes precedence —
+	// we deliberately never RDAP those, because for retail ISPs the ARIN
+	// address is the ISP headquarters, not the customer.
+	if rdapScript != "" && best.status == "excluded-internal" {
+		out, err := runRDAP(rdapScript, best.sampledIP)
+		if err != nil {
+			note := "rdap_lookup failed: " + err.Error()
+			if out != "" {
+				note += " | " + firstLine(out)
+			}
+			best.rdapLookup = &note
+		} else if out != "" {
+			best.rdapLookup = &out
+		}
+	}
+
 	return best
+}
+
+// runRDAP invokes rdap-lookup.sh against the sampled IP to recover the
+// registrant's ownership and geographic address from ARIN's RDAP registry.
+// It is invoked via `bash <script>` so it works regardless of the script's
+// executable bit. Combined stdout+stderr is returned so the script's own
+// diagnostic messages (e.g. non-200 responses) are preserved on failure.
+func runRDAP(scriptPath string, ip netip.Addr) (string, error) {
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+
+	cmd := exec.CommandContext(ctx, "bash", scriptPath, ip.String())
+	out, err := cmd.CombinedOutput()
+	return strings.TrimSpace(string(out)), err
+}
+
+func firstLine(s string) string {
+	if i := strings.IndexByte(s, '\n'); i >= 0 {
+		return s[:i]
+	}
+	return s
 }
 
 func randomAddrInRangeExcluding(start, end netip.Addr, tried map[netip.Addr]bool) (netip.Addr, error) {
@@ -614,8 +682,8 @@ func writeResult(ctx context.Context, conn *pgx.Conn, r result) error {
 	_, err := conn.Exec(ctx, `
 INSERT INTO ip2city_dbiplite_traceroute_tbl
     (network, sampled_ip, last_hop_ip, last_hop_hostname, last_hop_number, hop_count, status,
-     probe_method, likely_mobile_cgnat, classification_note, attempts, ran_at)
-VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, now())
+     probe_method, likely_mobile_cgnat, classification_note, attempts, rdap_lookup, ran_at)
+VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, now())
 ON CONFLICT (network) DO UPDATE SET
     sampled_ip           = EXCLUDED.sampled_ip,
     last_hop_ip           = EXCLUDED.last_hop_ip,
@@ -627,9 +695,10 @@ ON CONFLICT (network) DO UPDATE SET
     likely_mobile_cgnat           = EXCLUDED.likely_mobile_cgnat,
     classification_note             = EXCLUDED.classification_note,
     attempts                          = EXCLUDED.attempts,
+    rdap_lookup                         = EXCLUDED.rdap_lookup,
     ran_at                              = now()
 `, r.network, r.sampledIP, r.lastHopIP, r.lastHopName, nullIfZero(r.lastHopNumber), r.hopCount, r.status,
-		r.probeMethod, r.likelyMobileCGN, r.classificationNote, r.attempts)
+		r.probeMethod, r.likelyMobileCGN, r.classificationNote, r.attempts, r.rdapLookup)
 	return err
 }
 
