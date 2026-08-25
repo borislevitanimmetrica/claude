@@ -12,6 +12,7 @@ import (
 	"net/netip"
 	"os"
 	"os/exec"
+	"regexp"
 	"strconv"
 	"strings"
 	"sync"
@@ -120,6 +121,9 @@ func (r classificationRules) matchExclusion(hostname string) (string, bool) {
 // preceded by "-" (not a label boundary), so it no longer matches.
 func (r classificationRules) matchCustomerMarker(hostname string) bool {
 	lower := strings.ToLower(hostname)
+	if isCPEHostname(lower) {
+		return true
+	}
 	for _, marker := range r.customerMarkers {
 		if marker == "" {
 			continue
@@ -135,6 +139,33 @@ func (r classificationRules) matchCustomerMarker(hostname string) bool {
 				return true
 			}
 			from = pos + 1
+		}
+	}
+	return false
+}
+
+// cpeHostnamePatterns are auto-generated customer-premises-equipment (CPE)
+// reverse-DNS forms that encode the customer's own IP address in the
+// hostname. They are customer equipment, not the carrier's last
+// domain-resolved node, so matchCustomerMarker treats a match as CPE and
+// keeps walking back toward the carrier. These are matched in addition to
+// the DB-driven customerMarkers because they require a wildcard/regex that
+// the plain label-prefix markers cannot express.
+var cpeHostnamePatterns = []*regexp.Regexp{
+	// Charter/Spectrum static assignments, e.g.
+	//   syn-070-116-145-242.biz.spectrum.com
+	// where the middle component is the dashed IPv4/IPv6 address (digits,
+	// hyphens, colons). The carrier's own equipment lives under charter.com;
+	// spectrum.com hostnames of this form are the customer side.
+	regexp.MustCompile(`(?i)^syn-[0-9:-]+\.biz\.spectrum\.com$`),
+}
+
+// isCPEHostname reports whether name matches a known auto-generated CPE
+// reverse-DNS pattern (see cpeHostnamePatterns).
+func isCPEHostname(name string) bool {
+	for _, re := range cpeHostnamePatterns {
+		if re.MatchString(name) {
+			return true
 		}
 	}
 	return false
