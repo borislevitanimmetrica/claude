@@ -48,6 +48,11 @@ type classificationRules struct {
 	tldExclusions    map[string]string // ".mil" -> "excluded-mil"
 	domainExclusions map[string]string // "alter.net" -> "excluded-internal"
 	customerMarkers  []string          // "res.", "static.", ...
+	// customerMarkerRegexes holds compiled "customer_marker_regex" rules —
+	// full-hostname regexes for CPE reverse-DNS forms that a plain
+	// label-prefix marker cannot express (e.g. auto-generated PTRs that
+	// encode the customer's own IP address).
+	customerMarkerRegexes []*regexp.Regexp
 }
 
 func loadClassificationRules(ctx context.Context, conn *pgx.Conn) (classificationRules, error) {
@@ -68,18 +73,29 @@ func loadClassificationRules(ctx context.Context, conn *pgx.Conn) (classificatio
 		if err := rows.Scan(&ruleType, &pattern, &statusLabel); err != nil {
 			return rules, err
 		}
-		pattern = strings.ToLower(pattern)
 		switch ruleType {
 		case "tld_exclude":
 			if statusLabel != nil {
-				rules.tldExclusions[pattern] = *statusLabel
+				rules.tldExclusions[strings.ToLower(pattern)] = *statusLabel
 			}
 		case "domain_exclude":
 			if statusLabel != nil {
-				rules.domainExclusions[pattern] = *statusLabel
+				rules.domainExclusions[strings.ToLower(pattern)] = *statusLabel
 			}
 		case "customer_marker":
-			rules.customerMarkers = append(rules.customerMarkers, pattern)
+			rules.customerMarkers = append(rules.customerMarkers, strings.ToLower(pattern))
+		case "customer_marker_regex":
+			// Patterns are matched against a lower-cased hostname (see
+			// matchCustomerMarker), so they are compiled as-is rather than
+			// lower-cased, which would corrupt regex metacharacters. An
+			// invalid pattern is skipped with a warning instead of aborting
+			// the whole run.
+			re, compileErr := regexp.Compile(pattern)
+			if compileErr != nil {
+				log.Printf("skipping invalid customer_marker_regex %q: %v", pattern, compileErr)
+				continue
+			}
+			rules.customerMarkerRegexes = append(rules.customerMarkerRegexes, re)
 		}
 	}
 	return rules, rows.Err()
@@ -121,8 +137,10 @@ func (r classificationRules) matchExclusion(hostname string) (string, bool) {
 // preceded by "-" (not a label boundary), so it no longer matches.
 func (r classificationRules) matchCustomerMarker(hostname string) bool {
 	lower := strings.ToLower(hostname)
-	if isCPEHostname(lower) {
-		return true
+	for _, re := range r.customerMarkerRegexes {
+		if re.MatchString(lower) {
+			return true
+		}
 	}
 	for _, marker := range r.customerMarkers {
 		if marker == "" {
@@ -139,33 +157,6 @@ func (r classificationRules) matchCustomerMarker(hostname string) bool {
 				return true
 			}
 			from = pos + 1
-		}
-	}
-	return false
-}
-
-// cpeHostnamePatterns are auto-generated customer-premises-equipment (CPE)
-// reverse-DNS forms that encode the customer's own IP address in the
-// hostname. They are customer equipment, not the carrier's last
-// domain-resolved node, so matchCustomerMarker treats a match as CPE and
-// keeps walking back toward the carrier. These are matched in addition to
-// the DB-driven customerMarkers because they require a wildcard/regex that
-// the plain label-prefix markers cannot express.
-var cpeHostnamePatterns = []*regexp.Regexp{
-	// Charter/Spectrum static assignments, e.g.
-	//   syn-070-116-145-242.biz.spectrum.com
-	// where the middle component is the dashed IPv4/IPv6 address (digits,
-	// hyphens, colons). The carrier's own equipment lives under charter.com;
-	// spectrum.com hostnames of this form are the customer side.
-	regexp.MustCompile(`(?i)^syn-[0-9:-]+\.biz\.spectrum\.com$`),
-}
-
-// isCPEHostname reports whether name matches a known auto-generated CPE
-// reverse-DNS pattern (see cpeHostnamePatterns).
-func isCPEHostname(name string) bool {
-	for _, re := range cpeHostnamePatterns {
-		if re.MatchString(name) {
-			return true
 		}
 	}
 	return false
@@ -221,8 +212,8 @@ func main() {
 	if err != nil {
 		log.Fatalf("loading classification rules: %v", err)
 	}
-	log.Printf("loaded classification rules: %d tld, %d domain, %d customer-marker",
-		len(rules.tldExclusions), len(rules.domainExclusions), len(rules.customerMarkers))
+	log.Printf("loaded classification rules: %d tld, %d domain, %d customer-marker, %d customer-marker-regex",
+		len(rules.tldExclusions), len(rules.domainExclusions), len(rules.customerMarkers), len(rules.customerMarkerRegexes))
 
 	ipv6OK := ipv6Available()
 	log.Printf("IPv6 connectivity probe: available=%v", ipv6OK)
