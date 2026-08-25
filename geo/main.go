@@ -104,16 +104,37 @@ func (r classificationRules) matchExclusion(hostname string) (string, bool) {
 	return "", false
 }
 
-// matchCustomerMarker is a plain case-insensitive substring check.
-// Patterns are expected to include their own trailing "." (e.g.
-// "res.") which already acts as a boundary — "res." matches
-// "...res.spectrum.com" but not "resource.net", since there's no dot
-// immediately after "res" in the latter.
+// matchCustomerMarker reports whether any customer-equipment marker
+// appears at a DNS label boundary — i.e. the marker begins the hostname
+// or immediately follows a "." separator. Markers carry their own
+// trailing "." (e.g. "res.", "cust.") to bound the right side, so a
+// match corresponds to a full leading label component such as
+// "res.spectrum.com" or "...cust.rr.com".
+//
+// Requiring the LEFT boundary is what prevents a marker from matching
+// mid-label. A plain substring check misfired on carrier customer-edge
+// zones: e.g. Telia's "arizonastate-ic-373367.ip.twelve99-cust.net" is a
+// CARRIER interconnect node that names the customer, but "cust." matched
+// inside the label "twelve99-cust", so it was wrongly skipped as customer
+// CPE and the trace fell back to an upstream backbone hop. "cust" here is
+// preceded by "-" (not a label boundary), so it no longer matches.
 func (r classificationRules) matchCustomerMarker(hostname string) bool {
 	lower := strings.ToLower(hostname)
 	for _, marker := range r.customerMarkers {
-		if strings.Contains(lower, marker) {
-			return true
+		if marker == "" {
+			continue
+		}
+		from := 0
+		for {
+			idx := strings.Index(lower[from:], marker)
+			if idx < 0 {
+				break
+			}
+			pos := from + idx
+			if pos == 0 || lower[pos-1] == '.' {
+				return true
+			}
+			from = pos + 1
 		}
 	}
 	return false
@@ -378,21 +399,10 @@ func mtrTrace(ctx context.Context, dst netip.Addr, maxHops, cycles int, interval
 	return hops, nil
 }
 
-// runOne implements the full classification pipeline:
-//  1. Order all responding hops from the far end of the trace backward.
-//  2. Find the nearest one with ANY resolvable hostname (content not
-//     yet considered) — if that's at position 2 or 3, the whole path
-//     died right at the local ISP boundary: status=unreachable,
-//     terminal, regardless of what the hostname actually says.
-//  3. Otherwise, walk backward through resolved hostnames: a match
-//     against a TLD/domain exclusion rule is terminal with that
-//     rule's status label; a match against a customer-equipment
-//     marker is skipped (keep searching further back); the first
-//     hostname that's neither is accepted as the carrier hop.
-//  4. Once accepted, check the very next hop position for a latency
-//     jump (>20ms) — a signal of a long-haul backbone link, meaning
-//     the accepted hop is core infrastructure, not close to the
-//     customer: overrides to status=excluded-internal.
+// runOne runs the mtr trace for one sampled address and hands the hop list
+// to classifyHops. It stamps the network/sampled/method fields; all
+// classification logic lives in classifyHops so it can be exercised
+// deterministically without invoking mtr or live DNS.
 func runOne(network string, sampled netip.Addr, maxHops, cycles int, interval float64, useUDP bool, method string, backtrackHops int, rules classificationRules) result {
 	overallTimeout := time.Duration(float64(cycles)*interval+float64(maxHops)+10) * time.Second
 
@@ -404,7 +414,36 @@ func runOne(network string, sampled netip.Addr, maxHops, cycles int, interval fl
 		return result{network: network, sampledIP: sampled, status: "mtr_error: " + err.Error(), probeMethod: method}
 	}
 
-	r := result{network: network, sampledIP: sampled, hopCount: len(hops), probeMethod: method}
+	r := classifyHops(hops, reverseDNS, backtrackHops, rules)
+	r.network = network
+	r.sampledIP = sampled
+	r.probeMethod = method
+	return r
+}
+
+// classifyHops implements the full classification pipeline over an ordered
+// hop list, taking resolve() for reverse DNS so it is decoupled from the
+// network:
+//  1. Order all responding hops from the far end of the trace backward.
+//  2. Find the nearest one with ANY resolvable hostname (content not
+//     yet considered) — if that's at position 2 or 3, the whole path
+//     died right at the local ISP boundary: status=unreachable,
+//     terminal, regardless of what the hostname actually says.
+//  3. Otherwise, walk backward through resolved hostnames: a match
+//     against a TLD/domain exclusion rule is terminal with that
+//     rule's status label; a match against a customer-equipment
+//     marker is skipped (keep searching further back); the first
+//     hostname that's neither is accepted as the carrier hop.
+//  4. Once accepted, compare the accepted hop's latency to the very next
+//     hop: a large *delta* (a jump of more than 20ms from this hop to the
+//     next) signals a long-haul backbone link beyond the accepted hop,
+//     meaning it is core infrastructure far from the customer, and
+//     overrides to status=excluded-internal. This is a delta, NOT the next
+//     hop's absolute latency — on a transcontinental path every terminal
+//     hop sits well above 20ms, so an absolute test misfires and buries
+//     legitimate customer-serving edge nodes as excluded-internal.
+func classifyHops(hops []hop, resolve func(netip.Addr) *string, backtrackHops int, rules classificationRules) result {
+	r := result{hopCount: len(hops)}
 
 	var candidates []hop
 	for i := len(hops) - 1; i >= 0; i-- {
@@ -430,7 +469,7 @@ func runOne(network string, sampled netip.Addr, maxHops, cycles int, interval fl
 	nearestIdx := -1
 	var nearestName string
 	for i := 0; i < limit; i++ {
-		if name := reverseDNS(candidates[i].addr); name != nil {
+		if name := resolve(candidates[i].addr); name != nil {
 			nearestIdx = i
 			nearestName = *name
 			break
@@ -459,7 +498,7 @@ func runOne(network string, sampled netip.Addr, maxHops, cycles int, interval fl
 		if i == nearestIdx {
 			hn = nearestName
 		} else {
-			resolved := reverseDNS(c.addr)
+			resolved := resolve(c.addr)
 			if resolved == nil {
 				continue
 			}
@@ -486,9 +525,10 @@ func runOne(network string, sampled netip.Addr, maxHops, cycles int, interval fl
 		r.lastHopNumber = c.num
 		r.likelyMobileCGN = isLikelyMobileCarrierHostname(hn)
 
-		if next, ok := byNum[c.num+1]; ok && next.ok && next.hasLatency && next.avgMs > 20.0 {
+		if next, ok := byNum[c.num+1]; ok && next.ok && next.hasLatency && c.hasLatency && (next.avgMs-c.avgMs) > 20.0 {
 			r.status = "excluded-internal"
-			note := fmt.Sprintf("long-haul latency jump at hop %d (%.1fms)", next.num, next.avgMs)
+			note := fmt.Sprintf("long-haul latency jump after hop %d: +%.1fms to hop %d (%.1fms)",
+				c.num, next.avgMs-c.avgMs, next.num, next.avgMs)
 			r.classificationNote = &note
 		}
 
