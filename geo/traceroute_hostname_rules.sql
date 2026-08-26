@@ -51,11 +51,12 @@ INSERT INTO traceroute_hostname_rules (rule_type, pattern, status_label) VALUES
   -- Cincinnati Bell / fuse.net: ip-<ip>.static|dynamic.fuse.net  (IPv4+IPv6)
   ('customer_marker_regex', '^ip-[0-9a-f:-]+\.static\.fuse\.net$',  NULL),
   ('customer_marker_regex', '^ip-[0-9a-f:-]+\.dynamic\.fuse\.net$', NULL),
-  -- Windstream: h<ip>.dynamic.ip.windstream.net  (dot-separated IP octets)
-  ('customer_marker_regex', '^h[0-9a-f:-]+(?:\.[0-9a-f:-]+)*\.dynamic\.ip\.windstream\.net$', NULL)
-  -- If a Windstream static form (h<ip>.static.ip.windstream.net) also turns
-  -- up, add it too:
-  -- ,('customer_marker_regex', '^h[0-9a-f:-]+(?:\.[0-9a-f:-]+)*\.static\.ip\.windstream\.net$', NULL)
+  -- Windstream, both dynamic and static assignments (most ISPs hand out
+  -- static IPs to at least business customers). The IP octets are
+  -- DOT-separated, e.g. h98.110.31.71.dynamic.ip.windstream.net and
+  -- h98.110.31.71.static.ip.windstream.net -> literal dots between tokens.
+  ('customer_marker_regex', '^h[0-9a-f:-]+(?:\.[0-9a-f:-]+)*\.dynamic\.ip\.windstream\.net$', NULL),
+  ('customer_marker_regex', '^h[0-9a-f:-]+(?:\.[0-9a-f:-]+)*\.static\.ip\.windstream\.net$',  NULL)
 ON CONFLICT (rule_type, pattern) DO NOTHING;
 
 -- 4. Column for the RDAP ownership/location fallback (writeResult in main.go).

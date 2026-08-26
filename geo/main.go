@@ -173,6 +173,7 @@ func main() {
 	maxAttempts := flag.Int("max-attempts", 3, "retry with a new random address from the same range while status is incomplete, up to this many tries")
 	backtrackHops := flag.Int("backtrack-hops", 5, "how many responding hops back from the trace's far end to search for a usable carrier hostname")
 	rdapScriptFlag := flag.String("rdap-script", "./rdap-lookup.sh", "path to rdap-lookup.sh; run on the sampled IP as an ownership/location fallback when status is excluded-internal (empty string disables the fallback)")
+	ipv4Only := flag.Bool("ipv4-only", false, "sample only IPv4 ranges even when IPv6 connectivity is available (skips the IPv6 connectivity probe)")
 	flag.Parse()
 
 	if _, err := exec.LookPath("mtr"); err != nil {
@@ -215,8 +216,16 @@ func main() {
 	log.Printf("loaded classification rules: %d tld, %d domain, %d customer-marker, %d customer-marker-regex",
 		len(rules.tldExclusions), len(rules.domainExclusions), len(rules.customerMarkers), len(rules.customerMarkerRegexes))
 
-	ipv6OK := ipv6Available()
-	log.Printf("IPv6 connectivity probe: available=%v", ipv6OK)
+	// includeIPv6 gates whether IPv6 ranges are sampled at all. It requires
+	// both working IPv6 connectivity AND that -ipv4-only was not set. With
+	// -ipv4-only we skip the connectivity probe entirely and force IPv4.
+	ipv6OK := false
+	if *ipv4Only {
+		log.Printf("IPv6 sampling disabled via -ipv4-only")
+	} else {
+		ipv6OK = ipv6Available()
+		log.Printf("IPv6 connectivity probe: available=%v", ipv6OK)
+	}
 
 	targets, err := sampleTargets(ctx, conn, *sampleSize, *country, ipv6OK)
 	if err != nil {
