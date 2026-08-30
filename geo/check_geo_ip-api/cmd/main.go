@@ -1,6 +1,6 @@
-// Command ipapi-geo geolocates a random IP address from each sampled network
-// range using the free ip-api.com JSON endpoint and writes the result into the
-// identically-named columns of ip2city_dbiplite_traceroute_tbl.
+// Command check_geo_ip-api geolocates a random IP address from each sampled
+// network range using the free ip-api.com JSON endpoint and writes the result
+// into the identically-named columns of ip2city_dbiplite_traceroute_tbl.
 //
 // This replaces the mtr traceroute method for populating geography. It reuses
 // the same "one random address per range" sampling.
@@ -143,8 +143,9 @@ func main() {
 		if callErr != nil {
 			log.Printf("[%d/%d] %s ip=%s ERROR %v", i+1, len(ranges), tgt.network, tgt.ip, callErr)
 		} else {
-			log.Printf("[%d/%d] %s ip=%s status=%s city=%q region=%q country=%q isp=%q",
-				i+1, len(ranges), tgt.network, tgt.ip, g.Status, g.City, g.RegionName, g.Country, g.ISP)
+			log.Printf("[%d/%d] %s ip=%s status=%s city=%q region=%q country=%q isp=%q mobile=%v",
+				i+1, len(ranges), tgt.network, tgt.ip, g.Status, g.City, g.RegionName, g.Country, g.ISP,
+				g.Status == "success" && isMobileISP(g.ISP, g.Org))
 		}
 
 		inWindow++
@@ -258,19 +259,31 @@ func parseTTLSeconds(h string) int {
 	return n
 }
 
+// isMobileISP reports whether the ip-api isp/org fields indicate a mobile
+// carrier — used to set likely_mobile_cgnat. Case-insensitive substring match
+// on "wireless", "mobile", or "cellular" in either field.
+func isMobileISP(isp, org string) bool {
+	s := strings.ToLower(isp + " " + org)
+	return strings.Contains(s, "wireless") ||
+		strings.Contains(s, "mobile") ||
+		strings.Contains(s, "cellular")
+}
+
 // writeGeo upserts one geolocation result into ip2city_dbiplite_traceroute_tbl.
 // The geographic values map to identically-named columns. On a transport error
 // or an ip-api "fail" response, the geographic columns are left NULL and the
 // reason is recorded in status/classification_note so the range can be retried
 // on a later run (it stays city IS NULL).
 //
-// On INSERT (a range with no prior row) the mtr-only numeric/bool columns are
-// given zero-values to satisfy any NOT NULL constraints; on UPDATE they are
-// left untouched so an existing mtr row's hop data is not clobbered.
+// likely_mobile_cgnat is set true when the resolved isp/org looks like a mobile
+// carrier (see isMobileISP). On INSERT (a range with no prior row) the mtr-only
+// numeric columns are given zero-values to satisfy any NOT NULL constraints; on
+// UPDATE hop_count/attempts are left untouched so an existing mtr row's hop data
+// is not clobbered, while likely_mobile_cgnat IS refreshed from this lookup.
 func writeGeo(ctx context.Context, conn *pgx.Conn, tgt geoTarget, g geoResult, callErr error) error {
 	var (
-		status any
-		note   any
+		status  any
+		note    any
 		success bool
 	)
 	switch {
@@ -290,6 +303,7 @@ func writeGeo(ctx context.Context, conn *pgx.Conn, tgt geoTarget, g geoResult, c
 	if success {
 		latArg, lonArg = g.Lat, g.Lon
 	}
+	mobile := success && isMobileISP(g.ISP, g.Org)
 
 	query := nullIfEmpty(g.Query)
 	if query == nil {
@@ -301,13 +315,14 @@ INSERT INTO ip2city_dbiplite_traceroute_tbl
     (network, sampled_ip, status, probe_method, likely_mobile_cgnat, hop_count, attempts,
      classification_note, country, countrycode, region, regionname, city, zip, lat, lon,
      timezone, isp, org, "as", query, ran_at)
-VALUES ($1, $2, $3, 'ip-api', false, 0, 0,
-        $4, $5, $6, $7, $8, $9, $10, $11, $12,
-        $13, $14, $15, $16, $17, now())
+VALUES ($1, $2, $3, 'ip-api', $4, 0, 0,
+        $5, $6, $7, $8, $9, $10, $11, $12, $13,
+        $14, $15, $16, $17, $18, now())
 ON CONFLICT (network) DO UPDATE SET
     sampled_ip          = EXCLUDED.sampled_ip,
     status              = EXCLUDED.status,
     probe_method        = EXCLUDED.probe_method,
+    likely_mobile_cgnat = EXCLUDED.likely_mobile_cgnat,
     classification_note = EXCLUDED.classification_note,
     country             = EXCLUDED.country,
     countrycode         = EXCLUDED.countrycode,
@@ -324,7 +339,7 @@ ON CONFLICT (network) DO UPDATE SET
     query               = EXCLUDED.query,
     ran_at              = now()
 `,
-		tgt.network, tgt.ip, status, note,
+		tgt.network, tgt.ip, status, mobile, note,
 		nullIfEmpty(g.Country), nullIfEmpty(g.CountryCode), nullIfEmpty(g.Region), nullIfEmpty(g.RegionName),
 		nullIfEmpty(g.City), nullIfEmpty(g.Zip), latArg, lonArg,
 		nullIfEmpty(g.Timezone), nullIfEmpty(g.ISP), nullIfEmpty(g.Org), nullIfEmpty(g.As), query)
