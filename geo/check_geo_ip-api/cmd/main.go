@@ -285,9 +285,11 @@ var mobileISPKeywords = []string{
 	"metropcs",                  // Metro / MetroPCS (T-Mobile)
 	"boost",                     // Boost Mobile / Boost Infinite (Dish)
 	"tracfone", "straight talk", // TracFone family (Verizon)
-	"cspire", "c spire", // C Spire (also offers fiber — see note)
 	"cellcom", // Cellcom (regional, WI)
 	"uscc",    // U.S. Cellular internal naming
+	// (C Spire intentionally omitted: it sells both mobile and fixed fiber
+	// under the same "C Spire" ownership name, so a token would misflag its
+	// fiber home-internet customers as mobile.)
 	// (Google Fi intentionally omitted: it egresses via its host MNO, so it is
 	// already caught by "mobile"/"cellular", and a "google fi" token would
 	// wrongly match "Google Fiber".)
@@ -296,9 +298,6 @@ var mobileISPKeywords = []string{
 // isMobileISP reports whether the ip-api isp/org fields indicate a US mobile
 // carrier — used to set likely_mobile_cgnat — via a case-insensitive substring
 // match against mobileISPKeywords.
-//
-// Caveat: a few carriers (e.g. C Spire) also sell fixed home internet; if their
-// ownership string is identical for both, fixed customers may be flagged too.
 func isMobileISP(isp, org string) bool {
 	s := strings.ToLower(isp + " " + org)
 	for _, kw := range mobileISPKeywords {
