@@ -259,18 +259,54 @@ func parseTTLSeconds(h string) int {
 	return n
 }
 
-// isMobileISP reports whether the ip-api isp/org fields indicate a mobile
-// carrier — used to set likely_mobile_cgnat. Case-insensitive substring match
-// on "wireless", "mobile", "mobility", or "cellular" in either field.
-// "mobility" catches e.g. "AT&T Mobility"; "mobile" already covers "T-Mobile
-// USA" (which is also what T-Mobile Home Internet / 5G fixed wireless reports,
-// since it rides the same AS21928 network).
+// mobileISPKeywords are lower-case substrings that, when present in the ip-api
+// isp/org fields, mark a network as a US mobile carrier (likely_mobile_cgnat).
+//
+// The generic radio-access words cover the great majority of carriers and
+// their MVNOs/brands whose ownership string carries them (Verizon Wireless,
+// AT&T Mobility, T-Mobile USA — including T-Mobile Home Internet on AS21928 —
+// US Cellular, Xfinity Mobile, Spectrum Mobile, Mint Mobile, Visible→Verizon
+// Wireless, etc.). The remaining entries are carriers/brands whose ownership
+// name can lack those words.
+//
+// Deliberately NOT included: bare "verizon", "at&t", "metro", "dish", "ting" —
+// each has a fixed-line or unrelated sibling (Verizon FiOS, AT&T Fiber,
+// MetroNet fiber, Dish satellite TV, hosTING) that would be wrongly flagged.
+// We rely on the wireless-specific tokens instead. Not exhaustive; extend as
+// new names surface.
+var mobileISPKeywords = []string{
+	// generic radio-access indicators
+	"wireless", "cellular", "mobile", "mobility", "pcs",
+	// carrier / MVNO brands whose org string may lack the words above
+	"vzw", "cellco", // Verizon Wireless (Cellco Partnership)
+	"sprint",                    // Sprint / Sprint PCS (now T-Mobile)
+	"cingular",                  // legacy AT&T
+	"cricket",                   // Cricket Wireless (AT&T)
+	"metropcs",                  // Metro / MetroPCS (T-Mobile)
+	"boost",                     // Boost Mobile / Boost Infinite (Dish)
+	"tracfone", "straight talk", // TracFone family (Verizon)
+	"cspire", "c spire", // C Spire (also offers fiber — see note)
+	"cellcom", // Cellcom (regional, WI)
+	"uscc",    // U.S. Cellular internal naming
+	// (Google Fi intentionally omitted: it egresses via its host MNO, so it is
+	// already caught by "mobile"/"cellular", and a "google fi" token would
+	// wrongly match "Google Fiber".)
+}
+
+// isMobileISP reports whether the ip-api isp/org fields indicate a US mobile
+// carrier — used to set likely_mobile_cgnat — via a case-insensitive substring
+// match against mobileISPKeywords.
+//
+// Caveat: a few carriers (e.g. C Spire) also sell fixed home internet; if their
+// ownership string is identical for both, fixed customers may be flagged too.
 func isMobileISP(isp, org string) bool {
 	s := strings.ToLower(isp + " " + org)
-	return strings.Contains(s, "wireless") ||
-		strings.Contains(s, "mobile") ||
-		strings.Contains(s, "mobility") ||
-		strings.Contains(s, "cellular")
+	for _, kw := range mobileISPKeywords {
+		if strings.Contains(s, kw) {
+			return true
+		}
+	}
+	return false
 }
 
 // writeGeo upserts one geolocation result into ip2city_dbiplite_traceroute_tbl.
