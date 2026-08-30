@@ -309,10 +309,12 @@ func isMobileISP(isp, org string) bool {
 }
 
 // writeGeo upserts one geolocation result into ip2city_dbiplite_traceroute_tbl.
-// The geographic values map to identically-named columns. On a transport error
-// or an ip-api "fail" response, the geographic columns are left NULL and the
-// reason is recorded in status/classification_note so the range can be retried
-// on a later run (it stays city IS NULL).
+// The geographic values map to identically-named columns. The sampled IP is
+// stored in the "query" column (aligned with the JSON schema — ip-api echoes
+// the queried IP there); there is no separate sampled_ip column. On a transport
+// error or an ip-api "fail" response, the geographic columns are left NULL and
+// the reason is recorded in status/classification_note so the range can be
+// retried on a later run (it stays city IS NULL).
 //
 // likely_mobile_cgnat is set true when the resolved isp/org looks like a mobile
 // carrier (see isMobileISP). On INSERT (a range with no prior row) the mtr-only
@@ -351,14 +353,13 @@ func writeGeo(ctx context.Context, conn *pgx.Conn, tgt geoTarget, g geoResult, c
 
 	_, err := conn.Exec(ctx, `
 INSERT INTO ip2city_dbiplite_traceroute_tbl
-    (network, sampled_ip, status, probe_method, likely_mobile_cgnat, hop_count, attempts,
+    (network, status, probe_method, likely_mobile_cgnat, hop_count, attempts,
      classification_note, country, countrycode, region, regionname, city, zip, lat, lon,
      timezone, isp, org, "as", query, ran_at)
-VALUES ($1, $2, $3, 'ip-api', $4, 0, 0,
-        $5, $6, $7, $8, $9, $10, $11, $12, $13,
-        $14, $15, $16, $17, $18, now())
+VALUES ($1, $2, 'ip-api', $3, 0, 0,
+        $4, $5, $6, $7, $8, $9, $10, $11, $12,
+        $13, $14, $15, $16, $17, now())
 ON CONFLICT (network) DO UPDATE SET
-    sampled_ip          = EXCLUDED.sampled_ip,
     status              = EXCLUDED.status,
     probe_method        = EXCLUDED.probe_method,
     likely_mobile_cgnat = EXCLUDED.likely_mobile_cgnat,
@@ -378,7 +379,7 @@ ON CONFLICT (network) DO UPDATE SET
     query               = EXCLUDED.query,
     ran_at              = now()
 `,
-		tgt.network, tgt.ip, status, mobile, note,
+		tgt.network, status, mobile, note,
 		nullIfEmpty(g.Country), nullIfEmpty(g.CountryCode), nullIfEmpty(g.Region), nullIfEmpty(g.RegionName),
 		nullIfEmpty(g.City), nullIfEmpty(g.Zip), latArg, lonArg,
 		nullIfEmpty(g.Timezone), nullIfEmpty(g.ISP), nullIfEmpty(g.Org), nullIfEmpty(g.As), query)
