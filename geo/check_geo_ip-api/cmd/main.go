@@ -261,11 +261,15 @@ func parseTTLSeconds(h string) int {
 
 // isMobileISP reports whether the ip-api isp/org fields indicate a mobile
 // carrier — used to set likely_mobile_cgnat. Case-insensitive substring match
-// on "wireless", "mobile", or "cellular" in either field.
+// on "wireless", "mobile", "mobility", or "cellular" in either field.
+// "mobility" catches e.g. "AT&T Mobility"; "mobile" already covers "T-Mobile
+// USA" (which is also what T-Mobile Home Internet / 5G fixed wireless reports,
+// since it rides the same AS21928 network).
 func isMobileISP(isp, org string) bool {
 	s := strings.ToLower(isp + " " + org)
 	return strings.Contains(s, "wireless") ||
 		strings.Contains(s, "mobile") ||
+		strings.Contains(s, "mobility") ||
 		strings.Contains(s, "cellular")
 }
 
