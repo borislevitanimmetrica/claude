@@ -56,8 +56,7 @@ func main() {
 	perPeer := flag.Bool("per-peer", false, "store one row per (prefix, peer) instead of one row per prefix; default is deduped (one row per prefix, peer_ip/as_path NULL), since geography does not depend on routing")
 	dryRun := flag.Bool("dry-run", false, "parse and report without touching the database (DATABASE_URL not required)")
 	limit := flag.Int("limit", 0, "cap the number of rows/actions processed (0 = no cap); useful with -dry-run")
-	headerTimeout := flag.Duration("http-timeout", 2*time.Minute, "timeout for connection + response headers (NOT the whole transfer)")
-	downloadTimeout := flag.Duration("download-timeout", 30*time.Minute, "max time to download one full RIB to a temp file")
+	headerTimeout := flag.Duration("http-timeout", 2*time.Minute, "timeout for connection + response headers (NOT the whole transfer, which is never timed out)")
 	flag.Parse()
 
 	if *mode != "full" && *mode != "updates" {
@@ -101,7 +100,7 @@ func main() {
 
 	switch *mode {
 	case "full":
-		runFull(ctx, conn, client, bgpdata, *collector, *peerFilter, dedupe, *dryRun, *limit, *downloadTimeout)
+		runFull(ctx, conn, client, bgpdata, *collector, *peerFilter, dedupe, *dryRun, *limit)
 	case "updates":
 		runUpdates(ctx, conn, client, bgpdata, *collector, *sinceFlag, *peerFilter, dedupe, *dryRun, *limit)
 	}
@@ -111,7 +110,7 @@ func main() {
 // full RIB load
 // ---------------------------------------------------------------------------
 
-func runFull(ctx context.Context, conn *pgx.Conn, client *http.Client, bgpdata, collector, peerFilter string, dedupe, dryRun bool, limit int, downloadTimeout time.Duration) {
+func runFull(ctx context.Context, conn *pgx.Conn, client *http.Client, bgpdata, collector, peerFilter string, dedupe, dryRun bool, limit int) {
 	ref, err := latestRIB(client, bgpdata)
 	if err != nil {
 		log.Fatalf("locating latest RIB: %v", err)
@@ -141,11 +140,11 @@ func runFull(ctx context.Context, conn *pgx.Conn, client *http.Client, bgpdata, 
 	}
 
 	// Download the RIB to a temp file first, then COPY from local disk. This
-	// decouples the (slow) database ingest from the network: the HTTP transfer
-	// completes quickly and is bounded by downloadTimeout, so a long COPY can
-	// never stall or time out the download.
-	log.Printf("downloading RIB to temp file (timeout %s)...", downloadTimeout)
-	path, cleanup, err := downloadToTemp(ctx, client, ref.url, downloadTimeout)
+	// decouples the (slow) database ingest from the network. The download
+	// itself is NOT time-limited; only connection setup / response headers are
+	// bounded (via the transport), never the transfer duration.
+	log.Printf("downloading RIB to temp file (no transfer timeout)...")
+	path, cleanup, err := downloadToTemp(ctx, client, ref.url)
 	if err != nil {
 		log.Fatalf("download RIB: %v", err)
 	}
@@ -593,13 +592,12 @@ func openMRT(client *http.Client, url string) (io.Reader, func(), error) {
 }
 
 // downloadToTemp streams url to a temp .bz2 file and returns its path plus a
-// cleanup func. The download is bounded by timeout; the returned file is local,
-// so the subsequent (slow) COPY has no network dependency and cannot time out.
-func downloadToTemp(ctx context.Context, client *http.Client, url string, timeout time.Duration) (string, func(), error) {
-	dctx, cancel := context.WithTimeout(ctx, timeout)
-	defer cancel()
-
-	req, err := http.NewRequestWithContext(dctx, http.MethodGet, url, nil)
+// cleanup func. The transfer is NOT time-limited (the client has Timeout:0 and
+// no per-download deadline), so an arbitrarily long/slow download will run to
+// completion. The returned file is local, so the subsequent (slow) COPY has no
+// network dependency.
+func downloadToTemp(ctx context.Context, client *http.Client, url string) (string, func(), error) {
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
 	if err != nil {
 		return "", nil, err
 	}
