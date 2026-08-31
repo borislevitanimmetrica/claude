@@ -31,6 +31,7 @@ import (
 	"io"
 	"log"
 	"math/big"
+	"net"
 	"net/http"
 	"net/netip"
 	"os"
@@ -52,16 +53,32 @@ func main() {
 	archiveBase := flag.String("archive-url", "http://archive.routeviews.org/", "RouteViews archive base URL")
 	sinceFlag := flag.String("since", "", "updates mode: only files strictly after this UTC time (format 20060102.1504 or RFC3339); default = last processed file from state")
 	peerFilter := flag.String("peer", "", "only ingest entries/updates from this peer IP (empty = all peers)")
+	perPeer := flag.Bool("per-peer", false, "store one row per (prefix, peer) instead of one row per prefix; default is deduped (one row per prefix, peer_ip/as_path NULL), since geography does not depend on routing")
 	dryRun := flag.Bool("dry-run", false, "parse and report without touching the database (DATABASE_URL not required)")
 	limit := flag.Int("limit", 0, "cap the number of rows/actions processed (0 = no cap); useful with -dry-run")
-	httpTimeout := flag.Duration("http-timeout", 10*time.Minute, "HTTP timeout for downloading one archive file")
+	headerTimeout := flag.Duration("http-timeout", 2*time.Minute, "timeout for connection + response headers (NOT the whole transfer)")
+	downloadTimeout := flag.Duration("download-timeout", 30*time.Minute, "max time to download one full RIB to a temp file")
 	flag.Parse()
 
 	if *mode != "full" && *mode != "updates" {
 		log.Fatalf("-mode must be 'full' or 'updates', got %q", *mode)
 	}
+	dedupe := !*perPeer
 
-	client := &http.Client{Timeout: *httpTimeout}
+	// Timeout: 0 means no cap on total transfer time — the full RIB is streamed
+	// through a long-running COPY (or a large download), so a whole-request
+	// deadline would kill it mid-stream (the original 10m bug). We instead bound
+	// only connection setup and time-to-first-byte via the transport.
+	client := &http.Client{
+		Timeout: 0,
+		Transport: &http.Transport{
+			Proxy:                 http.ProxyFromEnvironment,
+			DialContext:           (&net.Dialer{Timeout: 30 * time.Second, KeepAlive: 30 * time.Second}).DialContext,
+			TLSHandshakeTimeout:   30 * time.Second,
+			ResponseHeaderTimeout: *headerTimeout,
+			IdleConnTimeout:       90 * time.Second,
+		},
+	}
 	bgpdata := strings.TrimRight(*archiveBase, "/") + "/" + *collector + "/bgpdata/"
 
 	var conn *pgx.Conn
@@ -84,9 +101,9 @@ func main() {
 
 	switch *mode {
 	case "full":
-		runFull(ctx, conn, client, bgpdata, *collector, *peerFilter, *dryRun, *limit)
+		runFull(ctx, conn, client, bgpdata, *collector, *peerFilter, dedupe, *dryRun, *limit, *downloadTimeout)
 	case "updates":
-		runUpdates(ctx, conn, client, bgpdata, *collector, *sinceFlag, *peerFilter, *dryRun, *limit)
+		runUpdates(ctx, conn, client, bgpdata, *collector, *sinceFlag, *peerFilter, dedupe, *dryRun, *limit)
 	}
 }
 
@@ -94,21 +111,20 @@ func main() {
 // full RIB load
 // ---------------------------------------------------------------------------
 
-func runFull(ctx context.Context, conn *pgx.Conn, client *http.Client, bgpdata, collector, peerFilter string, dryRun bool, limit int) {
+func runFull(ctx context.Context, conn *pgx.Conn, client *http.Client, bgpdata, collector, peerFilter string, dedupe, dryRun bool, limit int, downloadTimeout time.Duration) {
 	ref, err := latestRIB(client, bgpdata)
 	if err != nil {
 		log.Fatalf("locating latest RIB: %v", err)
 	}
-	log.Printf("full load: RIB %s (%s)", ref.url, ref.ts.Format(time.RFC3339))
+	log.Printf("full load: RIB %s (%s) dedupe=%v", ref.url, ref.ts.Format(time.RFC3339), dedupe)
 
 	if dryRun {
-		it := newRIBIterator(nil, ref.ts, peerFilter, limit) // reader set below
 		body, closer, err := openMRT(client, ref.url)
 		if err != nil {
 			log.Fatalf("open RIB: %v", err)
 		}
 		defer closer()
-		it.r = body
+		it := newRIBIterator(body, ref.ts, peerFilter, dedupe, limit)
 		n := 0
 		for it.Next() {
 			if n < 10 {
@@ -120,15 +136,26 @@ func runFull(ctx context.Context, conn *pgx.Conn, client *http.Client, bgpdata, 
 		if it.Err() != nil {
 			log.Fatalf("parse RIB: %v", it.Err())
 		}
-		log.Printf("dry-run full: %d rows would be loaded (peer filter %q)", n, peerFilter)
+		log.Printf("dry-run full: %d rows would be loaded (dedupe=%v peer filter %q)", n, dedupe, peerFilter)
 		return
 	}
 
-	body, closer, err := openMRT(client, ref.url)
+	// Download the RIB to a temp file first, then COPY from local disk. This
+	// decouples the (slow) database ingest from the network: the HTTP transfer
+	// completes quickly and is bounded by downloadTimeout, so a long COPY can
+	// never stall or time out the download.
+	log.Printf("downloading RIB to temp file (timeout %s)...", downloadTimeout)
+	path, cleanup, err := downloadToTemp(ctx, client, ref.url, downloadTimeout)
 	if err != nil {
-		log.Fatalf("open RIB: %v", err)
+		log.Fatalf("download RIB: %v", err)
 	}
-	defer closer()
+	defer cleanup()
+	f, err := os.Open(path)
+	if err != nil {
+		log.Fatalf("open temp RIB: %v", err)
+	}
+	defer f.Close()
+	log.Printf("download complete; parsing + loading...")
 
 	tx, err := conn.Begin(ctx)
 	if err != nil {
@@ -140,7 +167,7 @@ func runFull(ctx context.Context, conn *pgx.Conn, client *http.Client, bgpdata, 
 		log.Fatalf("truncate: %v", err)
 	}
 
-	it := newRIBIterator(body, ref.ts, peerFilter, limit)
+	it := newRIBIterator(bzip2.NewReader(f), ref.ts, peerFilter, dedupe, limit)
 	cols := []string{"cidr_block", "start_address", "end_address", "origin_asn", "peer_ip", "as_path", "updated_at"}
 	n, err := tx.CopyFrom(ctx, pgx.Identifier{"bgp_route_views"}, cols, it)
 	if err != nil {
@@ -167,7 +194,7 @@ func runFull(ctx context.Context, conn *pgx.Conn, client *http.Client, bgpdata, 
 // incremental updates
 // ---------------------------------------------------------------------------
 
-func runUpdates(ctx context.Context, conn *pgx.Conn, client *http.Client, bgpdata, collector, sinceFlag, peerFilter string, dryRun bool, limit int) {
+func runUpdates(ctx context.Context, conn *pgx.Conn, client *http.Client, bgpdata, collector, sinceFlag, peerFilter string, dedupe, dryRun bool, limit int) {
 	var since time.Time
 	switch {
 	case sinceFlag != "":
@@ -209,7 +236,7 @@ func runUpdates(ctx context.Context, conn *pgx.Conn, client *http.Client, bgpdat
 		if err != nil {
 			log.Fatalf("open %s: %v", ref.url, err)
 		}
-		ann, wd, err := applyUpdatesFile(ctx, conn, body, ref.ts, collector, peerFilter, dryRun, limit)
+		ann, wd, err := applyUpdatesFile(ctx, conn, body, ref.ts, collector, peerFilter, dedupe, dryRun, limit)
 		closer()
 		if err != nil {
 			log.Fatalf("applying %s: %v", ref.url, err)
@@ -224,11 +251,21 @@ func runUpdates(ctx context.Context, conn *pgx.Conn, client *http.Client, bgpdat
 	log.Printf("updates complete: announced=%d withdrawn=%d over %d files", totalAnn, totalWd, len(refs))
 }
 
-// applyUpdatesFile decodes one UPDATES file and applies it. Announcements
-// replace the (prefix, peer) route (DELETE then INSERT); withdrawals DELETE it.
+// applyUpdatesFile decodes one UPDATES file and applies it.
+//
+// Per-peer mode: announcements replace the (prefix, peer) route (DELETE then
+// INSERT); withdrawals DELETE that (prefix, peer) row.
+//
+// Deduped mode (default): the table holds one row per prefix, so announcements
+// upsert the single prefix row (DELETE by cidr_block, INSERT with peer_ip/
+// as_path NULL). Withdrawals are NOT applied: a withdrawal from one peer does
+// not mean the prefix is globally gone, and without per-peer state we cannot
+// know when the last peer withdraws — and since a prefix's geography is stable,
+// a lingering row is harmless. Withdrawals are still counted for reporting.
+//
 // All changes for one file happen in a single transaction; state advances to
 // the file's timestamp on commit. In dry-run nothing is written.
-func applyUpdatesFile(ctx context.Context, conn *pgx.Conn, r io.Reader, fileTS time.Time, collector, peerFilter string, dryRun bool, limit int) (int, int, error) {
+func applyUpdatesFile(ctx context.Context, conn *pgx.Conn, r io.Reader, fileTS time.Time, collector, peerFilter string, dedupe, dryRun bool, limit int) (int, int, error) {
 	var tx pgx.Tx
 	var err error
 	if !dryRun {
@@ -268,7 +305,10 @@ func applyUpdatesFile(ctx context.Context, conn *pgx.Conn, r io.Reader, fileTS t
 		asPath, origin := originAndPath(upd.PathAttributes)
 
 		for _, cidr := range withdrawn {
-			if !dryRun {
+			// In deduped mode we cannot safely delete on a single-peer
+			// withdrawal (the prefix may still be routed via other peers), so
+			// we only count it. In per-peer mode we delete that (prefix,peer).
+			if !dryRun && !dedupe {
 				if _, err := tx.Exec(ctx, `DELETE FROM bgp_route_views WHERE cidr_block=$1 AND peer_ip=$2`, cidr, peer); err != nil {
 					return err
 				}
@@ -281,14 +321,26 @@ func applyUpdatesFile(ctx context.Context, conn *pgx.Conn, r io.Reader, fileTS t
 				continue
 			}
 			if !dryRun {
-				if _, err := tx.Exec(ctx, `DELETE FROM bgp_route_views WHERE cidr_block=$1 AND peer_ip=$2`, cidr, peer); err != nil {
-					return err
-				}
-				if _, err := tx.Exec(ctx, `INSERT INTO bgp_route_views
-					(cidr_block, start_address, end_address, origin_asn, peer_ip, as_path, updated_at)
-					VALUES ($1,$2,$3,$4,$5,$6,$7)`,
-					cidr, start, end, nullASN(origin), peer, nullStr(asPath), fileTS); err != nil {
-					return err
+				if dedupe {
+					if _, err := tx.Exec(ctx, `DELETE FROM bgp_route_views WHERE cidr_block=$1`, cidr); err != nil {
+						return err
+					}
+					if _, err := tx.Exec(ctx, `INSERT INTO bgp_route_views
+						(cidr_block, start_address, end_address, origin_asn, peer_ip, as_path, updated_at)
+						VALUES ($1,$2,$3,$4,NULL,NULL,$5)`,
+						cidr, start, end, nullASN(origin), fileTS); err != nil {
+						return err
+					}
+				} else {
+					if _, err := tx.Exec(ctx, `DELETE FROM bgp_route_views WHERE cidr_block=$1 AND peer_ip=$2`, cidr, peer); err != nil {
+						return err
+					}
+					if _, err := tx.Exec(ctx, `INSERT INTO bgp_route_views
+						(cidr_block, start_address, end_address, origin_asn, peer_ip, as_path, updated_at)
+						VALUES ($1,$2,$3,$4,$5,$6,$7)`,
+						cidr, start, end, nullASN(origin), peer, nullStr(asPath), fileTS); err != nil {
+						return err
+					}
 				}
 			}
 			annCount++
@@ -405,6 +457,7 @@ type ribIterator struct {
 	peers      []*mrt.Peer
 	fileTS     time.Time
 	peerFilter string
+	dedupe     bool
 	limit      int
 
 	queue [][]any
@@ -415,8 +468,8 @@ type ribIterator struct {
 	done  bool
 }
 
-func newRIBIterator(r io.Reader, fileTS time.Time, peerFilter string, limit int) *ribIterator {
-	return &ribIterator{r: r, hdrBuf: make([]byte, 12), fileTS: fileTS, peerFilter: peerFilter, limit: limit}
+func newRIBIterator(r io.Reader, fileTS time.Time, peerFilter string, dedupe bool, limit int) *ribIterator {
+	return &ribIterator{r: r, hdrBuf: make([]byte, 12), fileTS: fileTS, peerFilter: peerFilter, dedupe: dedupe, limit: limit}
 }
 
 func (it *ribIterator) Next() bool {
@@ -480,6 +533,26 @@ func (it *ribIterator) buildRows(rib *mrt.Rib) [][]any {
 	if err != nil {
 		return nil
 	}
+
+	// Deduped (default): one row per prefix. A TABLE_DUMP_V2 record already IS
+	// one prefix, so we emit a single row using a representative entry (the
+	// first one, honoring the peer filter) for origin_asn, with peer_ip and
+	// as_path NULL — geography does not depend on which peer observed the route.
+	if it.dedupe {
+		for _, e := range rib.Entries {
+			if int(e.PeerIndex) >= len(it.peers) {
+				continue
+			}
+			if it.peerFilter != "" && it.peers[e.PeerIndex].IpAddress.String() != it.peerFilter {
+				continue
+			}
+			_, origin := originAndPath(e.PathAttributes)
+			return [][]any{{cidr, start, end, nullASN(origin), nil, nil, it.fileTS}}
+		}
+		return nil
+	}
+
+	// Per-peer: one row per (prefix, peer).
 	rows := make([][]any, 0, len(rib.Entries))
 	for _, e := range rib.Entries {
 		if int(e.PeerIndex) >= len(it.peers) {
@@ -517,6 +590,44 @@ func openMRT(client *http.Client, url string) (io.Reader, func(), error) {
 		return nil, nil, fmt.Errorf("GET %s: HTTP %d", url, resp.StatusCode)
 	}
 	return bzip2.NewReader(resp.Body), func() { resp.Body.Close() }, nil
+}
+
+// downloadToTemp streams url to a temp .bz2 file and returns its path plus a
+// cleanup func. The download is bounded by timeout; the returned file is local,
+// so the subsequent (slow) COPY has no network dependency and cannot time out.
+func downloadToTemp(ctx context.Context, client *http.Client, url string, timeout time.Duration) (string, func(), error) {
+	dctx, cancel := context.WithTimeout(ctx, timeout)
+	defer cancel()
+
+	req, err := http.NewRequestWithContext(dctx, http.MethodGet, url, nil)
+	if err != nil {
+		return "", nil, err
+	}
+	resp, err := client.Do(req)
+	if err != nil {
+		return "", nil, err
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		return "", nil, fmt.Errorf("GET %s: HTTP %d", url, resp.StatusCode)
+	}
+
+	f, err := os.CreateTemp("", "routeviews-*.bz2")
+	if err != nil {
+		return "", nil, err
+	}
+	name := f.Name()
+	cleanup := func() { os.Remove(name) }
+	if _, err := io.Copy(f, resp.Body); err != nil {
+		f.Close()
+		cleanup()
+		return "", nil, fmt.Errorf("downloading %s: %w", url, err)
+	}
+	if err := f.Close(); err != nil {
+		cleanup()
+		return "", nil, err
+	}
+	return name, cleanup, nil
 }
 
 var fileNameRE = regexp.MustCompile(`(rib|updates)\.(\d{8}\.\d{4})\.bz2`)
