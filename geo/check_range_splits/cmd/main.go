@@ -6,14 +6,17 @@
 // A db-ip range R is considered SPLIT if RouteViews contains >= -min-children
 // distinct prefixes that are STRICTLY more specific than R (i.e. proper subnets
 // of R: b.cidr_block << R.network). That means the block db-ip treats as a
-// single location is now announced as several smaller routes — a timely signal
+// single location is now announced as several smaller routes -- a timely signal
 // (RouteViews updates every ~2h vs db-ip monthly) that R's geography may have
 // fragmented and should be re-checked with ip-api before the next db-ip drop.
 //
 // This does NOT claim the pieces actually moved (a routing split can be pure
 // traffic engineering); it produces the candidate set to re-geolocate. Ranges
 // that are wholly inside a single larger BGP prefix (e.g. a db-ip /24 inside
-// Comcast's 73.0.0.0/8) are NOT split — R must contain the more-specifics.
+// Comcast's 73.0.0.0/8) are NOT split -- R must contain the more-specifics.
+//
+// NOTE: all SQL is written as plain double-quoted single-line strings (no Go
+// backtick raw-strings) so this file survives copy/paste through chat/heredocs.
 package main
 
 import (
@@ -66,7 +69,7 @@ func main() {
 	if *createIndex {
 		log.Printf("ensuring GiST index ip2city_network_gist (one-time; can take minutes on ~14M rows)...")
 		t0 := time.Now()
-		if _, err := conn.Exec(ctx, `CREATE INDEX IF NOT EXISTS ip2city_network_gist ON ip2city_dbiplite_tbl USING gist (network inet_ops)`); err != nil {
+		if _, err := conn.Exec(ctx, "CREATE INDEX IF NOT EXISTS ip2city_network_gist ON ip2city_dbiplite_tbl USING gist (network inet_ops)"); err != nil {
 			log.Fatalf("creating index: %v", err)
 		}
 		log.Printf("index ready (%s)", time.Since(t0).Round(time.Second))
@@ -77,23 +80,20 @@ func main() {
 	log.Printf("scanning for db-ip ranges split into >= %d BGP sub-prefixes%s ...",
 		*minChildren, filterDesc(*ipv4Only, *country))
 	t0 := time.Now()
-	buildSQL := `
-CREATE TEMP TABLE _splits AS
-SELECT d.network AS network, d.country_iso_code AS country, count(*) AS bgp_children
-FROM ip2city_dbiplite_tbl d
-JOIN bgp_route_views b ON b.cidr_block << d.network` + where + `
-GROUP BY d.network, d.country_iso_code
-HAVING count(*) >= $1`
+	buildSQL := "CREATE TEMP TABLE _splits AS " +
+		"SELECT d.network AS network, d.country_iso_code AS country, count(*) AS bgp_children " +
+		"FROM ip2city_dbiplite_tbl d " +
+		"JOIN bgp_route_views b ON b.cidr_block << d.network" + where + " " +
+		"GROUP BY d.network, d.country_iso_code HAVING count(*) >= $1"
 	if _, err := conn.Exec(ctx, buildSQL, args...); err != nil {
 		log.Fatalf("scan failed: %v", err)
 	}
 	log.Printf("scan complete (%s)", time.Since(t0).Round(time.Second))
 
 	// Headline answer.
-	var total int64
-	var maxChildren, sumChildren int64
+	var total, maxChildren, sumChildren int64
 	if err := conn.QueryRow(ctx,
-		`SELECT count(*), coalesce(max(bgp_children),0), coalesce(sum(bgp_children),0) FROM _splits`).
+		"SELECT count(*), coalesce(max(bgp_children),0), coalesce(sum(bgp_children),0) FROM _splits").
 		Scan(&total, &maxChildren, &sumChildren); err != nil {
 		log.Fatalf("summary: %v", err)
 	}
@@ -106,18 +106,15 @@ HAVING count(*) >= $1`
 
 	// Distribution by child-count bucket.
 	fmt.Println("distribution (bgp_children -> #db-ip ranges):")
-	rows, err := conn.Query(ctx, `
-SELECT CASE
-         WHEN bgp_children >= 100 THEN '100+'
-         WHEN bgp_children >= 10  THEN '10-99'
-         WHEN bgp_children >= 5   THEN '5-9'
-         WHEN bgp_children = 4    THEN '4'
-         WHEN bgp_children = 3    THEN '3'
-         ELSE '2'
-       END AS bucket,
-       count(*) AS n
-FROM _splits GROUP BY 1
-ORDER BY min(bgp_children)`)
+	distSQL := "SELECT CASE " +
+		"WHEN bgp_children >= 100 THEN '100+' " +
+		"WHEN bgp_children >= 10 THEN '10-99' " +
+		"WHEN bgp_children >= 5 THEN '5-9' " +
+		"WHEN bgp_children = 4 THEN '4' " +
+		"WHEN bgp_children = 3 THEN '3' " +
+		"ELSE '2' END AS bucket, count(*) AS n " +
+		"FROM _splits GROUP BY 1 ORDER BY min(bgp_children)"
+	rows, err := conn.Query(ctx, distSQL)
 	if err != nil {
 		log.Fatalf("distribution: %v", err)
 	}
@@ -135,7 +132,7 @@ ORDER BY min(bgp_children)`)
 	// Top offenders with a few example children.
 	fmt.Printf("\ntop %d most-fragmented db-ip ranges:\n", *topN)
 	top, err := conn.Query(ctx,
-		`SELECT network::text, coalesce(country,''), bgp_children FROM _splits ORDER BY bgp_children DESC, network LIMIT $1`, *topN)
+		"SELECT network::text, coalesce(country,''), bgp_children FROM _splits ORDER BY bgp_children DESC, network LIMIT $1", *topN)
 	if err != nil {
 		log.Fatalf("top query: %v", err)
 	}
@@ -154,11 +151,11 @@ ORDER BY min(bgp_children)`)
 	}
 	top.Close()
 
+	exSQL := "SELECT cidr_block::text, coalesce(origin_asn::text,'?') FROM bgp_route_views " +
+		"WHERE cidr_block << $1::cidr ORDER BY masklen(cidr_block), cidr_block LIMIT $2"
 	for _, r := range list {
 		fmt.Printf("\n  %s  [%s]  %d sub-prefixes:\n", r.net, r.country, r.children)
-		ex, err := conn.Query(ctx,
-			`SELECT cidr_block::text, coalesce(origin_asn::text,'?') FROM bgp_route_views
-			 WHERE cidr_block << $1::cidr ORDER BY masklen(cidr_block), cidr_block LIMIT $2`, r.net, *examples)
+		ex, err := conn.Query(ctx, exSQL, r.net, *examples)
 		if err != nil {
 			log.Fatalf("examples: %v", err)
 		}
@@ -178,13 +175,10 @@ ORDER BY min(bgp_children)`)
 
 	if *write {
 		log.Printf("\nwriting %d candidates to dbip_split_candidates ...", total)
-		if _, err := conn.Exec(ctx, `
-CREATE TABLE IF NOT EXISTS dbip_split_candidates (
-    network          cidr PRIMARY KEY,
-    country_iso_code text,
-    bgp_children     int NOT NULL,
-    detected_at      timestamptz NOT NULL DEFAULT now()
-)`); err != nil {
+		createCand := "CREATE TABLE IF NOT EXISTS dbip_split_candidates (" +
+			"network cidr PRIMARY KEY, country_iso_code text, bgp_children int NOT NULL, " +
+			"detected_at timestamptz NOT NULL DEFAULT now())"
+		if _, err := conn.Exec(ctx, createCand); err != nil {
 			log.Fatalf("create candidates table: %v", err)
 		}
 		tx, err := conn.Begin(ctx)
@@ -192,12 +186,11 @@ CREATE TABLE IF NOT EXISTS dbip_split_candidates (
 			log.Fatalf("begin: %v", err)
 		}
 		defer tx.Rollback(context.Background())
-		if _, err := tx.Exec(ctx, `TRUNCATE dbip_split_candidates`); err != nil {
+		if _, err := tx.Exec(ctx, "TRUNCATE dbip_split_candidates"); err != nil {
 			log.Fatalf("truncate candidates: %v", err)
 		}
-		if _, err := tx.Exec(ctx, `
-INSERT INTO dbip_split_candidates (network, country_iso_code, bgp_children, detected_at)
-SELECT network, country, bgp_children, now() FROM _splits`); err != nil {
+		if _, err := tx.Exec(ctx, "INSERT INTO dbip_split_candidates (network, country_iso_code, bgp_children, detected_at) "+
+			"SELECT network, country, bgp_children, now() FROM _splits"); err != nil {
 			log.Fatalf("insert candidates: %v", err)
 		}
 		if err := tx.Commit(ctx); err != nil {
