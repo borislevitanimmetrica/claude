@@ -97,12 +97,19 @@ func main() {
 		Scan(&total, &maxChildren, &sumChildren); err != nil {
 		log.Fatalf("summary: %v", err)
 	}
-	fmt.Printf("\n=== SPLIT db-ip ranges (>= %d BGP sub-prefixes): %d ===\n", *minChildren, total)
+	fmt.Println()
+	fmt.Println(fmt.Sprintf(
+		"=== SPLIT db-ip ranges (>= %d BGP sub-prefixes): %d ===",
+		*minChildren, total))
 	if total == 0 {
-		fmt.Println("No unitary db-ip ranges are split in the current RouteViews table.")
+		fmt.Println("No unitary db-ip ranges are split in RouteViews.")
 		return
 	}
-	fmt.Printf("most-fragmented range has %d sub-prefixes; %d BGP prefixes total fall inside split ranges\n\n", maxChildren, sumChildren)
+	fmt.Println(fmt.Sprintf(
+		"most-fragmented range has %d sub-prefixes; %d BGP "+
+			"prefixes total fall inside split ranges",
+		maxChildren, sumChildren))
+	fmt.Println()
 
 	// Distribution by child-count bucket.
 	fmt.Println("distribution (bgp_children -> #db-ip ranges):")
@@ -125,12 +132,13 @@ func main() {
 			rows.Close()
 			log.Fatalf("distribution scan: %v", err)
 		}
-		fmt.Printf("  %-6s %d\n", bucket, n)
+		fmt.Println(fmt.Sprintf("  %-6s %d", bucket, n))
 	}
 	rows.Close()
 
 	// Top offenders with a few example children.
-	fmt.Printf("\ntop %d most-fragmented db-ip ranges:\n", *topN)
+	fmt.Println()
+	fmt.Println(fmt.Sprintf("top %d most-fragmented db-ip ranges:", *topN))
 	top, err := conn.Query(ctx,
 		"SELECT network::text, coalesce(country,''), bgp_children FROM _splits ORDER BY bgp_children DESC, network LIMIT $1", *topN)
 	if err != nil {
@@ -154,7 +162,9 @@ func main() {
 	exSQL := "SELECT cidr_block::text, coalesce(origin_asn::text,'?') FROM bgp_route_views " +
 		"WHERE cidr_block << $1::cidr ORDER BY masklen(cidr_block), cidr_block LIMIT $2"
 	for _, r := range list {
-		fmt.Printf("\n  %s  [%s]  %d sub-prefixes:\n", r.net, r.country, r.children)
+		fmt.Println()
+		fmt.Println(fmt.Sprintf("  %s  [%s]  %d sub-prefixes:",
+			r.net, r.country, r.children))
 		ex, err := conn.Query(ctx, exSQL, r.net, *examples)
 		if err != nil {
 			log.Fatalf("examples: %v", err)
@@ -165,16 +175,17 @@ func main() {
 				ex.Close()
 				log.Fatalf("examples scan: %v", err)
 			}
-			fmt.Printf("      %-20s origin AS%s\n", cidr, asn)
+			fmt.Println(fmt.Sprintf("      %-20s origin AS%s", cidr, asn))
 		}
 		ex.Close()
 		if r.children > int64(*examples) {
-			fmt.Printf("      ... and %d more\n", r.children-int64(*examples))
+			fmt.Println(fmt.Sprintf("      ... and %d more",
+				r.children-int64(*examples)))
 		}
 	}
 
 	if *write {
-		log.Printf("\nwriting %d candidates to dbip_split_candidates ...", total)
+		log.Printf("writing %d candidates to dbip_split_candidates ...", total)
 		createCand := "CREATE TABLE IF NOT EXISTS dbip_split_candidates (" +
 			"network cidr PRIMARY KEY, country_iso_code text, bgp_children int NOT NULL, " +
 			"detected_at timestamptz NOT NULL DEFAULT now())"
