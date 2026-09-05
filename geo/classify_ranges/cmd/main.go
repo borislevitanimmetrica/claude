@@ -330,7 +330,17 @@ func loadCandidates(ctx context.Context, conn *pgx.Conn, table string, minLen, m
 
 	notClassified := ""
 	if !recheck {
-		notClassified = " AND NOT EXISTS (SELECT 1 FROM range_classification rc WHERE rc.network = c.network)"
+		// range_classification may not exist yet: -dry-run deliberately skips
+		// creating it. Referencing a missing relation aborts the whole query,
+		// so only add the already-classified filter when the table is present.
+		var rcExists bool
+		if err := conn.QueryRow(ctx,
+			"SELECT to_regclass('public.range_classification') IS NOT NULL").Scan(&rcExists); err != nil {
+			return nil, err
+		}
+		if rcExists {
+			notClassified = " AND NOT EXISTS (SELECT 1 FROM range_classification rc WHERE rc.network = c.network)"
+		}
 	}
 
 	q := "SELECT c.network::text, host(c.network::inet + 1), " + childExpr + " FROM " + ident + " c " +
