@@ -191,7 +191,18 @@ AND NOT (t.network <<= '100.64.0.0/10'::cidr)`
 		query += fmt.Sprintf(" AND t.country_iso_code = $%d", len(args)+1)
 		args = append(args, country)
 	}
-	query += " ORDER BY random() LIMIT $1"
+	// RouteViews-derived /24 rows are the time-sensitive ones: they exist
+	// because a db-ip range was seen to split and we do not want to wait for
+	// next month's edition. Under a plain ORDER BY random() they would compete
+	// with ~1.7M other unprobed db-ip rows and take months to be reached by
+	// chance, so probe them first and fall back to random order within each
+	// group.
+	//
+	// PREREQUISITE: the source column must exist. It is created by
+	// dbip-mmdb-import, or by apply_splits -ensure-source-column. If it is
+	// absent this query fails to parse; the coalesce below only guards against
+	// NULL values, not against a missing column.
+	query += " ORDER BY (coalesce(t.source, 'dbip') = 'routeviews') DESC, random() LIMIT $1"
 
 	rows, err := conn.Query(ctx, query, args...)
 	if err != nil {
