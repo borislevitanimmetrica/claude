@@ -265,6 +265,20 @@ func loadParents(ctx context.Context, conn *pgx.Conn, table string) ([]parent, e
 		childExpr = "coalesce(c.bgp_children, 0)"
 	}
 
+	// IPv6 GAP: family(c.network) = 4 confines this tool to IPv4, because the
+	// whole design rests on /24 being ip-api's resolution limit and on 2^(24-n)
+	// aligned /24s tiling a parent exactly. Neither holds for IPv6.
+	//
+	// To support IPv6, three things must change together:
+	//   1. this filter, to admit family 6
+	//   2. the decomposition unit, from /24 to whatever granularity the
+	//      geolocation source actually resolves for IPv6 (likely /48 or /64) --
+	//      this must be MEASURED as was done for IPv4, not assumed
+	//   3. the probe-count arithmetic below and in probesFor, which is 32-bit
+	//
+	// Exclusion itself already works for IPv6: geo_exclusions.prefix is cidr and
+	// accepts IPv6 prefixes, and coveredBy is family-correct. Only the
+	// decomposition is IPv4-bound.
 	q := "SELECT c.network::text, masklen(c.network), " + childExpr + ", " +
 		"(2::numeric ^ greatest(0, 24 - masklen(c.network)))::bigint " +
 		"FROM " + ident + " c " +
@@ -288,6 +302,13 @@ func loadParents(ctx context.Context, conn *pgx.Conn, table string) ([]parent, e
 	return out, rows.Err()
 }
 
+// coveredBy reports whether any exclusion prefix contains this range.
+//
+// IPv6: this function is already family-correct and needs no change.
+// netip.Prefix.Contains returns false when the families differ, so an IPv4
+// exclusion can never match an IPv6 range even though its Bits() is numerically
+// smaller. Seeding IPv6 prefixes into geo_exclusions is therefore sufficient to
+// make exclusion work for IPv6 here.
 func coveredBy(network string, excluded []netip.Prefix) bool {
 	p, err := netip.ParsePrefix(network)
 	if err != nil {

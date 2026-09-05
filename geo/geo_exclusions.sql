@@ -12,6 +12,18 @@
 --   prefix     IS NOT NULL -> exclude any range contained in this CIDR
 --   origin_asn IS NOT NULL -> exclude any BGP prefix originated by this ASN
 --
+-- IPv6: this table needs no schema change to exclude IPv6. The prefix column is
+-- cidr, which holds IPv6 prefixes, and the containment operator <<= is
+-- family-aware, so an IPv4 rule can never match an IPv6 range or vice versa. The
+-- consumers are also ready: the exclusion filter in check_geo_ip-api and the
+-- coveredBy check in apply_splits and classify_ranges are all family-correct.
+--
+-- What is MISSING for IPv6 is only the DATA: no IPv6 government prefixes have
+-- been seeded, because the DoD /8 list is IPv4. DoD holds IPv6 space too (for
+-- example under 2001:480::/32), and it has NOT been verified by probe here, so
+-- it is deliberately not seeded. Verify by probe before adding, exactly as was
+-- done for the IPv4 prefixes, and never exclude on a guess.
+--
 -- Contains NO backslashes so it survives copy/paste.
 
 CREATE TABLE IF NOT EXISTS geo_exclusions (

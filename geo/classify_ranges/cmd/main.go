@@ -343,6 +343,13 @@ func loadCandidates(ctx context.Context, conn *pgx.Conn, table string, minLen, m
 		}
 	}
 
+	// IPv6 GAP: family(c.network) = 4 means IPv6 ranges are never classified, so
+	// IPv6 government space is never auto-excluded. Nothing else here is
+	// IPv4-specific: ip-api accepts IPv6 queries, the govSignatures match on
+	// isp/org/as text, and geo_exclusions.prefix is cidr and holds IPv6 prefixes
+	// fine. To extend, admit family 6 here, replace the masklen bounds with
+	// IPv6-appropriate ones (the /8 to /16 range is meaningless for IPv6), and
+	// fix probesFor, which assumes 32-bit addresses.
 	q := "SELECT c.network::text, host(c.network::inet + 1), " + childExpr + " FROM " + ident + " c " +
 		"WHERE family(c.network) = 4 AND masklen(c.network) >= $1 AND masklen(c.network) <= $2" +
 		notClassified + " ORDER BY masklen(c.network), c.network"
@@ -444,6 +451,10 @@ func nullIfEmpty(s string) any {
 }
 
 // probesFor returns the number of /24 probes a range would cost at one per /24.
+//
+// IPv6 GAP: the 24 and the 32-bit shift are IPv4 constants. An IPv6 range would
+// need the measured IPv6 resolution limit in place of 24, and 128-bit arithmetic
+// (or a capped estimate, since 2^(128-n) overflows int64 for any realistic n).
 func probesFor(network string) int64 {
 	p, err := netip.ParsePrefix(network)
 	if err != nil {

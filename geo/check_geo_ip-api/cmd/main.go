@@ -187,6 +187,14 @@ AND NOT EXISTS (
     WHERE x.active AND x.prefix IS NOT NULL
       AND t.network <<= x.prefix
 )`
+	// IPv6: the exclusion clause above is already family-correct. PostgreSQL's
+	// <<= only matches within the same address family, so an IPv4 rule cannot
+	// suppress an IPv6 range. Seeding IPv6 prefixes into geo_exclusions is
+	// enough to make exclusion work here; no code change is required.
+	//
+	// The CGNAT exclusion immediately above it is IPv4-only by nature. The IPv6
+	// analogue would be unique-local fc00::/7 and, if unwanted, link-local
+	// fe80::/10 -- neither is currently filtered.
 
 	args := []any{n}
 	if ipv4Only {
