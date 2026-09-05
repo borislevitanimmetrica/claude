@@ -1,9 +1,15 @@
-// Command check_geo_ip-api geolocates a random IP address from each sampled
-// network range using the free ip-api.com JSON endpoint and writes the result
-// into the identically-named columns of ip2city_dbiplite_traceroute_tbl.
+// Command check_routeviews_ip-api geolocates a random IP address from each
+// distinct prefix in the bgp_route_views table (populated from University of
+// Oregon RouteViews data) using the free ip-api.com JSON endpoint, and writes
+// the result into the identically-named columns of
+// ip2city_dbiplite_traceroute_tbl.
 //
-// This replaces the mtr traceroute method for populating geography. It reuses
-// the same "one random address per range" sampling.
+// This is the check_geo_ip-api tool re-pointed at a different SOURCE of network
+// ranges: bgp_route_views (the observed BGP routing table) rather than
+// ip2city_dbiplite_tbl. bgp_route_views already stores start_address/end_address
+// per prefix, so those are used directly. There is no country column on the BGP
+// data, so the -country filter is not available here. The DESTINATION table is
+// unchanged (ip2city_dbiplite_traceroute_tbl, keyed by network = the prefix).
 //
 // Rate limiting: the free ip-api.com service refuses service above ~45
 // requests/minute and will ban the WAN IP on persistent overage. We therefore
@@ -59,7 +65,7 @@ type geoResult struct {
 	Query       string  `json:"query"`
 }
 
-// rangeRow is a sampled network range and its inclusive address bounds.
+// rangeRow is a sampled prefix and its inclusive address bounds.
 type rangeRow struct {
 	network string
 	start   netip.Addr
@@ -73,10 +79,9 @@ type geoTarget struct {
 }
 
 func main() {
-	count := flag.Int("count", 0, "total number of ip-api.com calls to make (one random IP per range); required")
+	count := flag.Int("count", 0, "total number of ip-api.com calls to make (one random IP per prefix); required")
 	rate := flag.Int("rate", 45, "maximum calls per rolling one-minute window")
-	country := flag.String("country", "", "restrict to this country_iso_code (e.g. US); empty = no filter")
-	ipv4Only := flag.Bool("ipv4-only", false, "sample only IPv4 ranges")
+	ipv4Only := flag.Bool("ipv4-only", false, "sample only IPv4 prefixes")
 	httpTimeout := flag.Duration("http-timeout", 10*time.Second, "per-request HTTP timeout")
 	endpoint := flag.String("endpoint", "http://ip-api.com/json/", "ip-api.com single-IP JSON endpoint prefix (free tier is http-only)")
 	flag.Parse()
@@ -101,15 +106,15 @@ func main() {
 	}
 	defer conn.Close(context.Background())
 
-	ranges, err := sampleRanges(ctx, conn, *count, *country, *ipv4Only)
+	ranges, err := sampleRanges(ctx, conn, *count, *ipv4Only)
 	if err != nil {
-		log.Fatalf("sampling ranges: %v", err)
+		log.Fatalf("sampling prefixes: %v", err)
 	}
 	if len(ranges) == 0 {
-		log.Fatal("no eligible ranges found (all already geolocated, or filters too strict)")
+		log.Fatal("no eligible prefixes found (all already geolocated, bgp_route_views empty, or filters too strict)")
 	}
-	log.Printf("selected %d ranges (requested %d; country=%q ipv4-only=%v); rate=%d/min",
-		len(ranges), *count, *country, *ipv4Only, *rate)
+	log.Printf("selected %d prefixes (requested %d; ipv4-only=%v); rate=%d/min",
+		len(ranges), *count, *ipv4Only, *rate)
 
 	client := &http.Client{Timeout: *httpTimeout}
 
@@ -167,57 +172,33 @@ func main() {
 	log.Printf("done: %d rows written", written)
 }
 
-// sampleRanges picks up to n network ranges that do not yet have a geolocated
-// row (city IS NULL), excluding RFC 6598 CGNAT space, optionally IPv4-only and
-// country-filtered, in random order.
-func sampleRanges(ctx context.Context, conn *pgx.Conn, n int, country string, ipv4Only bool) ([]rangeRow, error) {
+// sampleRanges picks up to n distinct prefixes from bgp_route_views that do not
+// yet have a geolocated row (city IS NULL) in the destination table, excluding
+// RFC 6598 CGNAT space, optionally IPv4-only, in random order. start_address /
+// end_address come straight from bgp_route_views (already computed by the
+// RouteViews ingester). DISTINCT collapses the per-peer rows that share a prefix
+// to one sample per prefix.
+func sampleRanges(ctx context.Context, conn *pgx.Conn, n int, ipv4Only bool) ([]rangeRow, error) {
+	inner := `
+    SELECT DISTINCT cidr_block::text AS cidr, start_address, end_address
+    FROM bgp_route_views
+    WHERE NOT (cidr_block <<= '100.64.0.0/10'::cidr)`
+	if ipv4Only {
+		inner += " AND family(cidr_block) = 4"
+	}
+
 	query := `
-SELECT t.network::text,
-       host(network(t.network))::inet   AS start_ip,
-       host(broadcast(t.network))::inet AS end_ip
-FROM ip2city_dbiplite_tbl t
+SELECT d.cidr, d.start_address, d.end_address
+FROM (` + inner + `) d
 WHERE NOT EXISTS (
     SELECT 1 FROM ip2city_dbiplite_traceroute_tbl tr
-    WHERE tr.network = t.network
+    WHERE tr.network::text = d.cidr
       AND tr.city IS NOT NULL
 )
-AND NOT (t.network <<= '100.64.0.0/10'::cidr)
-AND NOT EXISTS (
-    SELECT 1 FROM geo_exclusions x
-    WHERE x.active AND x.prefix IS NOT NULL
-      AND t.network <<= x.prefix
-)`
-	// IPv6: the exclusion clause above is already family-correct. PostgreSQL's
-	// <<= only matches within the same address family, so an IPv4 rule cannot
-	// suppress an IPv6 range. Seeding IPv6 prefixes into geo_exclusions is
-	// enough to make exclusion work here; no code change is required.
-	//
-	// The CGNAT exclusion immediately above it is IPv4-only by nature. The IPv6
-	// analogue would be unique-local fc00::/7 and, if unwanted, link-local
-	// fe80::/10 -- neither is currently filtered.
+ORDER BY random()
+LIMIT $1`
 
-	args := []any{n}
-	if ipv4Only {
-		query += " AND family(t.network) = 4"
-	}
-	if country != "" {
-		query += fmt.Sprintf(" AND t.country_iso_code = $%d", len(args)+1)
-		args = append(args, country)
-	}
-	// RouteViews-derived /24 rows are the time-sensitive ones: they exist
-	// because a db-ip range was seen to split and we do not want to wait for
-	// next month's edition. Under a plain ORDER BY random() they would compete
-	// with ~1.7M other unprobed db-ip rows and take months to be reached by
-	// chance, so probe them first and fall back to random order within each
-	// group.
-	//
-	// PREREQUISITE: the source column must exist. It is created by
-	// dbip-mmdb-import, or by apply_splits -ensure-source-column. If it is
-	// absent this query fails to parse; the coalesce below only guards against
-	// NULL values, not against a missing column.
-	query += " ORDER BY (coalesce(t.source, 'dbip') = 'routeviews') DESC, random() LIMIT $1"
-
-	rows, err := conn.Query(ctx, query, args...)
+	rows, err := conn.Query(ctx, query, n)
 	if err != nil {
 		return nil, err
 	}
@@ -335,16 +316,16 @@ func isMobileISP(isp, org string) bool {
 // writeGeo upserts one geolocation result into ip2city_dbiplite_traceroute_tbl.
 // The geographic values map to identically-named columns. The sampled IP is
 // stored in the "query" column (aligned with the JSON schema — ip-api echoes
-// the queried IP there); there is no separate sampled_ip column. On a transport
-// error or an ip-api "fail" response, the geographic columns are left NULL and
-// the reason is recorded in status/classification_note so the range can be
-// retried on a later run (it stays city IS NULL).
+// the queried IP there). On a transport error or an ip-api "fail" response, the
+// geographic columns are left NULL and the reason is recorded in
+// status/classification_note so the prefix can be retried on a later run (it
+// stays city IS NULL).
 //
 // likely_mobile_cgnat is set true when the resolved isp/org looks like a mobile
-// carrier (see isMobileISP). On INSERT (a range with no prior row) the mtr-only
-// numeric columns are given zero-values to satisfy any NOT NULL constraints; on
-// UPDATE hop_count/attempts are left untouched so an existing mtr row's hop data
-// is not clobbered, while likely_mobile_cgnat IS refreshed from this lookup.
+// carrier (see isMobileISP). On INSERT (a network with no prior row) the
+// mtr-only numeric columns are given zero-values to satisfy any NOT NULL
+// constraints; on UPDATE hop_count/attempts are left untouched so an existing
+// mtr row's hop data is not clobbered, while likely_mobile_cgnat IS refreshed.
 func writeGeo(ctx context.Context, conn *pgx.Conn, tgt geoTarget, g geoResult, callErr error) error {
 	var (
 		status  any
@@ -464,11 +445,10 @@ func randomAddrInRange(start, end netip.Addr) (netip.Addr, error) {
 
 // readIPBatch would collect up to size (network, ip) targets to submit as one
 // batch request to the paid endpoint.
-func readIPBatch(ctx context.Context, conn *pgx.Conn, size int, country string, ipv4Only bool) ([]geoTarget, error) {
+func readIPBatch(ctx context.Context, conn *pgx.Conn, size int, ipv4Only bool) ([]geoTarget, error) {
 	_ = ctx
 	_ = conn
 	_ = size
-	_ = country
 	_ = ipv4Only
 	return nil, errors.New("readIPBatch: not implemented (awaiting paid ip-api batch request format)")
 }

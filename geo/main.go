@@ -12,6 +12,7 @@ import (
 	"net/netip"
 	"os"
 	"os/exec"
+	"regexp"
 	"strconv"
 	"strings"
 	"sync"
@@ -38,6 +39,7 @@ type result struct {
 	attempts           int
 	likelyMobileCGN    bool
 	classificationNote *string
+	rdapLookup         *string
 }
 
 // classificationRules holds the contents of traceroute_hostname_rules,
@@ -46,6 +48,11 @@ type classificationRules struct {
 	tldExclusions    map[string]string // ".mil" -> "excluded-mil"
 	domainExclusions map[string]string // "alter.net" -> "excluded-internal"
 	customerMarkers  []string          // "res.", "static.", ...
+	// customerMarkerRegexes holds compiled "customer_marker_regex" rules —
+	// full-hostname regexes for CPE reverse-DNS forms that a plain
+	// label-prefix marker cannot express (e.g. auto-generated PTRs that
+	// encode the customer's own IP address).
+	customerMarkerRegexes []*regexp.Regexp
 }
 
 func loadClassificationRules(ctx context.Context, conn *pgx.Conn) (classificationRules, error) {
@@ -66,18 +73,29 @@ func loadClassificationRules(ctx context.Context, conn *pgx.Conn) (classificatio
 		if err := rows.Scan(&ruleType, &pattern, &statusLabel); err != nil {
 			return rules, err
 		}
-		pattern = strings.ToLower(pattern)
 		switch ruleType {
 		case "tld_exclude":
 			if statusLabel != nil {
-				rules.tldExclusions[pattern] = *statusLabel
+				rules.tldExclusions[strings.ToLower(pattern)] = *statusLabel
 			}
 		case "domain_exclude":
 			if statusLabel != nil {
-				rules.domainExclusions[pattern] = *statusLabel
+				rules.domainExclusions[strings.ToLower(pattern)] = *statusLabel
 			}
 		case "customer_marker":
-			rules.customerMarkers = append(rules.customerMarkers, pattern)
+			rules.customerMarkers = append(rules.customerMarkers, strings.ToLower(pattern))
+		case "customer_marker_regex":
+			// Patterns are matched against a lower-cased hostname (see
+			// matchCustomerMarker), so they are compiled as-is rather than
+			// lower-cased, which would corrupt regex metacharacters. An
+			// invalid pattern is skipped with a warning instead of aborting
+			// the whole run.
+			re, compileErr := regexp.Compile(pattern)
+			if compileErr != nil {
+				log.Printf("skipping invalid customer_marker_regex %q: %v", pattern, compileErr)
+				continue
+			}
+			rules.customerMarkerRegexes = append(rules.customerMarkerRegexes, re)
 		}
 	}
 	return rules, rows.Err()
@@ -103,16 +121,42 @@ func (r classificationRules) matchExclusion(hostname string) (string, bool) {
 	return "", false
 }
 
-// matchCustomerMarker is a plain case-insensitive substring check.
-// Patterns are expected to include their own trailing "." (e.g.
-// "res.") which already acts as a boundary — "res." matches
-// "...res.spectrum.com" but not "resource.net", since there's no dot
-// immediately after "res" in the latter.
+// matchCustomerMarker reports whether any customer-equipment marker
+// appears at a DNS label boundary — i.e. the marker begins the hostname
+// or immediately follows a "." separator. Markers carry their own
+// trailing "." (e.g. "res.", "cust.") to bound the right side, so a
+// match corresponds to a full leading label component such as
+// "res.spectrum.com" or "...cust.rr.com".
+//
+// Requiring the LEFT boundary is what prevents a marker from matching
+// mid-label. A plain substring check misfired on carrier customer-edge
+// zones: e.g. Telia's "arizonastate-ic-373367.ip.twelve99-cust.net" is a
+// CARRIER interconnect node that names the customer, but "cust." matched
+// inside the label "twelve99-cust", so it was wrongly skipped as customer
+// CPE and the trace fell back to an upstream backbone hop. "cust" here is
+// preceded by "-" (not a label boundary), so it no longer matches.
 func (r classificationRules) matchCustomerMarker(hostname string) bool {
 	lower := strings.ToLower(hostname)
-	for _, marker := range r.customerMarkers {
-		if strings.Contains(lower, marker) {
+	for _, re := range r.customerMarkerRegexes {
+		if re.MatchString(lower) {
 			return true
+		}
+	}
+	for _, marker := range r.customerMarkers {
+		if marker == "" {
+			continue
+		}
+		from := 0
+		for {
+			idx := strings.Index(lower[from:], marker)
+			if idx < 0 {
+				break
+			}
+			pos := from + idx
+			if pos == 0 || lower[pos-1] == '.' {
+				return true
+			}
+			from = pos + 1
 		}
 	}
 	return false
@@ -128,10 +172,28 @@ func main() {
 	country := flag.String("country", "", "restrict to this country_iso_code (e.g. US); empty = no filter")
 	maxAttempts := flag.Int("max-attempts", 3, "retry with a new random address from the same range while status is incomplete, up to this many tries")
 	backtrackHops := flag.Int("backtrack-hops", 5, "how many responding hops back from the trace's far end to search for a usable carrier hostname")
+	rdapScriptFlag := flag.String("rdap-script", "./rdap-lookup.sh", "path to rdap-lookup.sh; run on the sampled IP as an ownership/location fallback when status is excluded-internal (empty string disables the fallback)")
+	ipv4Only := flag.Bool("ipv4-only", false, "sample only IPv4 ranges even when IPv6 connectivity is available (skips the IPv6 connectivity probe)")
 	flag.Parse()
 
 	if _, err := exec.LookPath("mtr"); err != nil {
 		log.Fatalf("mtr binary not found on PATH: %v", err)
+	}
+
+	// The RDAP fallback is only a last resort for excluded-internal
+	// results (see runRange). If the script isn't present we disable
+	// the fallback with a warning rather than aborting the whole run —
+	// the traceroute classification is still useful without it.
+	rdapScript := *rdapScriptFlag
+	if rdapScript != "" {
+		if _, err := os.Stat(rdapScript); err != nil {
+			log.Printf("warning: rdap script %q not usable (%v); excluded-internal RDAP fallback disabled", rdapScript, err)
+			rdapScript = ""
+		} else {
+			log.Printf("excluded-internal RDAP fallback enabled via %q", rdapScript)
+		}
+	} else {
+		log.Printf("excluded-internal RDAP fallback disabled (-rdap-script empty)")
 	}
 
 	databaseURL := os.Getenv("DATABASE_URL")
@@ -151,11 +213,19 @@ func main() {
 	if err != nil {
 		log.Fatalf("loading classification rules: %v", err)
 	}
-	log.Printf("loaded classification rules: %d tld, %d domain, %d customer-marker",
-		len(rules.tldExclusions), len(rules.domainExclusions), len(rules.customerMarkers))
+	log.Printf("loaded classification rules: %d tld, %d domain, %d customer-marker, %d customer-marker-regex",
+		len(rules.tldExclusions), len(rules.domainExclusions), len(rules.customerMarkers), len(rules.customerMarkerRegexes))
 
-	ipv6OK := ipv6Available()
-	log.Printf("IPv6 connectivity probe: available=%v", ipv6OK)
+	// includeIPv6 gates whether IPv6 ranges are sampled at all. It requires
+	// both working IPv6 connectivity AND that -ipv4-only was not set. With
+	// -ipv4-only we skip the connectivity probe entirely and force IPv4.
+	ipv6OK := false
+	if *ipv4Only {
+		log.Printf("IPv6 sampling disabled via -ipv4-only")
+	} else {
+		ipv6OK = ipv6Available()
+		log.Printf("IPv6 connectivity probe: available=%v", ipv6OK)
+	}
 
 	targets, err := sampleTargets(ctx, conn, *sampleSize, *country, ipv6OK)
 	if err != nil {
@@ -181,7 +251,7 @@ func main() {
 		go func() {
 			defer wg.Done()
 			for t := range jobs {
-				results <- runRange(t, *maxHops, *cycles, *interval, *useUDP, method, *maxAttempts, *backtrackHops, rules)
+				results <- runRange(t, *maxHops, *cycles, *interval, *useUDP, method, *maxAttempts, *backtrackHops, rules, rdapScript)
 			}
 		}()
 	}
@@ -205,9 +275,13 @@ func main() {
 			continue
 		}
 		written++
-		log.Printf("[%d/%d] %s -> sampled %s (%d attempts) status=%s last_hop=%v(#%d) hostname=%v note=%v",
+		rdapNote := "-"
+		if r.rdapLookup != nil {
+			rdapNote = firstLine(*r.rdapLookup)
+		}
+		log.Printf("[%d/%d] %s -> sampled %s (%d attempts) status=%s last_hop=%v(#%d) hostname=%v note=%v rdap=%q",
 			written, len(targets), r.network, r.sampledIP, r.attempts, r.status,
-			derefAddr(r.lastHopIP), r.lastHopNumber, derefStr(r.lastHopName), derefStr(r.classificationNote))
+			derefAddr(r.lastHopIP), r.lastHopNumber, derefStr(r.lastHopName), derefStr(r.classificationNote), rdapNote)
 	}
 
 	log.Printf("done: %d results written", written)
@@ -356,21 +430,10 @@ func mtrTrace(ctx context.Context, dst netip.Addr, maxHops, cycles int, interval
 	return hops, nil
 }
 
-// runOne implements the full classification pipeline:
-//  1. Order all responding hops from the far end of the trace backward.
-//  2. Find the nearest one with ANY resolvable hostname (content not
-//     yet considered) — if that's at position 2 or 3, the whole path
-//     died right at the local ISP boundary: status=unreachable,
-//     terminal, regardless of what the hostname actually says.
-//  3. Otherwise, walk backward through resolved hostnames: a match
-//     against a TLD/domain exclusion rule is terminal with that
-//     rule's status label; a match against a customer-equipment
-//     marker is skipped (keep searching further back); the first
-//     hostname that's neither is accepted as the carrier hop.
-//  4. Once accepted, check the very next hop position for a latency
-//     jump (>20ms) — a signal of a long-haul backbone link, meaning
-//     the accepted hop is core infrastructure, not close to the
-//     customer: overrides to status=excluded-internal.
+// runOne runs the mtr trace for one sampled address and hands the hop list
+// to classifyHops. It stamps the network/sampled/method fields; all
+// classification logic lives in classifyHops so it can be exercised
+// deterministically without invoking mtr or live DNS.
 func runOne(network string, sampled netip.Addr, maxHops, cycles int, interval float64, useUDP bool, method string, backtrackHops int, rules classificationRules) result {
 	overallTimeout := time.Duration(float64(cycles)*interval+float64(maxHops)+10) * time.Second
 
@@ -382,7 +445,36 @@ func runOne(network string, sampled netip.Addr, maxHops, cycles int, interval fl
 		return result{network: network, sampledIP: sampled, status: "mtr_error: " + err.Error(), probeMethod: method}
 	}
 
-	r := result{network: network, sampledIP: sampled, hopCount: len(hops), probeMethod: method}
+	r := classifyHops(hops, reverseDNS, backtrackHops, rules)
+	r.network = network
+	r.sampledIP = sampled
+	r.probeMethod = method
+	return r
+}
+
+// classifyHops implements the full classification pipeline over an ordered
+// hop list, taking resolve() for reverse DNS so it is decoupled from the
+// network:
+//  1. Order all responding hops from the far end of the trace backward.
+//  2. Find the nearest one with ANY resolvable hostname (content not
+//     yet considered) — if that's at position 2 or 3, the whole path
+//     died right at the local ISP boundary: status=unreachable,
+//     terminal, regardless of what the hostname actually says.
+//  3. Otherwise, walk backward through resolved hostnames: a match
+//     against a TLD/domain exclusion rule is terminal with that
+//     rule's status label; a match against a customer-equipment
+//     marker is skipped (keep searching further back); the first
+//     hostname that's neither is accepted as the carrier hop.
+//  4. Once accepted, compare the accepted hop's latency to the very next
+//     hop: a large *delta* (a jump of more than 20ms from this hop to the
+//     next) signals a long-haul backbone link beyond the accepted hop,
+//     meaning it is core infrastructure far from the customer, and
+//     overrides to status=excluded-internal. This is a delta, NOT the next
+//     hop's absolute latency — on a transcontinental path every terminal
+//     hop sits well above 20ms, so an absolute test misfires and buries
+//     legitimate customer-serving edge nodes as excluded-internal.
+func classifyHops(hops []hop, resolve func(netip.Addr) *string, backtrackHops int, rules classificationRules) result {
+	r := result{hopCount: len(hops)}
 
 	var candidates []hop
 	for i := len(hops) - 1; i >= 0; i-- {
@@ -408,7 +500,7 @@ func runOne(network string, sampled netip.Addr, maxHops, cycles int, interval fl
 	nearestIdx := -1
 	var nearestName string
 	for i := 0; i < limit; i++ {
-		if name := reverseDNS(candidates[i].addr); name != nil {
+		if name := resolve(candidates[i].addr); name != nil {
 			nearestIdx = i
 			nearestName = *name
 			break
@@ -437,7 +529,7 @@ func runOne(network string, sampled netip.Addr, maxHops, cycles int, interval fl
 		if i == nearestIdx {
 			hn = nearestName
 		} else {
-			resolved := reverseDNS(c.addr)
+			resolved := resolve(c.addr)
 			if resolved == nil {
 				continue
 			}
@@ -464,9 +556,10 @@ func runOne(network string, sampled netip.Addr, maxHops, cycles int, interval fl
 		r.lastHopNumber = c.num
 		r.likelyMobileCGN = isLikelyMobileCarrierHostname(hn)
 
-		if next, ok := byNum[c.num+1]; ok && next.ok && next.hasLatency && next.avgMs > 20.0 {
+		if next, ok := byNum[c.num+1]; ok && next.ok && next.hasLatency && c.hasLatency && (next.avgMs-c.avgMs) > 20.0 {
 			r.status = "excluded-internal"
-			note := fmt.Sprintf("long-haul latency jump at hop %d (%.1fms)", next.num, next.avgMs)
+			note := fmt.Sprintf("long-haul latency jump after hop %d: +%.1fms to hop %d (%.1fms)",
+				c.num, next.avgMs-c.avgMs, next.num, next.avgMs)
 			r.classificationNote = &note
 		}
 
@@ -509,7 +602,7 @@ func isTerminal(status string) bool {
 	return status == "reached" || status == "unreachable" || strings.HasPrefix(status, "excluded-")
 }
 
-func runRange(t target, maxHops, cycles int, interval float64, useUDP bool, method string, maxAttempts, backtrackHops int, rules classificationRules) result {
+func runRange(t target, maxHops, cycles int, interval float64, useUDP bool, method string, maxAttempts, backtrackHops int, rules classificationRules, rdapScript string) result {
 	var best result
 	haveBest := false
 	tried := map[netip.Addr]bool{}
@@ -544,7 +637,53 @@ func runRange(t target, maxHops, cycles int, interval float64, useUDP bool, meth
 	}
 
 	best.attempts = totalAttempts
+
+	// RDAP ownership/location fallback.
+	//
+	// Only excluded-internal reaches here for RDAP: that status means the
+	// trace terminated inside carrier-internal backbone with no usable,
+	// customer-locating domain-resolvable carrier node. Those are exactly
+	// the customers served directly off a wholesale/trunk operator with no
+	// domain-resolvable routing equipment, whose city we can't read from a
+	// hostname. When such a node *does* exist the range resolves to
+	// "reached" instead and its domain-encoded location takes precedence —
+	// we deliberately never RDAP those, because for retail ISPs the ARIN
+	// address is the ISP headquarters, not the customer.
+	if rdapScript != "" && best.status == "excluded-internal" {
+		out, err := runRDAP(rdapScript, best.sampledIP)
+		if err != nil {
+			note := "rdap_lookup failed: " + err.Error()
+			if out != "" {
+				note += " | " + firstLine(out)
+			}
+			best.rdapLookup = &note
+		} else if out != "" {
+			best.rdapLookup = &out
+		}
+	}
+
 	return best
+}
+
+// runRDAP invokes rdap-lookup.sh against the sampled IP to recover the
+// registrant's ownership and geographic address from ARIN's RDAP registry.
+// It is invoked via `bash <script>` so it works regardless of the script's
+// executable bit. Combined stdout+stderr is returned so the script's own
+// diagnostic messages (e.g. non-200 responses) are preserved on failure.
+func runRDAP(scriptPath string, ip netip.Addr) (string, error) {
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+
+	cmd := exec.CommandContext(ctx, "bash", scriptPath, ip.String())
+	out, err := cmd.CombinedOutput()
+	return strings.TrimSpace(string(out)), err
+}
+
+func firstLine(s string) string {
+	if i := strings.IndexByte(s, '\n'); i >= 0 {
+		return s[:i]
+	}
+	return s
 }
 
 func randomAddrInRangeExcluding(start, end netip.Addr, tried map[netip.Addr]bool) (netip.Addr, error) {
@@ -614,8 +753,8 @@ func writeResult(ctx context.Context, conn *pgx.Conn, r result) error {
 	_, err := conn.Exec(ctx, `
 INSERT INTO ip2city_dbiplite_traceroute_tbl
     (network, sampled_ip, last_hop_ip, last_hop_hostname, last_hop_number, hop_count, status,
-     probe_method, likely_mobile_cgnat, classification_note, attempts, ran_at)
-VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, now())
+     probe_method, likely_mobile_cgnat, classification_note, attempts, rdap_lookup, ran_at)
+VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, now())
 ON CONFLICT (network) DO UPDATE SET
     sampled_ip           = EXCLUDED.sampled_ip,
     last_hop_ip           = EXCLUDED.last_hop_ip,
@@ -627,9 +766,10 @@ ON CONFLICT (network) DO UPDATE SET
     likely_mobile_cgnat           = EXCLUDED.likely_mobile_cgnat,
     classification_note             = EXCLUDED.classification_note,
     attempts                          = EXCLUDED.attempts,
+    rdap_lookup                         = EXCLUDED.rdap_lookup,
     ran_at                              = now()
 `, r.network, r.sampledIP, r.lastHopIP, r.lastHopName, nullIfZero(r.lastHopNumber), r.hopCount, r.status,
-		r.probeMethod, r.likelyMobileCGN, r.classificationNote, r.attempts)
+		r.probeMethod, r.likelyMobileCGN, r.classificationNote, r.attempts, r.rdapLookup)
 	return err
 }
 
