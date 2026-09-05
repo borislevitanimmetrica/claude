@@ -67,12 +67,33 @@ func main() {
 	}
 
 	if *createIndex {
-		log.Printf("ensuring GiST index ip2city_network_gist (one-time; can take minutes on ~14M rows)...")
-		t0 := time.Now()
-		if _, err := conn.Exec(ctx, "CREATE INDEX IF NOT EXISTS ip2city_network_gist ON ip2city_dbiplite_tbl USING gist (network inet_ops)"); err != nil {
-			log.Fatalf("creating index: %v", err)
+		// Only create an index if NO gist index already covers
+		// ip2city_dbiplite_tbl.network. The importer builds
+		// ip2city_dbiplite_tbl_network_gist, so unconditionally creating a
+		// second one under our own name (as an earlier version did) left two
+		// identical gist indexes on the same column: wasted disk and slower
+		// writes for no read benefit.
+		var haveGist bool
+		checkSQL := "SELECT EXISTS (SELECT 1 FROM pg_index i " +
+			"JOIN pg_class idx ON idx.oid = i.indexrelid " +
+			"JOIN pg_class tbl ON tbl.oid = i.indrelid " +
+			"JOIN pg_am am ON am.oid = idx.relam " +
+			"JOIN pg_attribute a ON a.attrelid = tbl.oid AND a.attnum = i.indkey[0] " +
+			"WHERE tbl.relname = 'ip2city_dbiplite_tbl' " +
+			"AND am.amname = 'gist' AND a.attname = 'network')"
+		if err := conn.QueryRow(ctx, checkSQL).Scan(&haveGist); err != nil {
+			log.Fatalf("checking for existing gist index: %v", err)
 		}
-		log.Printf("index ready (%s)", time.Since(t0).Round(time.Second))
+		if haveGist {
+			log.Printf("a gist index on ip2city_dbiplite_tbl(network) already exists; not creating another")
+		} else {
+			log.Printf("no gist index on ip2city_dbiplite_tbl(network); creating one (can take minutes)...")
+			t0 := time.Now()
+			if _, err := conn.Exec(ctx, "CREATE INDEX IF NOT EXISTS ip2city_network_gist ON ip2city_dbiplite_tbl USING gist (network inet_ops)"); err != nil {
+				log.Fatalf("creating index: %v", err)
+			}
+			log.Printf("index ready (%s)", time.Since(t0).Round(time.Second))
+		}
 	}
 
 	// Aggregate once into a session-temp table: for every db-ip range, the count
