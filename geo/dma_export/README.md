@@ -57,6 +57,39 @@ Reads stdin when given no file, so this also works:
 
     psql "$DATABASE_URL" -v DMA="Indianapolis, IN DMA" -At -f dma_cidrs.sql | ./bin/expand_cidrs -out dma_ips.txt.gz
 
+## dma2city_tbl must list EVERY city in the DMA
+
+Verified by test, and it matters: switching from db-ip values to ip-api measured
+values can **remove** ranges from a DMA.
+
+A range db-ip labels "Indianapolis" may measure as "Greenwood", "Carmel",
+"Fishers", "Noblesville" and so on, because the measurement is per-/24 and
+finer-grained. If `dma2city_tbl` maps only "Indianapolis" to
+`Indianapolis, IN DMA`, then every range that measures to a suburb silently drops
+out of the export.
+
+In the test fixture, `dma_cidrs.sql` returned 3 ranges and
+`dma_cidrs_measured.sql` returned 2, purely because the measured city
+("Greenwood") was absent from `dma2city_tbl`.
+
+So before trusting the measured variant, compare the two row counts:
+
+    psql "$DATABASE_URL" -At -f dma_cidrs.sql          | wc -l
+    psql "$DATABASE_URL" -At -f dma_cidrs_measured.sql | wc -l
+
+A measured count LOWER than the db-ip count means missing city-to-DMA mappings,
+not a better result. Find the gaps with:
+
+    SELECT DISTINCT tr.city, tr.regionname
+    FROM ip2city_dbiplite_traceroute_tbl tr
+    WHERE tr.city IS NOT NULL
+      AND NOT EXISTS (SELECT 1 FROM dma2city_tbl d
+                      WHERE d.city = tr.city AND d.state = tr.regionname)
+    ORDER BY 1;
+
+Everything that query returns is a measured city with no DMA mapping, and every
+range resolving to it is currently invisible to the export.
+
 ## Notes
 
 - IPv4 only, enforced in both the SQL (`family(network) = 4`) and the tool.
