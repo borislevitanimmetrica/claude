@@ -1,0 +1,3388 @@
+{
+    "report": {
+        "mtr": {
+            "src": "Immetrica-Mint30",
+            "dst": "23.7.90.209",
+            "tos": 0,
+            "tests": 10,
+            "psize": "64",
+            "bitpattern": "0x00"
+        },
+        "hubs": [
+            {
+                "count": 1,
+                "host": "router.asus.com",
+                "Loss%": 0.0,
+                "Snt": 10,
+                "Last": 1.447,
+                "Avg": 1.692,
+                "Best": 1.262,
+                "Wrst": 2.925,
+                "StDev": 0.509
+            },
+            {
+                "count": 2,
+                "host": "lo0-100.BSTNMA-VFTTP-301.verizon-gni.net",
+                "Loss%": 0.0,
+                "Snt": 10,
+                "Last": 7.503,
+                "Avg": 6.455,
+                "Best": 4.977,
+                "Wrst": 9.723,
+                "StDev": 1.655
+            },
+            {
+                "count": 3,
+                "host": "100.41.25.202",
+                "Loss%": 0.0,
+                "Snt": 10,
+                "Last": 8.745,
+                "Avg": 9.209,
+                "Best": 7.496,
+                "Wrst": 12.973,
+                "StDev": 1.606
+            },
+            {
+                "count": 4,
+                "host": "???",
+                "Loss%": 100.0,
+                "Snt": 10,
+                "Last": 0.0,
+                "Avg": 0.0,
+                "Best": 0.0,
+                "Wrst": 0.0,
+                "StDev": 0.0
+            },
+            {
+                "count": 5,
+                "host": "customer.alter.net",
+                "Loss%": 0.0,
+                "Snt": 10,
+                "Last": 23.631,
+                "Avg": 16.565,
+                "Best": 4.896,
+                "Wrst": 41.817,
+                "StDev": 12.977
+            },
+            {
+                "count": 6,
+                "host": "ae2.r02.bos02.icn.netarch.akamai.com",
+                "Loss%": 0.0,
+                "Snt": 10,
+                "Last": 12.61,
+                "Avg": 12.537,
+                "Best": 9.846,
+                "Wrst": 16.53,
+                "StDev": 1.786
+            },
+            {
+                "count": 7,
+                "host": "???",
+                "Loss%": 100.0,
+                "Snt": 10,
+                "Last": 0.0,
+                "Avg": 0.0,
+                "Best": 0.0,
+                "Wrst": 0.0,
+                "StDev": 0.0
+            }
+        ]
+    }
+}
+Start: 2026-08-30T17:45:59-0400
+HOST: Immetrica-Mint30                         Loss%   Snt   Last   Avg  Best  Wrst StDev
+  1.|-- router.asus.com                           0.0%    10    1.9   1.9   1.4   2.8   0.4
+  2.|-- lo0-100.BSTNMA-VFTTP-301.verizon-gni.net  0.0%    10    5.1   9.9   5.1  35.3   9.1
+  3.|-- 100.41.25.204                             0.0%    10    7.7   7.4   5.3   9.1   1.3
+  4.|-- ???                                      100.0    10    0.0   0.0   0.0   0.0   0.0
+{
+    "report": {
+        "mtr": {
+            "src": "Immetrica-Mint30",
+            "dst": "96.2.168.16",
+            "tos": 0,
+            "tests": 10,
+            "psize": "64",
+            "bitpattern": "0x00"
+        },
+        "hubs": [
+            {
+                "count": 1,
+                "host": "router.asus.com",
+                "Loss%": 0.0,
+                "Snt": 10,
+                "Last": 1.553,
+                "Avg": 2.424,
+                "Best": 0.891,
+                "Wrst": 5.713,
+                "StDev": 1.527
+            },
+            {
+                "count": 2,
+                "host": "lo0-100.BSTNMA-VFTTP-301.verizon-gni.net",
+                "Loss%": 0.0,
+                "Snt": 10,
+                "Last": 4.333,
+                "Avg": 8.397,
+                "Best": 3.627,
+                "Wrst": 16.392,
+                "StDev": 3.789
+            },
+            {
+                "count": 3,
+                "host": "100.41.25.202",
+                "Loss%": 0.0,
+                "Snt": 10,
+                "Last": 5.974,
+                "Avg": 7.251,
+                "Best": 5.524,
+                "Wrst": 8.807,
+                "StDev": 1.159
+            },
+            {
+                "count": 4,
+                "host": "???",
+                "Loss%": 100.0,
+                "Snt": 10,
+                "Last": 0.0,
+                "Avg": 0.0,
+                "Best": 0.0,
+                "Wrst": 0.0,
+                "StDev": 0.0
+            },
+            {
+                "count": 5,
+                "host": "???",
+                "Loss%": 100.0,
+                "Snt": 10,
+                "Last": 0.0,
+                "Avg": 0.0,
+                "Best": 0.0,
+                "Wrst": 0.0,
+                "StDev": 0.0
+            },
+            {
+                "count": 6,
+                "host": "ae8.cs1.lga5.us.zip.zayo.com",
+                "Loss%": 0.0,
+                "Snt": 10,
+                "Last": 36.535,
+                "Avg": 36.359,
+                "Best": 34.257,
+                "Wrst": 38.361,
+                "StDev": 1.395
+            },
+            {
+                "count": 7,
+                "host": "ae45.cr1.ewr1.us.zip.zayo.com",
+                "Loss%": 70.0,
+                "Snt": 10,
+                "Last": 36.117,
+                "Avg": 35.815,
+                "Best": 35.093,
+                "Wrst": 36.235,
+                "StDev": 0.628
+            },
+            {
+                "count": 8,
+                "host": "ae5.cr2.ewr14.us.zip.zayo.com",
+                "Loss%": 50.0,
+                "Snt": 10,
+                "Last": 35.458,
+                "Avg": 35.032,
+                "Best": 33.366,
+                "Wrst": 35.976,
+                "StDev": 1.119
+            },
+            {
+                "count": 9,
+                "host": "ae7.cr1.ord8.us.zip.zayo.com",
+                "Loss%": 70.0,
+                "Snt": 10,
+                "Last": 34.832,
+                "Avg": 35.733,
+                "Best": 34.832,
+                "Wrst": 36.968,
+                "StDev": 1.106
+            },
+            {
+                "count": 10,
+                "host": "ae3.cr2.ord9.us.zip.zayo.com",
+                "Loss%": 40.0,
+                "Snt": 10,
+                "Last": 35.958,
+                "Avg": 36.104,
+                "Best": 35.45,
+                "Wrst": 36.933,
+                "StDev": 0.549
+            },
+            {
+                "count": 11,
+                "host": "ae4.cr2.msp1.us.zip.zayo.com",
+                "Loss%": 0.0,
+                "Snt": 10,
+                "Last": 40.447,
+                "Avg": 35.516,
+                "Best": 33.424,
+                "Wrst": 40.447,
+                "StDev": 1.914
+            },
+            {
+                "count": 12,
+                "host": "ae2.mpr3.msp1.us.zip.zayo.com",
+                "Loss%": 0.0,
+                "Snt": 10,
+                "Last": 37.41,
+                "Avg": 36.389,
+                "Best": 34.26,
+                "Wrst": 38.331,
+                "StDev": 1.228
+            },
+            {
+                "count": 13,
+                "host": "209.133.98.30",
+                "Loss%": 0.0,
+                "Snt": 10,
+                "Last": 42.913,
+                "Avg": 43.009,
+                "Best": 39.849,
+                "Wrst": 49.518,
+                "StDev": 2.731
+            },
+            {
+                "count": 14,
+                "host": "24-49-122-7-static.midco.net",
+                "Loss%": 0.0,
+                "Snt": 10,
+                "Last": 42.882,
+                "Avg": 44.171,
+                "Best": 42.71,
+                "Wrst": 51.876,
+                "StDev": 2.768
+            },
+            {
+                "count": 15,
+                "host": "24-220-255-49-static.midco.net",
+                "Loss%": 0.0,
+                "Snt": 10,
+                "Last": 46.676,
+                "Avg": 45.557,
+                "Best": 43.983,
+                "Wrst": 48.096,
+                "StDev": 1.203
+            },
+            {
+                "count": 16,
+                "host": "96-2-128-124-static.midco.net",
+                "Loss%": 0.0,
+                "Snt": 10,
+                "Last": 46.876,
+                "Avg": 46.811,
+                "Best": 44.692,
+                "Wrst": 51.065,
+                "StDev": 1.801
+            },
+            {
+                "count": 17,
+                "host": "24-220-19-245-static.midco.net",
+                "Loss%": 0.0,
+                "Snt": 10,
+                "Last": 50.815,
+                "Avg": 52.815,
+                "Best": 49.797,
+                "Wrst": 59.955,
+                "StDev": 2.905
+            },
+            {
+                "count": 18,
+                "host": "24-220-1-136-static.midco.net",
+                "Loss%": 0.0,
+                "Snt": 10,
+                "Last": 54.18,
+                "Avg": 53.618,
+                "Best": 52.282,
+                "Wrst": 55.669,
+                "StDev": 0.991
+            },
+            {
+                "count": 19,
+                "host": "24-220-255-135-static.midco.net",
+                "Loss%": 0.0,
+                "Snt": 10,
+                "Last": 49.087,
+                "Avg": 50.874,
+                "Best": 48.617,
+                "Wrst": 52.85,
+                "StDev": 1.419
+            },
+            {
+                "count": 20,
+                "host": "96-2-168-16-dynamic.midco.net",
+                "Loss%": 0.0,
+                "Snt": 10,
+                "Last": 63.535,
+                "Avg": 63.205,
+                "Best": 59.793,
+                "Wrst": 69.914,
+                "StDev": 3.185
+            }
+        ]
+    }
+}
+{
+    "report": {
+        "mtr": {
+            "src": "Immetrica-Mint30",
+            "dst": "108.252.63.229",
+            "tos": 0,
+            "tests": 10,
+            "psize": "64",
+            "bitpattern": "0x00"
+        },
+        "hubs": [
+            {
+                "count": 1,
+                "host": "router.asus.com",
+                "Loss%": 0.0,
+                "Snt": 10,
+                "Last": 2.84,
+                "Avg": 2.459,
+                "Best": 1.504,
+                "Wrst": 5.385,
+                "StDev": 1.127
+            },
+            {
+                "count": 2,
+                "host": "lo0-100.BSTNMA-VFTTP-301.verizon-gni.net",
+                "Loss%": 0.0,
+                "Snt": 10,
+                "Last": 4.972,
+                "Avg": 6.628,
+                "Best": 4.972,
+                "Wrst": 8.212,
+                "StDev": 1.096
+            },
+            {
+                "count": 3,
+                "host": "100.41.25.202",
+                "Loss%": 0.0,
+                "Snt": 10,
+                "Last": 8.064,
+                "Avg": 8.443,
+                "Best": 7.098,
+                "Wrst": 9.672,
+                "StDev": 0.807
+            },
+            {
+                "count": 4,
+                "host": "lag-3.NYCMNYAA-PPR01-CC.ALTER.NET",
+                "Loss%": 90.0,
+                "Snt": 10,
+                "Last": 13.575,
+                "Avg": 13.575,
+                "Best": 13.575,
+                "Wrst": 13.575,
+                "StDev": 0.0
+            },
+            {
+                "count": 5,
+                "host": "???",
+                "Loss%": 100.0,
+                "Snt": 10,
+                "Last": 0.0,
+                "Avg": 0.0,
+                "Best": 0.0,
+                "Wrst": 0.0,
+                "StDev": 0.0
+            }
+        ]
+    }
+}
+{
+    "report": {
+        "mtr": {
+            "src": "Immetrica-Mint30",
+            "dst": "65.118.147.91",
+            "tos": 0,
+            "tests": 10,
+            "psize": "64",
+            "bitpattern": "0x00"
+        },
+        "hubs": [
+            {
+                "count": 1,
+                "host": "router.asus.com",
+                "Loss%": 0.0,
+                "Snt": 10,
+                "Last": 1.363,
+                "Avg": 2.304,
+                "Best": 1.208,
+                "Wrst": 5.229,
+                "StDev": 1.196
+            },
+            {
+                "count": 2,
+                "host": "lo0-100.BSTNMA-VFTTP-301.verizon-gni.net",
+                "Loss%": 0.0,
+                "Snt": 10,
+                "Last": 20.639,
+                "Avg": 8.134,
+                "Best": 3.211,
+                "Wrst": 20.639,
+                "StDev": 4.702
+            },
+            {
+                "count": 3,
+                "host": "100.41.25.204",
+                "Loss%": 0.0,
+                "Snt": 10,
+                "Last": 8.967,
+                "Avg": 7.878,
+                "Best": 6.162,
+                "Wrst": 9.011,
+                "StDev": 0.847
+            },
+            {
+                "count": 4,
+                "host": "lag-12.BSTPMALL-PPR02-CC.ALTER.NET",
+                "Loss%": 90.0,
+                "Snt": 10,
+                "Last": 5.732,
+                "Avg": 5.732,
+                "Best": 5.732,
+                "Wrst": 5.732,
+                "StDev": 0.0
+            },
+            {
+                "count": 5,
+                "host": "customer.alter.net",
+                "Loss%": 0.0,
+                "Snt": 10,
+                "Last": 6.792,
+                "Avg": 6.557,
+                "Best": 5.644,
+                "Wrst": 8.061,
+                "StDev": 0.832
+            },
+            {
+                "count": 6,
+                "host": "4.69.209.78",
+                "Loss%": 0.0,
+                "Snt": 10,
+                "Last": 24.414,
+                "Avg": 16.082,
+                "Best": 9.404,
+                "Wrst": 33.51,
+                "StDev": 7.788
+            },
+            {
+                "count": 7,
+                "host": "???",
+                "Loss%": 100.0,
+                "Snt": 10,
+                "Last": 0.0,
+                "Avg": 0.0,
+                "Best": 0.0,
+                "Wrst": 0.0,
+                "StDev": 0.0
+            }
+        ]
+    }
+}
+{
+    "report": {
+        "mtr": {
+            "src": "Immetrica-Mint30",
+            "dst": "75.144.93.249",
+            "tos": 0,
+            "tests": 10,
+            "psize": "64",
+            "bitpattern": "0x00"
+        },
+        "hubs": [
+            {
+                "count": 1,
+                "host": "router.asus.com",
+                "Loss%": 0.0,
+                "Snt": 10,
+                "Last": 2.057,
+                "Avg": 2.374,
+                "Best": 1.467,
+                "Wrst": 6.11,
+                "StDev": 1.418
+            },
+            {
+                "count": 2,
+                "host": "lo0-100.BSTNMA-VFTTP-301.verizon-gni.net",
+                "Loss%": 0.0,
+                "Snt": 10,
+                "Last": 10.216,
+                "Avg": 7.952,
+                "Best": 4.51,
+                "Wrst": 18.647,
+                "StDev": 4.116
+            },
+            {
+                "count": 3,
+                "host": "100.41.25.202",
+                "Loss%": 0.0,
+                "Snt": 10,
+                "Last": 7.791,
+                "Avg": 8.018,
+                "Best": 6.022,
+                "Wrst": 10.454,
+                "StDev": 1.427
+            },
+            {
+                "count": 4,
+                "host": "???",
+                "Loss%": 100.0,
+                "Snt": 10,
+                "Last": 0.0,
+                "Avg": 0.0,
+                "Best": 0.0,
+                "Wrst": 0.0,
+                "StDev": 0.0
+            },
+            {
+                "count": 5,
+                "host": "customer.alter.net",
+                "Loss%": 10.0,
+                "Snt": 10,
+                "Last": 6.369,
+                "Avg": 6.271,
+                "Best": 5.209,
+                "Wrst": 7.317,
+                "StDev": 0.611
+            },
+            {
+                "count": 6,
+                "host": "be-1413-cs04.pittsburgh.pa.ibone.comcast.net",
+                "Loss%": 0.0,
+                "Snt": 10,
+                "Last": 21.16,
+                "Avg": 21.999,
+                "Best": 20.966,
+                "Wrst": 23.08,
+                "StDev": 0.693
+            },
+            {
+                "count": 7,
+                "host": "be-32141-arsc1.taylor.mi.michigan.comcast.net",
+                "Loss%": 0.0,
+                "Snt": 10,
+                "Last": 30.65,
+                "Avg": 30.122,
+                "Best": 28.225,
+                "Wrst": 31.488,
+                "StDev": 1.125
+            },
+            {
+                "count": 8,
+                "host": "po-201-xar01.holt.mi.michigan.comcast.net",
+                "Loss%": 0.0,
+                "Snt": 10,
+                "Last": 33.133,
+                "Avg": 34.106,
+                "Best": 32.829,
+                "Wrst": 35.848,
+                "StDev": 1.019
+            },
+            {
+                "count": 9,
+                "host": "po-3-rur301.holt.mi.michigan.comcast.net",
+                "Loss%": 0.0,
+                "Snt": 10,
+                "Last": 37.249,
+                "Avg": 35.038,
+                "Best": 33.574,
+                "Wrst": 37.586,
+                "StDev": 1.371
+            },
+            {
+                "count": 10,
+                "host": "96.217.156.202",
+                "Loss%": 0.0,
+                "Snt": 10,
+                "Last": 33.311,
+                "Avg": 34.936,
+                "Best": 33.311,
+                "Wrst": 37.041,
+                "StDev": 1.133
+            },
+            {
+                "count": 11,
+                "host": "68.41.195.21",
+                "Loss%": 0.0,
+                "Snt": 10,
+                "Last": 43.565,
+                "Avg": 44.235,
+                "Best": 42.547,
+                "Wrst": 47.61,
+                "StDev": 1.404
+            },
+            {
+                "count": 12,
+                "host": "68.41.195.21",
+                "Loss%": 90.0,
+                "Snt": 10,
+                "Last": 3114.1,
+                "Avg": 3114.1,
+                "Best": 3114.1,
+                "Wrst": 3114.1,
+                "StDev": 0.0
+            }
+        ]
+    }
+}
+{
+    "report": {
+        "mtr": {
+            "src": "Immetrica-Mint30",
+            "dst": "207.13.122.38",
+            "tos": 0,
+            "tests": 10,
+            "psize": "64",
+            "bitpattern": "0x00"
+        },
+        "hubs": [
+            {
+                "count": 1,
+                "host": "router.asus.com",
+                "Loss%": 0.0,
+                "Snt": 10,
+                "Last": 0.849,
+                "Avg": 2.207,
+                "Best": 0.849,
+                "Wrst": 3.413,
+                "StDev": 0.835
+            },
+            {
+                "count": 2,
+                "host": "lo0-100.BSTNMA-VFTTP-301.verizon-gni.net",
+                "Loss%": 0.0,
+                "Snt": 10,
+                "Last": 4.452,
+                "Avg": 6.431,
+                "Best": 4.452,
+                "Wrst": 8.94,
+                "StDev": 1.666
+            },
+            {
+                "count": 3,
+                "host": "100.41.25.202",
+                "Loss%": 0.0,
+                "Snt": 10,
+                "Last": 7.793,
+                "Avg": 7.352,
+                "Best": 5.687,
+                "Wrst": 9.051,
+                "StDev": 1.065
+            },
+            {
+                "count": 4,
+                "host": "???",
+                "Loss%": 100.0,
+                "Snt": 10,
+                "Last": 0.0,
+                "Avg": 0.0,
+                "Best": 0.0,
+                "Wrst": 0.0,
+                "StDev": 0.0
+            },
+            {
+                "count": 5,
+                "host": "???",
+                "Loss%": 100.0,
+                "Snt": 10,
+                "Last": 0.0,
+                "Avg": 0.0,
+                "Best": 0.0,
+                "Wrst": 0.0,
+                "StDev": 0.0
+            },
+            {
+                "count": 6,
+                "host": "be8029.ccr21.alb02.atlas.cogentco.com",
+                "Loss%": 0.0,
+                "Snt": 10,
+                "Last": 8.903,
+                "Avg": 10.099,
+                "Best": 8.747,
+                "Wrst": 16.186,
+                "StDev": 2.242
+            },
+            {
+                "count": 7,
+                "host": "port-channel8022.ccr91.cle04.atlas.cogentco.com",
+                "Loss%": 0.0,
+                "Snt": 10,
+                "Last": 27.48,
+                "Avg": 26.336,
+                "Best": 24.847,
+                "Wrst": 27.56,
+                "StDev": 0.935
+            },
+            {
+                "count": 8,
+                "host": "???",
+                "Loss%": 100.0,
+                "Snt": 10,
+                "Last": 0.0,
+                "Avg": 0.0,
+                "Best": 0.0,
+                "Wrst": 0.0,
+                "StDev": 0.0
+            }
+        ]
+    }
+}
+{
+    "report": {
+        "mtr": {
+            "src": "Immetrica-Mint30",
+            "dst": "69.54.116.135",
+            "tos": 0,
+            "tests": 10,
+            "psize": "64",
+            "bitpattern": "0x00"
+        },
+        "hubs": [
+            {
+                "count": 1,
+                "host": "router.asus.com",
+                "Loss%": 0.0,
+                "Snt": 10,
+                "Last": 1.11,
+                "Avg": 1.606,
+                "Best": 0.931,
+                "Wrst": 2.299,
+                "StDev": 0.505
+            },
+            {
+                "count": 2,
+                "host": "lo0-100.BSTNMA-VFTTP-301.verizon-gni.net",
+                "Loss%": 0.0,
+                "Snt": 10,
+                "Last": 5.204,
+                "Avg": 6.698,
+                "Best": 4.42,
+                "Wrst": 17.995,
+                "StDev": 4.032
+            },
+            {
+                "count": 3,
+                "host": "100.41.25.204",
+                "Loss%": 0.0,
+                "Snt": 10,
+                "Last": 5.987,
+                "Avg": 7.235,
+                "Best": 4.86,
+                "Wrst": 11.235,
+                "StDev": 1.862
+            },
+            {
+                "count": 4,
+                "host": "???",
+                "Loss%": 100.0,
+                "Snt": 10,
+                "Last": 0.0,
+                "Avg": 0.0,
+                "Best": 0.0,
+                "Wrst": 0.0,
+                "StDev": 0.0
+            },
+            {
+                "count": 5,
+                "host": "???",
+                "Loss%": 100.0,
+                "Snt": 10,
+                "Last": 0.0,
+                "Avg": 0.0,
+                "Best": 0.0,
+                "Wrst": 0.0,
+                "StDev": 0.0
+            },
+            {
+                "count": 6,
+                "host": "???",
+                "Loss%": 100.0,
+                "Snt": 10,
+                "Last": 0.0,
+                "Avg": 0.0,
+                "Best": 0.0,
+                "Wrst": 0.0,
+                "StDev": 0.0
+            },
+            {
+                "count": 7,
+                "host": "ae45.cr1.ewr1.us.zip.zayo.com",
+                "Loss%": 70.0,
+                "Snt": 10,
+                "Last": 29.201,
+                "Avg": 28.427,
+                "Best": 27.729,
+                "Wrst": 29.201,
+                "StDev": 0.739
+            },
+            {
+                "count": 8,
+                "host": "ae5.cr2.ewr14.us.zip.zayo.com",
+                "Loss%": 0.0,
+                "Snt": 10,
+                "Last": 27.833,
+                "Avg": 26.884,
+                "Best": 25.793,
+                "Wrst": 27.922,
+                "StDev": 0.785
+            },
+            {
+                "count": 9,
+                "host": "ae7.cr1.ord8.us.zip.zayo.com",
+                "Loss%": 80.0,
+                "Snt": 10,
+                "Last": 26.821,
+                "Avg": 27.651,
+                "Best": 26.821,
+                "Wrst": 28.482,
+                "StDev": 1.174
+            },
+            {
+                "count": 10,
+                "host": "ae23.er7.ord7.us.zip.zayo.com",
+                "Loss%": 0.0,
+                "Snt": 10,
+                "Last": 26.685,
+                "Avg": 27.1,
+                "Best": 25.566,
+                "Wrst": 28.537,
+                "StDev": 0.851
+            },
+            {
+                "count": 11,
+                "host": "209.133.92.17.IDIA-346741-921-ZYO.zip.zayo.com",
+                "Loss%": 0.0,
+                "Snt": 10,
+                "Last": 27.831,
+                "Avg": 29.21,
+                "Best": 26.732,
+                "Wrst": 32.136,
+                "StDev": 1.85
+            },
+            {
+                "count": 12,
+                "host": "199.26.57.46",
+                "Loss%": 0.0,
+                "Snt": 10,
+                "Last": 27.345,
+                "Avg": 28.143,
+                "Best": 26.514,
+                "Wrst": 29.864,
+                "StDev": 1.261
+            },
+            {
+                "count": 13,
+                "host": "ilc-rtc-350-core-2-bvi-20.riseb.net",
+                "Loss%": 0.0,
+                "Snt": 10,
+                "Last": 27.531,
+                "Avg": 27.554,
+                "Best": 25.767,
+                "Wrst": 30.327,
+                "StDev": 1.303
+            },
+            {
+                "count": 14,
+                "host": "neo-rtc-ncc-core-1-te1-1.riseb.net",
+                "Loss%": 0.0,
+                "Snt": 10,
+                "Last": 41.849,
+                "Avg": 38.678,
+                "Best": 36.925,
+                "Wrst": 41.849,
+                "StDev": 1.487
+            },
+            {
+                "count": 15,
+                "host": "???",
+                "Loss%": 100.0,
+                "Snt": 10,
+                "Last": 0.0,
+                "Avg": 0.0,
+                "Best": 0.0,
+                "Wrst": 0.0,
+                "StDev": 0.0
+            }
+        ]
+    }
+}
+{
+    "report": {
+        "mtr": {
+            "src": "Immetrica-Mint30",
+            "dst": "76.235.207.204",
+            "tos": 0,
+            "tests": 10,
+            "psize": "64",
+            "bitpattern": "0x00"
+        },
+        "hubs": [
+            {
+                "count": 1,
+                "host": "router.asus.com",
+                "Loss%": 0.0,
+                "Snt": 10,
+                "Last": 1.778,
+                "Avg": 2.326,
+                "Best": 1.698,
+                "Wrst": 3.983,
+                "StDev": 0.797
+            },
+            {
+                "count": 2,
+                "host": "lo0-100.BSTNMA-VFTTP-301.verizon-gni.net",
+                "Loss%": 0.0,
+                "Snt": 10,
+                "Last": 6.349,
+                "Avg": 6.727,
+                "Best": 5.367,
+                "Wrst": 12.18,
+                "StDev": 2.018
+            },
+            {
+                "count": 3,
+                "host": "100.41.25.204",
+                "Loss%": 0.0,
+                "Snt": 10,
+                "Last": 6.567,
+                "Avg": 7.314,
+                "Best": 5.741,
+                "Wrst": 9.326,
+                "StDev": 1.19
+            },
+            {
+                "count": 4,
+                "host": "lag-4.NYCMNYAA-PPR01-CC.ALTER.NET",
+                "Loss%": 90.0,
+                "Snt": 10,
+                "Last": 11.03,
+                "Avg": 11.03,
+                "Best": 11.03,
+                "Wrst": 11.03,
+                "StDev": 0.0
+            },
+            {
+                "count": 5,
+                "host": "???",
+                "Loss%": 100.0,
+                "Snt": 10,
+                "Last": 0.0,
+                "Avg": 0.0,
+                "Best": 0.0,
+                "Wrst": 0.0,
+                "StDev": 0.0
+            }
+        ]
+    }
+}
+{
+    "report": {
+        "mtr": {
+            "src": "Immetrica-Mint30",
+            "dst": "73.182.82.139",
+            "tos": 0,
+            "tests": 10,
+            "psize": "64",
+            "bitpattern": "0x00"
+        },
+        "hubs": [
+            {
+                "count": 1,
+                "host": "router.asus.com",
+                "Loss%": 0.0,
+                "Snt": 10,
+                "Last": 0.953,
+                "Avg": 1.963,
+                "Best": 0.953,
+                "Wrst": 6.267,
+                "StDev": 1.587
+            },
+            {
+                "count": 2,
+                "host": "lo0-100.BSTNMA-VFTTP-301.verizon-gni.net",
+                "Loss%": 0.0,
+                "Snt": 10,
+                "Last": 3.143,
+                "Avg": 5.895,
+                "Best": 3.143,
+                "Wrst": 10.254,
+                "StDev": 1.865
+            },
+            {
+                "count": 3,
+                "host": "100.41.25.202",
+                "Loss%": 0.0,
+                "Snt": 10,
+                "Last": 6.339,
+                "Avg": 8.285,
+                "Best": 6.321,
+                "Wrst": 10.054,
+                "StDev": 1.257
+            },
+            {
+                "count": 4,
+                "host": "lag-13.BSTPMALL-PPR01-CC.ALTER.NET",
+                "Loss%": 90.0,
+                "Snt": 10,
+                "Last": 5.929,
+                "Avg": 5.929,
+                "Best": 5.929,
+                "Wrst": 5.929,
+                "StDev": 0.0
+            },
+            {
+                "count": 5,
+                "host": "customer.alter.net",
+                "Loss%": 70.0,
+                "Snt": 10,
+                "Last": 7.065,
+                "Avg": 6.803,
+                "Best": 5.864,
+                "Wrst": 7.483,
+                "StDev": 0.84
+            },
+            {
+                "count": 6,
+                "host": "be-1413-cs04.doraville.ga.ibone.comcast.net",
+                "Loss%": 0.0,
+                "Snt": 10,
+                "Last": 31.711,
+                "Avg": 32.624,
+                "Best": 31.208,
+                "Wrst": 35.068,
+                "StDev": 1.36
+            },
+            {
+                "count": 7,
+                "host": "???",
+                "Loss%": 100.0,
+                "Snt": 10,
+                "Last": 0.0,
+                "Avg": 0.0,
+                "Best": 0.0,
+                "Wrst": 0.0,
+                "StDev": 0.0
+            }
+        ]
+    }
+}
+{
+    "report": {
+        "mtr": {
+            "src": "Immetrica-Mint30",
+            "dst": "75.188.89.201",
+            "tos": 0,
+            "tests": 10,
+            "psize": "64",
+            "bitpattern": "0x00"
+        },
+        "hubs": [
+            {
+                "count": 1,
+                "host": "router.asus.com",
+                "Loss%": 0.0,
+                "Snt": 10,
+                "Last": 2.045,
+                "Avg": 2.007,
+                "Best": 0.98,
+                "Wrst": 4.238,
+                "StDev": 0.978
+            },
+            {
+                "count": 2,
+                "host": "lo0-100.BSTNMA-VFTTP-301.verizon-gni.net",
+                "Loss%": 0.0,
+                "Snt": 10,
+                "Last": 5.387,
+                "Avg": 5.99,
+                "Best": 4.327,
+                "Wrst": 9.093,
+                "StDev": 1.425
+            },
+            {
+                "count": 3,
+                "host": "100.41.25.202",
+                "Loss%": 0.0,
+                "Snt": 10,
+                "Last": 7.642,
+                "Avg": 7.579,
+                "Best": 4.907,
+                "Wrst": 10.455,
+                "StDev": 1.519
+            },
+            {
+                "count": 4,
+                "host": "lag-5.NWRKNJMD-PPR01-CC.ALTER.NET",
+                "Loss%": 80.0,
+                "Snt": 10,
+                "Last": 14.583,
+                "Avg": 14.845,
+                "Best": 14.583,
+                "Wrst": 15.108,
+                "StDev": 0.37
+            },
+            {
+                "count": 5,
+                "host": "customer.alter.net",
+                "Loss%": 0.0,
+                "Snt": 10,
+                "Last": 30.17,
+                "Avg": 16.0,
+                "Best": 11.969,
+                "Wrst": 30.17,
+                "StDev": 5.249
+            },
+            {
+                "count": 6,
+                "host": "lag-400.nwrknjmd67w-bcr00.netops.charter.com",
+                "Loss%": 0.0,
+                "Snt": 10,
+                "Last": 18.169,
+                "Avg": 19.651,
+                "Best": 17.528,
+                "Wrst": 22.218,
+                "StDev": 1.642
+            },
+            {
+                "count": 7,
+                "host": "lag-21.vinnva0510w-bcr00.netops.charter.com",
+                "Loss%": 0.0,
+                "Snt": 10,
+                "Last": 21.006,
+                "Avg": 19.764,
+                "Best": 18.647,
+                "Wrst": 21.006,
+                "StDev": 0.715
+            },
+            {
+                "count": 8,
+                "host": "???",
+                "Loss%": 100.0,
+                "Snt": 10,
+                "Last": 0.0,
+                "Avg": 0.0,
+                "Best": 0.0,
+                "Wrst": 0.0,
+                "StDev": 0.0
+            }
+        ]
+    }
+}
+{
+    "report": {
+        "mtr": {
+            "src": "Immetrica-Mint30",
+            "dst": "50.243.168.1",
+            "tos": 0,
+            "tests": 10,
+            "psize": "64",
+            "bitpattern": "0x00"
+        },
+        "hubs": [
+            {
+                "count": 1,
+                "host": "router.asus.com",
+                "Loss%": 0.0,
+                "Snt": 10,
+                "Last": 1.758,
+                "Avg": 1.902,
+                "Best": 0.986,
+                "Wrst": 4.136,
+                "StDev": 0.957
+            },
+            {
+                "count": 2,
+                "host": "lo0-100.BSTNMA-VFTTP-301.verizon-gni.net",
+                "Loss%": 0.0,
+                "Snt": 10,
+                "Last": 13.515,
+                "Avg": 7.575,
+                "Best": 4.515,
+                "Wrst": 13.515,
+                "StDev": 3.321
+            },
+            {
+                "count": 3,
+                "host": "100.41.25.202",
+                "Loss%": 0.0,
+                "Snt": 10,
+                "Last": 7.964,
+                "Avg": 8.117,
+                "Best": 6.686,
+                "Wrst": 9.737,
+                "StDev": 1.017
+            },
+            {
+                "count": 4,
+                "host": "???",
+                "Loss%": 100.0,
+                "Snt": 10,
+                "Last": 0.0,
+                "Avg": 0.0,
+                "Best": 0.0,
+                "Wrst": 0.0,
+                "StDev": 0.0
+            },
+            {
+                "count": 5,
+                "host": "customer.alter.net",
+                "Loss%": 0.0,
+                "Snt": 10,
+                "Last": 7.393,
+                "Avg": 6.547,
+                "Best": 4.993,
+                "Wrst": 8.395,
+                "StDev": 0.922
+            },
+            {
+                "count": 6,
+                "host": "be-1313-cs03.pittsburgh.pa.ibone.comcast.net",
+                "Loss%": 0.0,
+                "Snt": 10,
+                "Last": 23.612,
+                "Avg": 21.142,
+                "Best": 19.907,
+                "Wrst": 23.612,
+                "StDev": 1.02
+            },
+            {
+                "count": 7,
+                "host": "???",
+                "Loss%": 100.0,
+                "Snt": 10,
+                "Last": 0.0,
+                "Avg": 0.0,
+                "Best": 0.0,
+                "Wrst": 0.0,
+                "StDev": 0.0
+            }
+        ]
+    }
+}
+{
+    "report": {
+        "mtr": {
+            "src": "Immetrica-Mint30",
+            "dst": "99.172.69.200",
+            "tos": 0,
+            "tests": 10,
+            "psize": "64",
+            "bitpattern": "0x00"
+        },
+        "hubs": [
+            {
+                "count": 1,
+                "host": "router.asus.com",
+                "Loss%": 0.0,
+                "Snt": 10,
+                "Last": 1.726,
+                "Avg": 2.042,
+                "Best": 1.073,
+                "Wrst": 2.826,
+                "StDev": 0.599
+            },
+            {
+                "count": 2,
+                "host": "lo0-100.BSTNMA-VFTTP-301.verizon-gni.net",
+                "Loss%": 0.0,
+                "Snt": 10,
+                "Last": 12.94,
+                "Avg": 14.644,
+                "Best": 4.169,
+                "Wrst": 22.448,
+                "StDev": 6.674
+            },
+            {
+                "count": 3,
+                "host": "100.41.25.202",
+                "Loss%": 0.0,
+                "Snt": 10,
+                "Last": 8.043,
+                "Avg": 7.808,
+                "Best": 6.025,
+                "Wrst": 10.973,
+                "StDev": 1.462
+            },
+            {
+                "count": 4,
+                "host": "???",
+                "Loss%": 100.0,
+                "Snt": 10,
+                "Last": 0.0,
+                "Avg": 0.0,
+                "Best": 0.0,
+                "Wrst": 0.0,
+                "StDev": 0.0
+            },
+            {
+                "count": 5,
+                "host": "???",
+                "Loss%": 100.0,
+                "Snt": 10,
+                "Last": 0.0,
+                "Avg": 0.0,
+                "Best": 0.0,
+                "Wrst": 0.0,
+                "StDev": 0.0
+            },
+            {
+                "count": 6,
+                "host": "32.130.91.66",
+                "Loss%": 0.0,
+                "Snt": 10,
+                "Last": 70.728,
+                "Avg": 71.533,
+                "Best": 69.552,
+                "Wrst": 72.952,
+                "StDev": 0.945
+            },
+            {
+                "count": 7,
+                "host": "???",
+                "Loss%": 100.0,
+                "Snt": 10,
+                "Last": 0.0,
+                "Avg": 0.0,
+                "Best": 0.0,
+                "Wrst": 0.0,
+                "StDev": 0.0
+            }
+        ]
+    }
+}
+{
+    "report": {
+        "mtr": {
+            "src": "Immetrica-Mint30",
+            "dst": "74.246.190.116",
+            "tos": 0,
+            "tests": 10,
+            "psize": "64",
+            "bitpattern": "0x00"
+        },
+        "hubs": [
+            {
+                "count": 1,
+                "host": "router.asus.com",
+                "Loss%": 0.0,
+                "Snt": 10,
+                "Last": 1.709,
+                "Avg": 1.87,
+                "Best": 1.276,
+                "Wrst": 2.942,
+                "StDev": 0.48
+            },
+            {
+                "count": 2,
+                "host": "lo0-100.BSTNMA-VFTTP-301.verizon-gni.net",
+                "Loss%": 0.0,
+                "Snt": 10,
+                "Last": 5.687,
+                "Avg": 6.54,
+                "Best": 3.74,
+                "Wrst": 13.745,
+                "StDev": 2.795
+            },
+            {
+                "count": 3,
+                "host": "100.41.25.204",
+                "Loss%": 0.0,
+                "Snt": 10,
+                "Last": 7.827,
+                "Avg": 8.686,
+                "Best": 5.326,
+                "Wrst": 17.128,
+                "StDev": 3.43
+            },
+            {
+                "count": 4,
+                "host": "???",
+                "Loss%": 100.0,
+                "Snt": 10,
+                "Last": 0.0,
+                "Avg": 0.0,
+                "Best": 0.0,
+                "Wrst": 0.0,
+                "StDev": 0.0
+            },
+            {
+                "count": 5,
+                "host": "???",
+                "Loss%": 100.0,
+                "Snt": 10,
+                "Last": 0.0,
+                "Avg": 0.0,
+                "Best": 0.0,
+                "Wrst": 0.0,
+                "StDev": 0.0
+            },
+            {
+                "count": 6,
+                "host": "32.130.91.66",
+                "Loss%": 20.0,
+                "Snt": 10,
+                "Last": 31.241,
+                "Avg": 31.213,
+                "Best": 29.801,
+                "Wrst": 33.417,
+                "StDev": 1.24
+            },
+            {
+                "count": 7,
+                "host": "???",
+                "Loss%": 100.0,
+                "Snt": 10,
+                "Last": 0.0,
+                "Avg": 0.0,
+                "Best": 0.0,
+                "Wrst": 0.0,
+                "StDev": 0.0
+            }
+        ]
+    }
+}
+{
+    "report": {
+        "mtr": {
+            "src": "Immetrica-Mint30",
+            "dst": "23.127.151.108",
+            "tos": 0,
+            "tests": 10,
+            "psize": "64",
+            "bitpattern": "0x00"
+        },
+        "hubs": [
+            {
+                "count": 1,
+                "host": "router.asus.com",
+                "Loss%": 0.0,
+                "Snt": 10,
+                "Last": 1.875,
+                "Avg": 2.563,
+                "Best": 1.542,
+                "Wrst": 7.283,
+                "StDev": 1.708
+            },
+            {
+                "count": 2,
+                "host": "lo0-100.BSTNMA-VFTTP-301.verizon-gni.net",
+                "Loss%": 0.0,
+                "Snt": 10,
+                "Last": 5.403,
+                "Avg": 7.167,
+                "Best": 5.403,
+                "Wrst": 8.47,
+                "StDev": 1.062
+            },
+            {
+                "count": 3,
+                "host": "100.41.25.204",
+                "Loss%": 0.0,
+                "Snt": 10,
+                "Last": 7.474,
+                "Avg": 7.824,
+                "Best": 6.701,
+                "Wrst": 8.995,
+                "StDev": 0.862
+            },
+            {
+                "count": 4,
+                "host": "???",
+                "Loss%": 100.0,
+                "Snt": 10,
+                "Last": 0.0,
+                "Avg": 0.0,
+                "Best": 0.0,
+                "Wrst": 0.0,
+                "StDev": 0.0
+            }
+        ]
+    }
+}
+{
+    "report": {
+        "mtr": {
+            "src": "Immetrica-Mint30",
+            "dst": "50.189.3.117",
+            "tos": 0,
+            "tests": 10,
+            "psize": "64",
+            "bitpattern": "0x00"
+        },
+        "hubs": [
+            {
+                "count": 1,
+                "host": "router.asus.com",
+                "Loss%": 0.0,
+                "Snt": 10,
+                "Last": 2.849,
+                "Avg": 2.048,
+                "Best": 1.051,
+                "Wrst": 2.849,
+                "StDev": 0.606
+            },
+            {
+                "count": 2,
+                "host": "lo0-100.BSTNMA-VFTTP-301.verizon-gni.net",
+                "Loss%": 0.0,
+                "Snt": 10,
+                "Last": 5.204,
+                "Avg": 13.05,
+                "Best": 4.964,
+                "Wrst": 35.548,
+                "StDev": 10.095
+            },
+            {
+                "count": 3,
+                "host": "100.41.25.202",
+                "Loss%": 0.0,
+                "Snt": 10,
+                "Last": 6.302,
+                "Avg": 7.152,
+                "Best": 5.277,
+                "Wrst": 9.244,
+                "StDev": 1.226
+            },
+            {
+                "count": 4,
+                "host": "???",
+                "Loss%": 100.0,
+                "Snt": 10,
+                "Last": 0.0,
+                "Avg": 0.0,
+                "Best": 0.0,
+                "Wrst": 0.0,
+                "StDev": 0.0
+            },
+            {
+                "count": 5,
+                "host": "customer.alter.net",
+                "Loss%": 40.0,
+                "Snt": 10,
+                "Last": 8.316,
+                "Avg": 6.239,
+                "Best": 5.428,
+                "Wrst": 8.316,
+                "StDev": 1.104
+            },
+            {
+                "count": 6,
+                "host": "be-1112-cs01.losangeles.ca.ibone.comcast.net",
+                "Loss%": 0.0,
+                "Snt": 10,
+                "Last": 68.806,
+                "Avg": 70.075,
+                "Best": 68.051,
+                "Wrst": 72.05,
+                "StDev": 1.139
+            },
+            {
+                "count": 7,
+                "host": "be-36411-arsc1.fresno.ca.ccal.comcast.net",
+                "Loss%": 0.0,
+                "Snt": 10,
+                "Last": 76.081,
+                "Avg": 76.62,
+                "Best": 74.441,
+                "Wrst": 79.632,
+                "StDev": 1.603
+            },
+            {
+                "count": 8,
+                "host": "ae-501-ar01.fresno.ca.ccal.comcast.net",
+                "Loss%": 0.0,
+                "Snt": 10,
+                "Last": 77.124,
+                "Avg": 78.317,
+                "Best": 75.817,
+                "Wrst": 83.578,
+                "StDev": 2.455
+            },
+            {
+                "count": 9,
+                "host": "po-1-xar01.stockton.ca.ccal.comcast.net",
+                "Loss%": 0.0,
+                "Snt": 10,
+                "Last": 78.363,
+                "Avg": 77.93,
+                "Best": 77.141,
+                "Wrst": 79.282,
+                "StDev": 0.69
+            },
+            {
+                "count": 10,
+                "host": "po-1-rur301.stockton.ca.ccal.comcast.net",
+                "Loss%": 0.0,
+                "Snt": 10,
+                "Last": 80.259,
+                "Avg": 78.769,
+                "Best": 77.389,
+                "Wrst": 80.259,
+                "StDev": 1.067
+            },
+            {
+                "count": 11,
+                "host": "96.110.222.42",
+                "Loss%": 0.0,
+                "Snt": 10,
+                "Last": 78.839,
+                "Avg": 77.821,
+                "Best": 76.594,
+                "Wrst": 78.839,
+                "StDev": 0.718
+            },
+            {
+                "count": 12,
+                "host": "73.235.202.57",
+                "Loss%": 0.0,
+                "Snt": 10,
+                "Last": 91.967,
+                "Avg": 89.62,
+                "Best": 86.393,
+                "Wrst": 91.967,
+                "StDev": 1.744
+            },
+            {
+                "count": 13,
+                "host": "73.235.202.57",
+                "Loss%": 90.0,
+                "Snt": 10,
+                "Last": 3184.3,
+                "Avg": 3184.3,
+                "Best": 3184.3,
+                "Wrst": 3184.3,
+                "StDev": 0.0
+            }
+        ]
+    }
+}
+{
+    "report": {
+        "mtr": {
+            "src": "Immetrica-Mint30",
+            "dst": "156.239.40.104",
+            "tos": 0,
+            "tests": 10,
+            "psize": "64",
+            "bitpattern": "0x00"
+        },
+        "hubs": [
+            {
+                "count": 1,
+                "host": "router.asus.com",
+                "Loss%": 0.0,
+                "Snt": 10,
+                "Last": 1.377,
+                "Avg": 1.681,
+                "Best": 1.255,
+                "Wrst": 2.832,
+                "StDev": 0.505
+            },
+            {
+                "count": 2,
+                "host": "lo0-100.BSTNMA-VFTTP-301.verizon-gni.net",
+                "Loss%": 0.0,
+                "Snt": 10,
+                "Last": 5.568,
+                "Avg": 7.445,
+                "Best": 4.619,
+                "Wrst": 12.026,
+                "StDev": 2.194
+            },
+            {
+                "count": 3,
+                "host": "100.41.25.202",
+                "Loss%": 0.0,
+                "Snt": 10,
+                "Last": 11.042,
+                "Avg": 7.901,
+                "Best": 5.975,
+                "Wrst": 11.075,
+                "StDev": 1.826
+            },
+            {
+                "count": 4,
+                "host": "lag-14.BSTPMALL-PPR02-CC.ALTER.NET",
+                "Loss%": 90.0,
+                "Snt": 10,
+                "Last": 7.14,
+                "Avg": 7.14,
+                "Best": 7.14,
+                "Wrst": 7.14,
+                "StDev": 0.0
+            },
+            {
+                "count": 5,
+                "host": "customer.alter.net",
+                "Loss%": 30.0,
+                "Snt": 10,
+                "Last": 5.08,
+                "Avg": 5.964,
+                "Best": 5.08,
+                "Wrst": 6.98,
+                "StDev": 0.766
+            },
+            {
+                "count": 6,
+                "host": "bost-b6-link.ip.twelve99.net",
+                "Loss%": 0.0,
+                "Snt": 10,
+                "Last": 6.912,
+                "Avg": 8.961,
+                "Best": 6.912,
+                "Wrst": 10.821,
+                "StDev": 1.088
+            },
+            {
+                "count": 7,
+                "host": "ewr-bb2-link.ip.twelve99.net",
+                "Loss%": 0.0,
+                "Snt": 10,
+                "Last": 15.486,
+                "Avg": 13.759,
+                "Best": 12.645,
+                "Wrst": 15.486,
+                "StDev": 0.836
+            },
+            {
+                "count": 8,
+                "host": "ash-bb2-link.ip.twelve99.net",
+                "Loss%": 10.0,
+                "Snt": 10,
+                "Last": 17.962,
+                "Avg": 18.327,
+                "Best": 17.208,
+                "Wrst": 19.377,
+                "StDev": 0.811
+            },
+            {
+                "count": 9,
+                "host": "atl-bb2-link.ip.twelve99.net",
+                "Loss%": 70.0,
+                "Snt": 10,
+                "Last": 73.257,
+                "Avg": 72.095,
+                "Best": 71.286,
+                "Wrst": 73.257,
+                "StDev": 1.031
+            },
+            {
+                "count": 10,
+                "host": "atl-b24-link.ip.twelve99.net",
+                "Loss%": 0.0,
+                "Snt": 10,
+                "Last": 72.988,
+                "Avg": 74.194,
+                "Best": 72.439,
+                "Wrst": 76.614,
+                "StDev": 1.58
+            },
+            {
+                "count": 11,
+                "host": "dls-b23-link.ip.twelve99.net",
+                "Loss%": 0.0,
+                "Snt": 10,
+                "Last": 71.855,
+                "Avg": 74.771,
+                "Best": 71.855,
+                "Wrst": 78.086,
+                "StDev": 1.945
+            },
+            {
+                "count": 12,
+                "host": "dls-b7-link.ip.twelve99.net",
+                "Loss%": 0.0,
+                "Snt": 10,
+                "Last": 72.192,
+                "Avg": 72.278,
+                "Best": 70.577,
+                "Wrst": 76.348,
+                "StDev": 1.696
+            },
+            {
+                "count": 13,
+                "host": "dls-bb1-link.ip.twelve99.net",
+                "Loss%": 0.0,
+                "Snt": 10,
+                "Last": 73.146,
+                "Avg": 73.674,
+                "Best": 72.144,
+                "Wrst": 74.702,
+                "StDev": 0.752
+            },
+            {
+                "count": 14,
+                "host": "lax-bb1-link.ip.twelve99.net",
+                "Loss%": 0.0,
+                "Snt": 10,
+                "Last": 76.196,
+                "Avg": 74.334,
+                "Best": 71.944,
+                "Wrst": 78.471,
+                "StDev": 2.017
+            },
+            {
+                "count": 15,
+                "host": "lax-b22-link.ip.twelve99.net",
+                "Loss%": 50.0,
+                "Snt": 10,
+                "Last": 73.649,
+                "Avg": 83.859,
+                "Best": 73.649,
+                "Wrst": 119.57,
+                "StDev": 20.004
+            },
+            {
+                "count": 16,
+                "host": "lax-bb2-link.ip.twelve99.net",
+                "Loss%": 0.0,
+                "Snt": 10,
+                "Last": 71.867,
+                "Avg": 72.971,
+                "Best": 71.118,
+                "Wrst": 77.411,
+                "StDev": 1.94
+            },
+            {
+                "count": 17,
+                "host": "???",
+                "Loss%": 100.0,
+                "Snt": 10,
+                "Last": 0.0,
+                "Avg": 0.0,
+                "Best": 0.0,
+                "Wrst": 0.0,
+                "StDev": 0.0
+            },
+            {
+                "count": 18,
+                "host": "???",
+                "Loss%": 100.0,
+                "Snt": 10,
+                "Last": 0.0,
+                "Avg": 0.0,
+                "Best": 0.0,
+                "Wrst": 0.0,
+                "StDev": 0.0
+            },
+            {
+                "count": 19,
+                "host": "???",
+                "Loss%": 100.0,
+                "Snt": 10,
+                "Last": 0.0,
+                "Avg": 0.0,
+                "Best": 0.0,
+                "Wrst": 0.0,
+                "StDev": 0.0
+            },
+            {
+                "count": 20,
+                "host": "???",
+                "Loss%": 100.0,
+                "Snt": 10,
+                "Last": 0.0,
+                "Avg": 0.0,
+                "Best": 0.0,
+                "Wrst": 0.0,
+                "StDev": 0.0
+            },
+            {
+                "count": 21,
+                "host": "???",
+                "Loss%": 100.0,
+                "Snt": 10,
+                "Last": 0.0,
+                "Avg": 0.0,
+                "Best": 0.0,
+                "Wrst": 0.0,
+                "StDev": 0.0
+            },
+            {
+                "count": 22,
+                "host": "156.239.40.104",
+                "Loss%": 0.0,
+                "Snt": 10,
+                "Last": 72.018,
+                "Avg": 73.406,
+                "Best": 71.08,
+                "Wrst": 77.011,
+                "StDev": 2.136
+            }
+        ]
+    }
+}
+{
+    "report": {
+        "mtr": {
+            "src": "Immetrica-Mint30",
+            "dst": "165.237.222.157",
+            "tos": 0,
+            "tests": 10,
+            "psize": "64",
+            "bitpattern": "0x00"
+        },
+        "hubs": [
+            {
+                "count": 1,
+                "host": "router.asus.com",
+                "Loss%": 0.0,
+                "Snt": 10,
+                "Last": 1.423,
+                "Avg": 2.305,
+                "Best": 1.423,
+                "Wrst": 4.308,
+                "StDev": 0.994
+            },
+            {
+                "count": 2,
+                "host": "lo0-100.BSTNMA-VFTTP-301.verizon-gni.net",
+                "Loss%": 0.0,
+                "Snt": 10,
+                "Last": 6.401,
+                "Avg": 9.45,
+                "Best": 4.836,
+                "Wrst": 23.924,
+                "StDev": 5.814
+            },
+            {
+                "count": 3,
+                "host": "100.41.25.202",
+                "Loss%": 0.0,
+                "Snt": 10,
+                "Last": 7.159,
+                "Avg": 7.845,
+                "Best": 6.58,
+                "Wrst": 9.707,
+                "StDev": 1.044
+            },
+            {
+                "count": 4,
+                "host": "???",
+                "Loss%": 100.0,
+                "Snt": 10,
+                "Last": 0.0,
+                "Avg": 0.0,
+                "Best": 0.0,
+                "Wrst": 0.0,
+                "StDev": 0.0
+            },
+            {
+                "count": 5,
+                "host": "customer.alter.net",
+                "Loss%": 0.0,
+                "Snt": 10,
+                "Last": 23.372,
+                "Avg": 15.453,
+                "Best": 11.87,
+                "Wrst": 23.372,
+                "StDev": 3.601
+            },
+            {
+                "count": 6,
+                "host": "lag-401.nwrknjmd67w-bcr00.netops.charter.com",
+                "Loss%": 0.0,
+                "Snt": 10,
+                "Last": 30.904,
+                "Avg": 32.511,
+                "Best": 30.904,
+                "Wrst": 35.619,
+                "StDev": 1.376
+            },
+            {
+                "count": 7,
+                "host": "lag-24.asbnva1611w-bcr00.netops.charter.com",
+                "Loss%": 0.0,
+                "Snt": 10,
+                "Last": 31.073,
+                "Avg": 32.38,
+                "Best": 30.395,
+                "Wrst": 34.68,
+                "StDev": 1.255
+            },
+            {
+                "count": 8,
+                "host": "lag-403.chrcnctr03h-bar02.netops.charter.com",
+                "Loss%": 0.0,
+                "Snt": 10,
+                "Last": 30.733,
+                "Avg": 31.443,
+                "Best": 29.719,
+                "Wrst": 33.272,
+                "StDev": 1.165
+            },
+            {
+                "count": 9,
+                "host": "lag-500.chrcnctr04h-bar03.netops.charter.com",
+                "Loss%": 0.0,
+                "Snt": 10,
+                "Last": 29.627,
+                "Avg": 30.765,
+                "Best": 29.627,
+                "Wrst": 32.287,
+                "StDev": 0.916
+            },
+            {
+                "count": 10,
+                "host": "???",
+                "Loss%": 100.0,
+                "Snt": 10,
+                "Last": 0.0,
+                "Avg": 0.0,
+                "Best": 0.0,
+                "Wrst": 0.0,
+                "StDev": 0.0
+            }
+        ]
+    }
+}
+{
+    "report": {
+        "mtr": {
+            "src": "Immetrica-Mint30",
+            "dst": "12.77.166.20",
+            "tos": 0,
+            "tests": 10,
+            "psize": "64",
+            "bitpattern": "0x00"
+        },
+        "hubs": [
+            {
+                "count": 1,
+                "host": "router.asus.com",
+                "Loss%": 0.0,
+                "Snt": 10,
+                "Last": 2.809,
+                "Avg": 2.851,
+                "Best": 1.039,
+                "Wrst": 10.752,
+                "StDev": 2.843
+            },
+            {
+                "count": 2,
+                "host": "lo0-100.BSTNMA-VFTTP-301.verizon-gni.net",
+                "Loss%": 0.0,
+                "Snt": 10,
+                "Last": 6.331,
+                "Avg": 6.49,
+                "Best": 4.717,
+                "Wrst": 8.381,
+                "StDev": 1.147
+            },
+            {
+                "count": 3,
+                "host": "100.41.25.204",
+                "Loss%": 0.0,
+                "Snt": 10,
+                "Last": 19.403,
+                "Avg": 8.757,
+                "Best": 5.998,
+                "Wrst": 19.403,
+                "StDev": 4.142
+            },
+            {
+                "count": 4,
+                "host": "???",
+                "Loss%": 100.0,
+                "Snt": 10,
+                "Last": 0.0,
+                "Avg": 0.0,
+                "Best": 0.0,
+                "Wrst": 0.0,
+                "StDev": 0.0
+            }
+        ]
+    }
+}
+{
+    "report": {
+        "mtr": {
+            "src": "Immetrica-Mint30",
+            "dst": "75.51.110.213",
+            "tos": 0,
+            "tests": 10,
+            "psize": "64",
+            "bitpattern": "0x00"
+        },
+        "hubs": [
+            {
+                "count": 1,
+                "host": "router.asus.com",
+                "Loss%": 0.0,
+                "Snt": 10,
+                "Last": 1.691,
+                "Avg": 2.231,
+                "Best": 1.492,
+                "Wrst": 4.49,
+                "StDev": 0.873
+            },
+            {
+                "count": 2,
+                "host": "lo0-100.BSTNMA-VFTTP-301.verizon-gni.net",
+                "Loss%": 0.0,
+                "Snt": 10,
+                "Last": 5.849,
+                "Avg": 9.71,
+                "Best": 4.09,
+                "Wrst": 31.877,
+                "StDev": 8.366
+            },
+            {
+                "count": 3,
+                "host": "100.41.25.202",
+                "Loss%": 0.0,
+                "Snt": 10,
+                "Last": 5.789,
+                "Avg": 7.974,
+                "Best": 5.789,
+                "Wrst": 10.086,
+                "StDev": 1.338
+            },
+            {
+                "count": 4,
+                "host": "???",
+                "Loss%": 100.0,
+                "Snt": 10,
+                "Last": 0.0,
+                "Avg": 0.0,
+                "Best": 0.0,
+                "Wrst": 0.0,
+                "StDev": 0.0
+            }
+        ]
+    }
+}
+{
+    "report": {
+        "mtr": {
+            "src": "Immetrica-Mint30",
+            "dst": "23.198.10.179",
+            "tos": 0,
+            "tests": 10,
+            "psize": "64",
+            "bitpattern": "0x00"
+        },
+        "hubs": [
+            {
+                "count": 1,
+                "host": "router.asus.com",
+                "Loss%": 0.0,
+                "Snt": 10,
+                "Last": 1.774,
+                "Avg": 2.029,
+                "Best": 0.992,
+                "Wrst": 7.272,
+                "StDev": 1.885
+            },
+            {
+                "count": 2,
+                "host": "lo0-100.BSTNMA-VFTTP-301.verizon-gni.net",
+                "Loss%": 0.0,
+                "Snt": 10,
+                "Last": 4.555,
+                "Avg": 5.775,
+                "Best": 4.099,
+                "Wrst": 8.127,
+                "StDev": 1.595
+            },
+            {
+                "count": 3,
+                "host": "100.41.25.204",
+                "Loss%": 0.0,
+                "Snt": 10,
+                "Last": 7.687,
+                "Avg": 7.533,
+                "Best": 5.279,
+                "Wrst": 13.456,
+                "StDev": 2.321
+            },
+            {
+                "count": 4,
+                "host": "200.lag-28.ASBNVAEG-PPR01-CC.ALTER.NET",
+                "Loss%": 90.0,
+                "Snt": 10,
+                "Last": 21.077,
+                "Avg": 21.077,
+                "Best": 21.077,
+                "Wrst": 21.077,
+                "StDev": 0.0
+            },
+            {
+                "count": 5,
+                "host": "customer.alter.net",
+                "Loss%": 0.0,
+                "Snt": 10,
+                "Last": 18.439,
+                "Avg": 18.703,
+                "Best": 17.458,
+                "Wrst": 21.92,
+                "StDev": 1.212
+            },
+            {
+                "count": 6,
+                "host": "ae6.ctl-iad.netarch.akamai.com",
+                "Loss%": 50.0,
+                "Snt": 10,
+                "Last": 7186.1,
+                "Avg": 7152.2,
+                "Best": 6961.3,
+                "Wrst": 7272.3,
+                "StDev": 123.23
+            },
+            {
+                "count": 7,
+                "host": "???",
+                "Loss%": 100.0,
+                "Snt": 10,
+                "Last": 0.0,
+                "Avg": 0.0,
+                "Best": 0.0,
+                "Wrst": 0.0,
+                "StDev": 0.0
+            }
+        ]
+    }
+}
+{
+    "report": {
+        "mtr": {
+            "src": "Immetrica-Mint30",
+            "dst": "70.43.99.1",
+            "tos": 0,
+            "tests": 10,
+            "psize": "64",
+            "bitpattern": "0x00"
+        },
+        "hubs": [
+            {
+                "count": 1,
+                "host": "router.asus.com",
+                "Loss%": 0.0,
+                "Snt": 10,
+                "Last": 1.394,
+                "Avg": 1.902,
+                "Best": 1.237,
+                "Wrst": 3.262,
+                "StDev": 0.632
+            },
+            {
+                "count": 2,
+                "host": "lo0-100.BSTNMA-VFTTP-301.verizon-gni.net",
+                "Loss%": 0.0,
+                "Snt": 10,
+                "Last": 6.988,
+                "Avg": 8.066,
+                "Best": 4.628,
+                "Wrst": 18.41,
+                "StDev": 3.964
+            },
+            {
+                "count": 3,
+                "host": "100.41.25.204",
+                "Loss%": 0.0,
+                "Snt": 10,
+                "Last": 9.988,
+                "Avg": 7.919,
+                "Best": 4.368,
+                "Wrst": 10.058,
+                "StDev": 1.797
+            },
+            {
+                "count": 4,
+                "host": "???",
+                "Loss%": 100.0,
+                "Snt": 10,
+                "Last": 0.0,
+                "Avg": 0.0,
+                "Best": 0.0,
+                "Wrst": 0.0,
+                "StDev": 0.0
+            },
+            {
+                "count": 5,
+                "host": "ae6.cr3-bos1.ip4.gtt.net",
+                "Loss%": 0.0,
+                "Snt": 10,
+                "Last": 6.95,
+                "Avg": 8.217,
+                "Best": 6.192,
+                "Wrst": 15.823,
+                "StDev": 2.86
+            },
+            {
+                "count": 6,
+                "host": "ae3.cr1-nyc2.ip4.gtt.net",
+                "Loss%": 0.0,
+                "Snt": 10,
+                "Last": 13.44,
+                "Avg": 14.826,
+                "Best": 11.385,
+                "Wrst": 29.632,
+                "StDev": 5.274
+            },
+            {
+                "count": 7,
+                "host": "???",
+                "Loss%": 100.0,
+                "Snt": 10,
+                "Last": 0.0,
+                "Avg": 0.0,
+                "Best": 0.0,
+                "Wrst": 0.0,
+                "StDev": 0.0
+            }
+        ]
+    }
+}
+{
+    "report": {
+        "mtr": {
+            "src": "Immetrica-Mint30",
+            "dst": "4.14.11.200",
+            "tos": 0,
+            "tests": 10,
+            "psize": "64",
+            "bitpattern": "0x00"
+        },
+        "hubs": [
+            {
+                "count": 1,
+                "host": "router.asus.com",
+                "Loss%": 0.0,
+                "Snt": 10,
+                "Last": 1.963,
+                "Avg": 2.295,
+                "Best": 1.006,
+                "Wrst": 5.015,
+                "StDev": 1.166
+            },
+            {
+                "count": 2,
+                "host": "lo0-100.BSTNMA-VFTTP-301.verizon-gni.net",
+                "Loss%": 0.0,
+                "Snt": 10,
+                "Last": 6.213,
+                "Avg": 7.043,
+                "Best": 4.677,
+                "Wrst": 9.775,
+                "StDev": 1.8
+            },
+            {
+                "count": 3,
+                "host": "100.41.25.202",
+                "Loss%": 0.0,
+                "Snt": 10,
+                "Last": 8.459,
+                "Avg": 7.582,
+                "Best": 5.506,
+                "Wrst": 10.245,
+                "StDev": 1.521
+            },
+            {
+                "count": 4,
+                "host": "lag-14.BSTPMALL-PPR02-CC.ALTER.NET",
+                "Loss%": 90.0,
+                "Snt": 10,
+                "Last": 5.219,
+                "Avg": 5.219,
+                "Best": 5.219,
+                "Wrst": 5.219,
+                "StDev": 0.0
+            },
+            {
+                "count": 5,
+                "host": "customer.alter.net",
+                "Loss%": 0.0,
+                "Snt": 10,
+                "Last": 7.366,
+                "Avg": 6.946,
+                "Best": 5.7,
+                "Wrst": 8.193,
+                "StDev": 0.957
+            },
+            {
+                "count": 6,
+                "host": "???",
+                "Loss%": 100.0,
+                "Snt": 10,
+                "Last": 0.0,
+                "Avg": 0.0,
+                "Best": 0.0,
+                "Wrst": 0.0,
+                "StDev": 0.0
+            }
+        ]
+    }
+}
+{
+    "report": {
+        "mtr": {
+            "src": "Immetrica-Mint30",
+            "dst": "75.162.47.152",
+            "tos": 0,
+            "tests": 10,
+            "psize": "64",
+            "bitpattern": "0x00"
+        },
+        "hubs": [
+            {
+                "count": 1,
+                "host": "router.asus.com",
+                "Loss%": 0.0,
+                "Snt": 10,
+                "Last": 1.992,
+                "Avg": 1.965,
+                "Best": 1.045,
+                "Wrst": 3.791,
+                "StDev": 0.768
+            },
+            {
+                "count": 2,
+                "host": "lo0-100.BSTNMA-VFTTP-301.verizon-gni.net",
+                "Loss%": 0.0,
+                "Snt": 10,
+                "Last": 4.647,
+                "Avg": 5.954,
+                "Best": 3.089,
+                "Wrst": 11.685,
+                "StDev": 2.786
+            },
+            {
+                "count": 3,
+                "host": "100.41.25.204",
+                "Loss%": 0.0,
+                "Snt": 10,
+                "Last": 8.233,
+                "Avg": 7.214,
+                "Best": 6.367,
+                "Wrst": 8.743,
+                "StDev": 0.768
+            },
+            {
+                "count": 4,
+                "host": "lag-12.BSTPMALL-PPR02-CC.ALTER.NET",
+                "Loss%": 90.0,
+                "Snt": 10,
+                "Last": 4.88,
+                "Avg": 4.88,
+                "Best": 4.88,
+                "Wrst": 4.88,
+                "StDev": 0.0
+            },
+            {
+                "count": 5,
+                "host": "customer.alter.net",
+                "Loss%": 0.0,
+                "Snt": 10,
+                "Last": 6.409,
+                "Avg": 6.185,
+                "Best": 3.801,
+                "Wrst": 8.172,
+                "StDev": 1.384
+            },
+            {
+                "count": 6,
+                "host": "ae0.11.edge1.Chicago10.net.lumen.tech",
+                "Loss%": 0.0,
+                "Snt": 10,
+                "Last": 28.931,
+                "Avg": 25.745,
+                "Best": 23.902,
+                "Wrst": 28.931,
+                "StDev": 1.435
+            },
+            {
+                "count": 7,
+                "host": "ae20.desm-agw1.sp.lumen.tech",
+                "Loss%": 0.0,
+                "Snt": 10,
+                "Last": 33.692,
+                "Avg": 39.523,
+                "Best": 33.112,
+                "Wrst": 64.653,
+                "StDev": 10.831
+            },
+            {
+                "count": 8,
+                "host": "75.160.210.194",
+                "Loss%": 0.0,
+                "Snt": 10,
+                "Last": 32.9,
+                "Avg": 32.813,
+                "Best": 30.847,
+                "Wrst": 34.787,
+                "StDev": 1.287
+            },
+            {
+                "count": 9,
+                "host": "75-162-47-152.desm.qwest.net",
+                "Loss%": 0.0,
+                "Snt": 10,
+                "Last": 52.66,
+                "Avg": 111.67,
+                "Best": 50.035,
+                "Wrst": 226.82,
+                "StDev": 71.821
+            }
+        ]
+    }
+}
+{
+    "report": {
+        "mtr": {
+            "src": "Immetrica-Mint30",
+            "dst": "63.55.22.130",
+            "tos": 0,
+            "tests": 10,
+            "psize": "64",
+            "bitpattern": "0x00"
+        },
+        "hubs": [
+            {
+                "count": 1,
+                "host": "router.asus.com",
+                "Loss%": 0.0,
+                "Snt": 10,
+                "Last": 1.517,
+                "Avg": 2.732,
+                "Best": 1.457,
+                "Wrst": 8.329,
+                "StDev": 2.053
+            },
+            {
+                "count": 2,
+                "host": "lo0-100.BSTNMA-VFTTP-301.verizon-gni.net",
+                "Loss%": 0.0,
+                "Snt": 10,
+                "Last": 10.1,
+                "Avg": 7.548,
+                "Best": 5.253,
+                "Wrst": 16.107,
+                "StDev": 3.374
+            },
+            {
+                "count": 3,
+                "host": "100.41.25.204",
+                "Loss%": 0.0,
+                "Snt": 10,
+                "Last": 8.01,
+                "Avg": 7.174,
+                "Best": 4.929,
+                "Wrst": 10.777,
+                "StDev": 1.664
+            },
+            {
+                "count": 4,
+                "host": "ae2.GW1.EWR10.ALTER.NET",
+                "Loss%": 0.0,
+                "Snt": 10,
+                "Last": 13.247,
+                "Avg": 11.652,
+                "Best": 9.949,
+                "Wrst": 13.247,
+                "StDev": 1.109
+            },
+            {
+                "count": 5,
+                "host": "208.221.239.142",
+                "Loss%": 0.0,
+                "Snt": 10,
+                "Last": 12.095,
+                "Avg": 13.892,
+                "Best": 11.783,
+                "Wrst": 17.333,
+                "StDev": 1.926
+            },
+            {
+                "count": 6,
+                "host": "???",
+                "Loss%": 100.0,
+                "Snt": 10,
+                "Last": 0.0,
+                "Avg": 0.0,
+                "Best": 0.0,
+                "Wrst": 0.0,
+                "StDev": 0.0
+            },
+            {
+                "count": 7,
+                "host": "212.sub-66-174-104.myvzw.com",
+                "Loss%": 0.0,
+                "Snt": 10,
+                "Last": 11.315,
+                "Avg": 12.643,
+                "Best": 11.315,
+                "Wrst": 14.186,
+                "StDev": 0.98
+            },
+            {
+                "count": 8,
+                "host": "218.sub-66-174-104.myvzw.com",
+                "Loss%": 0.0,
+                "Snt": 10,
+                "Last": 14.384,
+                "Avg": 13.466,
+                "Best": 11.708,
+                "Wrst": 15.819,
+                "StDev": 1.32
+            },
+            {
+                "count": 9,
+                "host": "???",
+                "Loss%": 100.0,
+                "Snt": 10,
+                "Last": 0.0,
+                "Avg": 0.0,
+                "Best": 0.0,
+                "Wrst": 0.0,
+                "StDev": 0.0
+            }
+        ]
+    }
+}
+{
+    "report": {
+        "mtr": {
+            "src": "Immetrica-Mint30",
+            "dst": "12.207.106.11",
+            "tos": 0,
+            "tests": 10,
+            "psize": "64",
+            "bitpattern": "0x00"
+        },
+        "hubs": [
+            {
+                "count": 1,
+                "host": "router.asus.com",
+                "Loss%": 0.0,
+                "Snt": 10,
+                "Last": 1.91,
+                "Avg": 1.942,
+                "Best": 1.477,
+                "Wrst": 2.246,
+                "StDev": 0.216
+            },
+            {
+                "count": 2,
+                "host": "lo0-100.BSTNMA-VFTTP-301.verizon-gni.net",
+                "Loss%": 0.0,
+                "Snt": 10,
+                "Last": 6.273,
+                "Avg": 9.374,
+                "Best": 4.444,
+                "Wrst": 34.462,
+                "StDev": 8.969
+            },
+            {
+                "count": 3,
+                "host": "100.41.25.202",
+                "Loss%": 0.0,
+                "Snt": 10,
+                "Last": 7.229,
+                "Avg": 7.843,
+                "Best": 5.039,
+                "Wrst": 9.756,
+                "StDev": 1.581
+            },
+            {
+                "count": 4,
+                "host": "???",
+                "Loss%": 100.0,
+                "Snt": 10,
+                "Last": 0.0,
+                "Avg": 0.0,
+                "Best": 0.0,
+                "Wrst": 0.0,
+                "StDev": 0.0
+            },
+            {
+                "count": 5,
+                "host": "???",
+                "Loss%": 100.0,
+                "Snt": 10,
+                "Last": 0.0,
+                "Avg": 0.0,
+                "Best": 0.0,
+                "Wrst": 0.0,
+                "StDev": 0.0
+            },
+            {
+                "count": 6,
+                "host": "32.130.91.66",
+                "Loss%": 0.0,
+                "Snt": 10,
+                "Last": 70.444,
+                "Avg": 70.836,
+                "Best": 68.792,
+                "Wrst": 73.543,
+                "StDev": 1.616
+            },
+            {
+                "count": 7,
+                "host": "???",
+                "Loss%": 100.0,
+                "Snt": 10,
+                "Last": 0.0,
+                "Avg": 0.0,
+                "Best": 0.0,
+                "Wrst": 0.0,
+                "StDev": 0.0
+            }
+        ]
+    }
+}
+{
+    "report": {
+        "mtr": {
+            "src": "Immetrica-Mint30",
+            "dst": "138.152.113.174",
+            "tos": 0,
+            "tests": 10,
+            "psize": "64",
+            "bitpattern": "0x00"
+        },
+        "hubs": [
+            {
+                "count": 1,
+                "host": "router.asus.com",
+                "Loss%": 0.0,
+                "Snt": 10,
+                "Last": 4.679,
+                "Avg": 2.652,
+                "Best": 1.51,
+                "Wrst": 4.679,
+                "StDev": 1.166
+            },
+            {
+                "count": 2,
+                "host": "lo0-100.BSTNMA-VFTTP-301.verizon-gni.net",
+                "Loss%": 0.0,
+                "Snt": 10,
+                "Last": 7.92,
+                "Avg": 6.911,
+                "Best": 4.117,
+                "Wrst": 12.949,
+                "StDev": 2.478
+            },
+            {
+                "count": 3,
+                "host": "100.41.25.204",
+                "Loss%": 0.0,
+                "Snt": 10,
+                "Last": 7.253,
+                "Avg": 7.154,
+                "Best": 5.873,
+                "Wrst": 8.631,
+                "StDev": 0.869
+            },
+            {
+                "count": 4,
+                "host": "lag-12.BSTPMALL-PPR02-CC.ALTER.NET",
+                "Loss%": 90.0,
+                "Snt": 10,
+                "Last": 5.19,
+                "Avg": 5.19,
+                "Best": 5.19,
+                "Wrst": 5.19,
+                "StDev": 0.0
+            },
+            {
+                "count": 5,
+                "host": "customer.alter.net",
+                "Loss%": 0.0,
+                "Snt": 10,
+                "Last": 5.548,
+                "Avg": 7.242,
+                "Best": 5.548,
+                "Wrst": 9.824,
+                "StDev": 1.224
+            },
+            {
+                "count": 6,
+                "host": "ae1.3515.edge1.Dallas2.net.lumen.tech",
+                "Loss%": 0.0,
+                "Snt": 10,
+                "Last": 51.174,
+                "Avg": 46.379,
+                "Best": 42.858,
+                "Wrst": 55.425,
+                "StDev": 3.886
+            },
+            {
+                "count": 7,
+                "host": "ISPSS.edge1.Dallas2.Level3.net",
+                "Loss%": 0.0,
+                "Snt": 10,
+                "Last": 85.152,
+                "Avg": 56.108,
+                "Best": 50.029,
+                "Wrst": 85.152,
+                "StDev": 10.394
+            },
+            {
+                "count": 8,
+                "host": "???",
+                "Loss%": 100.0,
+                "Snt": 10,
+                "Last": 0.0,
+                "Avg": 0.0,
+                "Best": 0.0,
+                "Wrst": 0.0,
+                "StDev": 0.0
+            }
+        ]
+    }
+}
+{
+    "report": {
+        "mtr": {
+            "src": "Immetrica-Mint30",
+            "dst": "99.2.79.33",
+            "tos": 0,
+            "tests": 10,
+            "psize": "64",
+            "bitpattern": "0x00"
+        },
+        "hubs": [
+            {
+                "count": 1,
+                "host": "router.asus.com",
+                "Loss%": 0.0,
+                "Snt": 10,
+                "Last": 2.632,
+                "Avg": 2.313,
+                "Best": 1.099,
+                "Wrst": 5.398,
+                "StDev": 1.186
+            },
+            {
+                "count": 2,
+                "host": "lo0-100.BSTNMA-VFTTP-301.verizon-gni.net",
+                "Loss%": 0.0,
+                "Snt": 10,
+                "Last": 8.447,
+                "Avg": 14.069,
+                "Best": 4.412,
+                "Wrst": 71.556,
+                "StDev": 20.381
+            },
+            {
+                "count": 3,
+                "host": "100.41.25.204",
+                "Loss%": 0.0,
+                "Snt": 10,
+                "Last": 7.113,
+                "Avg": 7.015,
+                "Best": 4.621,
+                "Wrst": 7.994,
+                "StDev": 1.06
+            },
+            {
+                "count": 4,
+                "host": "???",
+                "Loss%": 100.0,
+                "Snt": 10,
+                "Last": 0.0,
+                "Avg": 0.0,
+                "Best": 0.0,
+                "Wrst": 0.0,
+                "StDev": 0.0
+            },
+            {
+                "count": 5,
+                "host": "att-gw.dc.as701.net",
+                "Loss%": 90.0,
+                "Snt": 10,
+                "Last": 11.383,
+                "Avg": 11.383,
+                "Best": 11.383,
+                "Wrst": 11.383,
+                "StDev": 0.0
+            },
+            {
+                "count": 6,
+                "host": "32.130.91.64",
+                "Loss%": 90.0,
+                "Snt": 10,
+                "Last": 74.577,
+                "Avg": 74.577,
+                "Best": 74.577,
+                "Wrst": 74.577,
+                "StDev": 0.0
+            },
+            {
+                "count": 7,
+                "host": "???",
+                "Loss%": 100.0,
+                "Snt": 10,
+                "Last": 0.0,
+                "Avg": 0.0,
+                "Best": 0.0,
+                "Wrst": 0.0,
+                "StDev": 0.0
+            }
+        ]
+    }
+}
+{
+    "report": {
+        "mtr": {
+            "src": "Immetrica-Mint30",
+            "dst": "165.235.113.95",
+            "tos": 0,
+            "tests": 10,
+            "psize": "64",
+            "bitpattern": "0x00"
+        },
+        "hubs": [
+            {
+                "count": 1,
+                "host": "router.asus.com",
+                "Loss%": 0.0,
+                "Snt": 10,
+                "Last": 1.699,
+                "Avg": 1.725,
+                "Best": 0.965,
+                "Wrst": 2.432,
+                "StDev": 0.487
+            },
+            {
+                "count": 2,
+                "host": "lo0-100.BSTNMA-VFTTP-301.verizon-gni.net",
+                "Loss%": 0.0,
+                "Snt": 10,
+                "Last": 8.616,
+                "Avg": 14.449,
+                "Best": 4.176,
+                "Wrst": 74.148,
+                "StDev": 21.086
+            },
+            {
+                "count": 3,
+                "host": "100.41.25.202",
+                "Loss%": 0.0,
+                "Snt": 10,
+                "Last": 6.462,
+                "Avg": 10.876,
+                "Best": 6.462,
+                "Wrst": 21.859,
+                "StDev": 5.829
+            },
+            {
+                "count": 4,
+                "host": "lag-14.BSTPMALL-PPR02-CC.ALTER.NET",
+                "Loss%": 90.0,
+                "Snt": 10,
+                "Last": 8.947,
+                "Avg": 8.947,
+                "Best": 8.947,
+                "Wrst": 8.947,
+                "StDev": 0.0
+            },
+            {
+                "count": 5,
+                "host": "customer.alter.net",
+                "Loss%": 10.0,
+                "Snt": 10,
+                "Last": 5.469,
+                "Avg": 6.806,
+                "Best": 5.285,
+                "Wrst": 8.055,
+                "StDev": 1.069
+            },
+            {
+                "count": 6,
+                "host": "ae1.3516.ear2.Sacramento1.net.lumen.tech",
+                "Loss%": 70.0,
+                "Snt": 10,
+                "Last": 79.207,
+                "Avg": 78.906,
+                "Best": 78.497,
+                "Wrst": 79.207,
+                "StDev": 0.367
+            },
+            {
+                "count": 7,
+                "host": "???",
+                "Loss%": 100.0,
+                "Snt": 10,
+                "Last": 0.0,
+                "Avg": 0.0,
+                "Best": 0.0,
+                "Wrst": 0.0,
+                "StDev": 0.0
+            }
+        ]
+    }
+}
+{
+    "report": {
+        "mtr": {
+            "src": "Immetrica-Mint30",
+            "dst": "166.187.215.173",
+            "tos": 0,
+            "tests": 10,
+            "psize": "64",
+            "bitpattern": "0x00"
+        },
+        "hubs": [
+            {
+                "count": 1,
+                "host": "router.asus.com",
+                "Loss%": 0.0,
+                "Snt": 10,
+                "Last": 1.504,
+                "Avg": 2.452,
+                "Best": 1.329,
+                "Wrst": 4.422,
+                "StDev": 1.094
+            },
+            {
+                "count": 2,
+                "host": "lo0-100.BSTNMA-VFTTP-301.verizon-gni.net",
+                "Loss%": 0.0,
+                "Snt": 10,
+                "Last": 5.381,
+                "Avg": 6.914,
+                "Best": 3.658,
+                "Wrst": 13.498,
+                "StDev": 2.664
+            },
+            {
+                "count": 3,
+                "host": "100.41.25.204",
+                "Loss%": 0.0,
+                "Snt": 10,
+                "Last": 8.032,
+                "Avg": 7.146,
+                "Best": 4.712,
+                "Wrst": 9.968,
+                "StDev": 1.776
+            },
+            {
+                "count": 4,
+                "host": "???",
+                "Loss%": 100.0,
+                "Snt": 10,
+                "Last": 0.0,
+                "Avg": 0.0,
+                "Best": 0.0,
+                "Wrst": 0.0,
+                "StDev": 0.0
+            },
+            {
+                "count": 5,
+                "host": "att-gw.dc.as701.net",
+                "Loss%": 90.0,
+                "Snt": 10,
+                "Last": 13.982,
+                "Avg": 13.982,
+                "Best": 13.982,
+                "Wrst": 13.982,
+                "StDev": 0.0
+            },
+            {
+                "count": 6,
+                "host": "32.130.91.64",
+                "Loss%": 90.0,
+                "Snt": 10,
+                "Last": 28.297,
+                "Avg": 28.297,
+                "Best": 28.297,
+                "Wrst": 28.297,
+                "StDev": 0.0
+            },
+            {
+                "count": 7,
+                "host": "???",
+                "Loss%": 100.0,
+                "Snt": 10,
+                "Last": 0.0,
+                "Avg": 0.0,
+                "Best": 0.0,
+                "Wrst": 0.0,
+                "StDev": 0.0
+            }
+        ]
+    }
+}
+{
+    "report": {
+        "mtr": {
+            "src": "Immetrica-Mint30",
+            "dst": "74.19.79.146",
+            "tos": 0,
+            "tests": 10,
+            "psize": "64",
+            "bitpattern": "0x00"
+        },
+        "hubs": [
+            {
+                "count": 1,
+                "host": "router.asus.com",
+                "Loss%": 0.0,
+                "Snt": 10,
+                "Last": 1.478,
+                "Avg": 2.333,
+                "Best": 1.478,
+                "Wrst": 4.114,
+                "StDev": 0.764
+            },
+            {
+                "count": 2,
+                "host": "lo0-100.BSTNMA-VFTTP-301.verizon-gni.net",
+                "Loss%": 0.0,
+                "Snt": 10,
+                "Last": 6.613,
+                "Avg": 9.048,
+                "Best": 5.513,
+                "Wrst": 16.945,
+                "StDev": 4.394
+            },
+            {
+                "count": 3,
+                "host": "100.41.25.202",
+                "Loss%": 0.0,
+                "Snt": 10,
+                "Last": 8.66,
+                "Avg": 7.885,
+                "Best": 6.206,
+                "Wrst": 10.285,
+                "StDev": 1.348
+            },
+            {
+                "count": 4,
+                "host": "???",
+                "Loss%": 100.0,
+                "Snt": 10,
+                "Last": 0.0,
+                "Avg": 0.0,
+                "Best": 0.0,
+                "Wrst": 0.0,
+                "StDev": 0.0
+            },
+            {
+                "count": 5,
+                "host": "???",
+                "Loss%": 100.0,
+                "Snt": 10,
+                "Last": 0.0,
+                "Avg": 0.0,
+                "Best": 0.0,
+                "Wrst": 0.0,
+                "StDev": 0.0
+            },
+            {
+                "count": 6,
+                "host": "???",
+                "Loss%": 100.0,
+                "Snt": 10,
+                "Last": 0.0,
+                "Avg": 0.0,
+                "Best": 0.0,
+                "Wrst": 0.0,
+                "StDev": 0.0
+            },
+            {
+                "count": 7,
+                "host": "???",
+                "Loss%": 100.0,
+                "Snt": 10,
+                "Last": 0.0,
+                "Avg": 0.0,
+                "Best": 0.0,
+                "Wrst": 0.0,
+                "StDev": 0.0
+            },
+            {
+                "count": 8,
+                "host": "???",
+                "Loss%": 100.0,
+                "Snt": 10,
+                "Last": 0.0,
+                "Avg": 0.0,
+                "Best": 0.0,
+                "Wrst": 0.0,
+                "StDev": 0.0
+            },
+            {
+                "count": 9,
+                "host": "???",
+                "Loss%": 100.0,
+                "Snt": 10,
+                "Last": 0.0,
+                "Avg": 0.0,
+                "Best": 0.0,
+                "Wrst": 0.0,
+                "StDev": 0.0
+            },
+            {
+                "count": 10,
+                "host": "customer.alter.net",
+                "Loss%": 90.0,
+                "Snt": 10,
+                "Last": 6.711,
+                "Avg": 6.711,
+                "Best": 6.711,
+                "Wrst": 6.711,
+                "StDev": 0.0
+            }
+        ]
+    }
+}
+{
+    "report": {
+        "mtr": {
+            "src": "Immetrica-Mint30",
+            "dst": "198.202.252.119",
+            "tos": 0,
+            "tests": 10,
+            "psize": "64",
+            "bitpattern": "0x00"
+        },
+        "hubs": [
+            {
+                "count": 1,
+                "host": "router.asus.com",
+                "Loss%": 0.0,
+                "Snt": 10,
+                "Last": 2.134,
+                "Avg": 1.666,
+                "Best": 1.036,
+                "Wrst": 2.313,
+                "StDev": 0.416
+            },
+            {
+                "count": 2,
+                "host": "lo0-100.BSTNMA-VFTTP-301.verizon-gni.net",
+                "Loss%": 0.0,
+                "Snt": 10,
+                "Last": 9.735,
+                "Avg": 8.575,
+                "Best": 5.127,
+                "Wrst": 19.336,
+                "StDev": 4.042
+            },
+            {
+                "count": 3,
+                "host": "100.41.25.204",
+                "Loss%": 0.0,
+                "Snt": 10,
+                "Last": 8.376,
+                "Avg": 9.15,
+                "Best": 6.818,
+                "Wrst": 19.291,
+                "StDev": 3.628
+            },
+            {
+                "count": 4,
+                "host": "lag-12.BSTPMALL-PPR02-CC.ALTER.NET",
+                "Loss%": 90.0,
+                "Snt": 10,
+                "Last": 5.275,
+                "Avg": 5.275,
+                "Best": 5.275,
+                "Wrst": 5.275,
+                "StDev": 0.0
+            },
+            {
+                "count": 5,
+                "host": "customer.alter.net",
+                "Loss%": 0.0,
+                "Snt": 10,
+                "Last": 6.388,
+                "Avg": 7.729,
+                "Best": 5.958,
+                "Wrst": 13.214,
+                "StDev": 2.087
+            },
+            {
+                "count": 6,
+                "host": "ae1.3502.edge4.Atlanta2.net.lumen.tech",
+                "Loss%": 0.0,
+                "Snt": 10,
+                "Last": 30.256,
+                "Avg": 31.252,
+                "Best": 28.182,
+                "Wrst": 39.364,
+                "StDev": 3.373
+            },
+            {
+                "count": 7,
+                "host": "WIRELESS-IN.edge4.Atlanta2.Level3.net",
+                "Loss%": 0.0,
+                "Snt": 10,
+                "Last": 30.541,
+                "Avg": 30.233,
+                "Best": 29.069,
+                "Wrst": 31.843,
+                "StDev": 0.873
+            },
+            {
+                "count": 8,
+                "host": "400g-fh0-0-0-14.CAKE.ATL.unitifiber.net",
+                "Loss%": 30.0,
+                "Snt": 10,
+                "Last": 31.921,
+                "Avg": 36.814,
+                "Best": 31.921,
+                "Wrst": 60.977,
+                "StDev": 10.688
+            },
+            {
+                "count": 9,
+                "host": "400g-fh0-0-0-2.CAKE.JAX.unitifiber.com",
+                "Loss%": 0.0,
+                "Snt": 10,
+                "Last": 38.184,
+                "Avg": 43.395,
+                "Best": 38.184,
+                "Wrst": 60.11,
+                "StDev": 6.42
+            },
+            {
+                "count": 10,
+                "host": "te0-0-0-8.9kd.tal.unitifiber.com",
+                "Loss%": 0.0,
+                "Snt": 10,
+                "Last": 43.017,
+                "Avg": 45.019,
+                "Best": 42.346,
+                "Wrst": 55.115,
+                "StDev": 3.708
+            },
+            {
+                "count": 11,
+                "host": "STATIC-102-183-249-170.static.unitifiber.com",
+                "Loss%": 0.0,
+                "Snt": 10,
+                "Last": 44.31,
+                "Avg": 44.081,
+                "Best": 42.479,
+                "Wrst": 46.554,
+                "StDev": 1.187
+            },
+            {
+                "count": 12,
+                "host": "???",
+                "Loss%": 100.0,
+                "Snt": 10,
+                "Last": 0.0,
+                "Avg": 0.0,
+                "Best": 0.0,
+                "Wrst": 0.0,
+                "StDev": 0.0
+            }
+        ]
+    }
+}

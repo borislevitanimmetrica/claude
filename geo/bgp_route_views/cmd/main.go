@@ -9,18 +9,17 @@
 // (extended-timestamp) which we normalize to BGP4MP before decoding.
 //
 // Modes (runtime option -mode):
-//   full    - download the latest full RIB, TRUNCATE the table, and COPY every
-//             (prefix, peer) RIB entry. This is the one-time initial load and
-//             produces tens of millions of rows for route-views2 (~1M+ prefixes
-//             x ~28 peers). Use -peer to restrict to a single peer's view.
+//   full    - download the latest full RIB to a temp file, TRUNCATE the table,
+//             and COPY it in. Deduped by default to one row per prefix (~1M
+//             rows for route-views2); -per-peer stores one row per (prefix,
+//             peer) instead (tens of millions). -peer restricts to one peer.
 //   updates - download only the UPDATES files newer than the last processed
-//             file (tracked in bgp_rv_ingest_state, or -since) and apply them:
-//             announcements replace the (prefix, peer) route; withdrawals delete
-//             it.
+//             file (tracked in bgp_rv_ingest_state, or -since) and apply them.
 //
-// One (prefix, peer) tuple = one row: cidr_block, start_address, end_address,
-// origin_asn (last ASN in AS_PATH), peer_ip, as_path, updated_at (set to the
-// source file's UTC timestamp for provenance / incremental tracking).
+// Row: cidr_block, start_address, end_address, origin_asn (last ASN in
+// AS_PATH), peer_ip, as_path, updated_at (source file's UTC timestamp). In the
+// default deduped mode peer_ip/as_path are NULL, since geography does not
+// depend on routing.
 package main
 
 import (
