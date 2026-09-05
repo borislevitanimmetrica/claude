@@ -181,7 +181,12 @@ WHERE NOT EXISTS (
     WHERE tr.network = t.network
       AND tr.city IS NOT NULL
 )
-AND NOT (t.network <<= '100.64.0.0/10'::cidr)`
+AND NOT (t.network <<= '100.64.0.0/10'::cidr)
+AND NOT EXISTS (
+    SELECT 1 FROM geo_exclusions x
+    WHERE x.active AND x.prefix IS NOT NULL
+      AND t.network <<= x.prefix
+)`
 
 	args := []any{n}
 	if ipv4Only {
