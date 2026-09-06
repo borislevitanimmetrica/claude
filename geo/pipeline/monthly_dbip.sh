@@ -52,7 +52,8 @@ while [ $# -gt 0 ]; do
   shift
 done
 
-require_database_url
+report_db_mode
+require_database
 
 IMPORT_BIN="$GEO_HOME/dbip-mmdb-import/bin/dbip-mmdb-import"
 require_exec "$IMPORT_BIN"

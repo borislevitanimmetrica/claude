@@ -47,7 +47,8 @@ case "${1:-}" in
   *)           BATCH="$1" ;;
 esac
 
-require_database_url
+report_db_mode
+require_database
 
 GEO_BIN="$GEO_HOME/check_geo_ip-api/bin/check_geo_ip-api"
 require_exec "$GEO_BIN"
@@ -57,7 +58,7 @@ remaining() {
   if [ -n "$COUNTRY" ]; then
     extra="AND t.country_iso_code = '$COUNTRY'"
   fi
-  psql "$DATABASE_URL" -tAc "
+  psql_q "
     SELECT count(*) FROM ip2city_dbiplite_tbl t
     WHERE family(t.network) = 4
       AND NOT EXISTS (SELECT 1 FROM ip2city_dbiplite_traceroute_tbl tr

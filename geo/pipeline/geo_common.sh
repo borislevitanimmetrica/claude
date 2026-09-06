@@ -2,37 +2,65 @@
 #
 # geo_common.sh - shared setup for the cron scripts. Sourced, not executed.
 #
-# Provides: GEO_HOME, LOG_DIR, log(), die(), run_step(), scalar(), take_lock().
+# Provides: GEO_HOME, LOG_DIR, log(), die(), psql_q(), require_database(),
+#           require_exec(), take_lock(), scalar(), run_step().
 #
 # GEO_HOME is derived from this file's own location, so the scripts work from any
 # checkout path and need no configuration to find the tool binaries.
 #
-# Credentials are NOT held in the crontab. Instead this sources a config file,
-# by default $HOME/.geo-pipeline.env, which must export DATABASE_URL. Keep it
-# mode 0600 and owned by the account cron runs as. Override the location with
-# GEO_CONFIG.
+# DATABASE_URL IS OPTIONAL. When it is empty, psql is called with no connection
+# string and pgx is given an empty one; both then resolve the connection from the
+# standard libpq environment (PGHOST, PGPORT, PGUSER, PGDATABASE, PGPASSFILE) and
+# their built-in defaults. That is how a service account connects over a Unix
+# socket with peer authentication, with no credentials in the crontab or on disk.
 #
-# Contains no backslash escape sequences.
+# An optional config file, by default $HOME/.geo-pipeline.env, may export
+# DATABASE_URL or libpq variables. Its absence is not an error.
+#
+# Contains no backslash escape sequences. All parameter defaulting is confined to
+# the single block below, so every later reference is a plain expansion.
 
-# Resolve this file's directory even when sourced, then step up one level.
+# ---------------------------------------------------------------------------
+# Resolve this file's own directory, even when sourced, then step up one level
+# to get GEO_HOME.
+# ---------------------------------------------------------------------------
 _geo_common_src="${BASH_SOURCE[0]}"
 _geo_common_dir="$(cd "$(dirname "$_geo_common_src")" && pwd)"
-GEO_HOME="${GEO_HOME:-$(dirname "$_geo_common_dir")}"
+_geo_home_default="$(dirname "$_geo_common_dir")"
 
+# ---------------------------------------------------------------------------
+# Parameter defaulting, all in one place.
+# ---------------------------------------------------------------------------
+GEO_HOME="${GEO_HOME:-$_geo_home_default}"
 GEO_CONFIG="${GEO_CONFIG:-$HOME/.geo-pipeline.env}"
+
+GEO_CONFIG_USED="environment"
 if [ -r "$GEO_CONFIG" ]; then
   # shellcheck disable=SC1090
   . "$GEO_CONFIG"
+  GEO_CONFIG_USED="$GEO_CONFIG"
 fi
 
-# Logs and lock files live under the invoking account's home by default, so the
-# cron account never needs write access to the tool tree.
+# Normalise after sourcing, so the config file may set any of these.
+DATABASE_URL="${DATABASE_URL:-}"
+PGHOST="${PGHOST:-}"
+PGPORT="${PGPORT:-}"
+PGUSER="${PGUSER:-}"
+PGDATABASE="${PGDATABASE:-}"
+DRY_RUN="${DRY_RUN:-0}"
+
+# Logs and lock files live under the invoking account's home, so the cron account
+# never needs write access to the tool tree.
 LOG_DIR="${LOG_DIR:-$HOME/geo-logs}"
 mkdir -p "$LOG_DIR"
 
+# ---------------------------------------------------------------------------
+# Helpers. From here on every expansion is plain.
+# ---------------------------------------------------------------------------
+
+# echo rather than printf with a newline escape, keeping this file free of
+# backslashes so it survives copy/paste through any channel.
 log() {
-  # echo rather than printf with a newline escape, so this file stays free of
-  # backslashes and survives copy/paste through any channel.
   echo "$(date -u '+%Y-%m-%dT%H:%M:%SZ')  $*" | tee -a "$LOG_FILE"
 }
 
@@ -41,39 +69,72 @@ die() {
   exit 1
 }
 
-require_database_url() {
-  if [ -z "${DATABASE_URL:-}" ]; then
-    die "DATABASE_URL is not set. Create $GEO_CONFIG containing a line that exports it, mode 0600."
+_shown() {
+  if [ -n "$1" ]; then
+    echo "$1"
+  else
+    echo "libpq-default"
   fi
 }
 
-require_exec() {
-  local p="$1"
-  [ -x "$p" ] || die "missing or non-executable: $p"
+report_db_mode() {
+  if [ -n "$DATABASE_URL" ]; then
+    log "database: DATABASE_URL set, from $GEO_CONFIG_USED"
+  else
+    log "database: no DATABASE_URL, using libpq defaults; host=$(_shown "$PGHOST") port=$(_shown "$PGPORT") user=$(_shown "$PGUSER") db=$(_shown "$PGDATABASE")"
+  fi
 }
 
-# Serialise runs. Returns non-zero to the caller's exit if the lock is held, so a
-# cron overlap is a no-op rather than a concurrent run.
+# Run one query. The connection string is passed only when there is one: giving
+# psql an empty first argument would make it treat that as a database name.
+psql_q() {
+  if [ -n "$DATABASE_URL" ]; then
+    psql "$DATABASE_URL" -tAc "$1"
+  else
+    psql -tAc "$1"
+  fi
+}
+
+# Confirm the database is reachable by whichever path is in use, so a
+# misconfigured account fails immediately with a clear message rather than at the
+# first real query.
+require_database() {
+  local who
+  if ! who=$(psql_q "SELECT current_user || '@' || current_database()" 2>&1); then
+    die "cannot connect to PostgreSQL. DATABASE_URL is $(_shown "$DATABASE_URL"); when unset, libpq defaults apply, so check PGHOST, PGUSER, PGDATABASE and pg_hba.conf. Error: $who"
+  fi
+  if [ -z "$who" ]; then
+    die "connected but PostgreSQL returned no result; check the server logs"
+  fi
+  log "database reachable as $who"
+}
+
+require_exec() {
+  [ -x "$1" ] || die "missing or non-executable: $1"
+}
+
+# Serialise runs, so a cron overlap is a no-op rather than a concurrent run.
 take_lock() {
-  local lock="$1"
-  exec 9>"$lock" || die "cannot open lock file $lock"
+  exec 9>"$1" || die "cannot open lock file $1"
   if ! flock -n 9; then
-    log "another run holds $lock; exiting without doing anything"
+    log "another run holds $1; exiting without doing anything"
     exit 0
   fi
 }
 
-# One-line SQL scalar. Returns ? on any failure so reporting never aborts a run.
+# Scalar for reporting only. Yields ? on failure so a reporting query can never
+# abort a run.
 scalar() {
-  psql "$DATABASE_URL" -tAc "$1" 2>/dev/null || echo "?"
+  psql_q "$1" 2>/dev/null || echo "?"
 }
 
 # Run a step, timing it. Any non-zero exit aborts the whole script, so a later
 # step never acts on incomplete data. Tool output goes to the log, keeping cron
 # mail short.
 run_step() {
-  local name="$1"; shift
-  if [ "${DRY_RUN:-0}" -eq 1 ]; then
+  local name="$1"
+  shift
+  if [ "$DRY_RUN" -eq 1 ]; then
     log "DRY RUN would execute [$name]: $*"
     return 0
   fi

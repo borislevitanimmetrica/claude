@@ -43,7 +43,8 @@ while [ $# -gt 0 ]; do
   shift
 done
 
-require_database_url
+report_db_mode
+require_database
 
 BGP_BIN="$GEO_HOME/bgp_route_views/bin/bgp_route_views"
 SPLITS_BIN="$GEO_HOME/check_range_splits/bin/check_range_splits"

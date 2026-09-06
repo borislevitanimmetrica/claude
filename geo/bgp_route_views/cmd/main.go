@@ -82,9 +82,15 @@ func main() {
 	var conn *pgx.Conn
 	ctx := context.Background()
 	if !*dryRun {
+		// An empty DATABASE_URL is NOT an error. pgx.Connect with an empty
+		// string resolves the connection from the standard libpq environment
+		// (PGHOST, PGPORT, PGUSER, PGDATABASE, PGPASSFILE) and its built-in
+		// defaults, exactly as "psql" with no connection string does. That lets
+		// a service account connect over a Unix socket with peer authentication
+		// and no credentials on disk or in a crontab.
 		databaseURL := os.Getenv("DATABASE_URL")
 		if databaseURL == "" {
-			log.Fatal("DATABASE_URL is not set (or pass -dry-run)")
+			log.Printf("DATABASE_URL not set; connecting via libpq environment and defaults")
 		}
 		var err error
 		conn, err = pgx.Connect(ctx, databaseURL)
