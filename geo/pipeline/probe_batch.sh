@@ -39,13 +39,32 @@ BATCH="${BATCH:-2400}"
 COUNTRY="${COUNTRY:-US}"
 REPORT_ONLY=0
 
-case "${1:-}" in
-  --remaining) REPORT_ONLY=1 ;;
-  -h|--help)   sed -n '2,28p' "$0" | sed -E 's/^# ?//'; exit 0 ;;
-  '')          : ;;
-  *[!0-9]*)    echo "unknown argument: $1" >&2; exit 2 ;;
-  *)           BATCH="$1" ;;
-esac
+usage() {
+  echo "probe_batch.sh - one bounded batch of ip-api geolocation lookups"
+  echo ""
+  echo "  (no argument)  probe BATCH ranges, default 2400"
+  echo "  N              probe N ranges"
+  echo "  --remaining    report the backlog and exit without probing"
+  echo "  -h, --help     this text"
+  echo ""
+  echo "2400 at 45 per minute takes about 53 minutes, leaving slack in an"
+  echo "hourly schedule so consecutive runs never collide."
+}
+
+_arg="${1-}"
+if [ "$_arg" = "--remaining" ]; then
+  REPORT_ONLY=1
+elif [ "$_arg" = "-h" ] || [ "$_arg" = "--help" ]; then
+  usage
+  exit 0
+elif [ -n "$_arg" ]; then
+  if [ "$_arg" -gt 0 ] 2>/dev/null; then
+    BATCH="$_arg"
+  else
+    echo "unknown argument: $_arg" >&2
+    exit 2
+  fi
+fi
 
 report_db_mode
 require_database

@@ -42,13 +42,34 @@ LOCK_FILE="${LOCK_FILE:-$LOG_DIR/monthly_dbip.lock}"
 DRY_RUN=0
 MONTH=""
 
-while [ $# -gt 0 ]; do
-  case "$1" in
-    --dry-run) DRY_RUN=1 ;;
-    --month)   shift; MONTH="${1:-}"; [ -n "$MONTH" ] || { echo "--month needs YYYY-MM" >&2; exit 2; } ;;
-    -h|--help) sed -n '2,30p' "$0" | sed -E 's/^# ?//'; exit 0 ;;
-    *) echo "unknown argument: $1" >&2; exit 2 ;;
-  esac
+usage() {
+  echo "monthly_dbip.sh - import the current month's free db-ip City Lite edition"
+  echo ""
+  echo "  --dry-run        report what would run, change nothing"
+  echo "  --month YYYY-MM  a specific edition instead of the current month"
+  echo "  -h, --help       this text"
+  echo ""
+  echo "Always passes -preserve-routeviews all, which is mandatory because"
+  echo "apply_splits deletes the parent rows that the default mode looks for."
+}
+
+while [ -n "${1-}" ]; do
+  if [ "$1" = "--dry-run" ]; then
+    DRY_RUN=1
+  elif [ "$1" = "--month" ]; then
+    shift
+    MONTH="${1-}"
+    if [ -z "$MONTH" ]; then
+      echo "--month needs YYYY-MM" >&2
+      exit 2
+    fi
+  elif [ "$1" = "-h" ] || [ "$1" = "--help" ]; then
+    usage
+    exit 0
+  else
+    echo "unknown argument: $1" >&2
+    exit 2
+  fi
   shift
 done
 

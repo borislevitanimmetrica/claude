@@ -33,13 +33,30 @@ LOCK_FILE="${LOCK_FILE:-$LOG_DIR/daily_pipeline.lock}"
 DRY_RUN=0
 BGP_MODE=updates
 
-while [ $# -gt 0 ]; do
-  case "$1" in
-    --dry-run)  DRY_RUN=1 ;;
-    --full-bgp) BGP_MODE=full ;;
-    -h|--help)  sed -n '2,22p' "$0" | sed -E 's/^# ?//'; exit 0 ;;
-    *) echo "unknown argument: $1" >&2; exit 2 ;;
-  esac
+usage() {
+  echo "daily_pipeline.sh - RouteViews import, split detection, /24 decomposition"
+  echo ""
+  echo "  --dry-run    report what would run, change nothing"
+  echo "  --full-bgp   full RIB load instead of incremental updates"
+  echo "  -h, --help   this text"
+  echo ""
+  echo "DATABASE_URL is optional. When unset, the connection comes from the"
+  echo "libpq environment and defaults, so a service account can use peer"
+  echo "authentication over a Unix socket with no credentials anywhere."
+}
+
+while [ -n "${1-}" ]; do
+  if [ "$1" = "--dry-run" ]; then
+    DRY_RUN=1
+  elif [ "$1" = "--full-bgp" ]; then
+    BGP_MODE=full
+  elif [ "$1" = "-h" ] || [ "$1" = "--help" ]; then
+    usage
+    exit 0
+  else
+    echo "unknown argument: $1" >&2
+    exit 2
+  fi
   shift
 done
 
