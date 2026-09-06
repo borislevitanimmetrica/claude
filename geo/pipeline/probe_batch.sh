@@ -104,6 +104,8 @@ fi
 # risk an ip-api ban by WAN address.
 take_lock "$LOCK_FILE"
 
+begin_notify
+
 BEFORE=$(remaining)
 log "starting batch of $BATCH (country=${COUNTRY:-all}); backlog before=$BEFORE"
 

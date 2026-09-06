@@ -50,7 +50,7 @@ PGUSER="${PGUSER:-}"
 PGDATABASE="${PGDATABASE:-}"
 DRY_RUN="${DRY_RUN:-0}"
 
-ALERT_EMAIL="${ALERT_EMAIL:-root}"
+ALERT_EMAIL="${ALERT_EMAIL:-boris@immetrica.com}"
 
 # Alert thresholds in seconds. These are NOT timeouts: nothing is abandoned when
 # they pass, an alert is raised and the job carries on. Sized for worldwide
@@ -61,7 +61,25 @@ PROBE_LOCK_WARN="${PROBE_LOCK_WARN:-5400}"
 STEP_WARN_SECS="${STEP_WARN_SECS:-14400}"
 
 LOG_DIR="${LOG_DIR:-$HOME/geo-logs}"
-mkdir -p "$LOG_DIR"
+
+if ! mkdir -p "$LOG_DIR" 2>/dev/null; then
+  echo "FATAL: cannot create LOG_DIR $LOG_DIR as user $(id -un)" >&2
+  exit 1
+fi
+
+if ! touch "$LOG_DIR/.writetest.$$" 2>/dev/null; then
+  echo "FATAL: LOG_DIR $LOG_DIR exists but is not writable by $(id -un)." >&2
+  echo "Every log line would be lost and the job would run blind, so this is fatal." >&2
+  echo "Fix ownership, for example:  sudo chown -R $(id -un) $LOG_DIR" >&2
+  echo "Or point LOG_DIR elsewhere in the cron file or the config file." >&2
+  exit 1
+fi
+rm -f "$LOG_DIR/.writetest.$$"
+
+SCRIPT_NAME="${SCRIPT_NAME:-$(basename "$0")}"
+
+_notify_enabled=0
+_died=0
 
 log() {
   echo "$(date -u '+%Y-%m-%dT%H:%M:%SZ')  $*" | tee -a "$LOG_FILE"
@@ -99,9 +117,57 @@ alert() {
   send_mail "trugeo alert on $(hostname -s)" "$*"
 }
 
+_etz_now() {
+  TZ=America/New_York date +%Y-%m-%d' '%H:%M:%S
+}
+
+notify_start() {
+  send_mail "Geo script $SCRIPT_NAME starting at time $(_etz_now) ETZ" "Geo start"
+}
+
+notify_success() {
+  send_mail "Geo script $SCRIPT_NAME ran correctly, finishing at time $(_etz_now) ETZ" "Geo success"
+}
+
+notify_error() {
+  local code="$1"
+  local detail="$2"
+  local body
+  if [ -n "$detail" ]; then
+    body=$(echo "Geo error"; echo ""; echo "$detail")
+  else
+    body="Geo error"
+  fi
+  send_mail "Geo script $SCRIPT_NAME exited with error $code at time $(_etz_now) ETZ" "$body"
+}
+
+begin_notify() {
+  _notify_enabled=1
+  log "notifying start by email to $ALERT_EMAIL"
+  notify_start
+}
+
+_on_exit() {
+  local code="$1"
+  if [ "$_died" -eq 1 ]; then
+    return
+  fi
+  if [ "$_notify_enabled" -eq 0 ]; then
+    return
+  fi
+  if [ "$code" -eq 0 ]; then
+    notify_success
+  else
+    notify_error "$code" "Exited without a diagnostic. See $LOG_FILE"
+  fi
+}
+
+trap '_on_exit $?' EXIT
+
 die() {
+  _died=1
   log "FATAL: $*"
-  send_mail "trugeo FAILURE on $(hostname -s)" "$*"
+  notify_error 1 "$*"
   exit 1
 }
 

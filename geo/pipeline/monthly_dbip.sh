@@ -86,6 +86,8 @@ require_exec "$IMPORT_BIN"
 
 take_lock "$LOCK_FILE"
 
+begin_notify
+
 log "=============================================================="
 log "monthly db-ip import starting (GEO_HOME=$GEO_HOME month=${MONTH:-current} dry_run=$DRY_RUN)"
 

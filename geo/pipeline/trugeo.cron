@@ -3,6 +3,7 @@ SHELL=/bin/bash
 MAILTO=root
 CRON_TZ=America/New_York
 PGDATABASE=postgres
+LOG_DIR=/var/log/trugeo
 
 0 2 * * *   cronuser /var/trugeo/pipeline/daily_pipeline.sh
 5 * * * *   cronuser /var/trugeo/pipeline/probe_batch.sh

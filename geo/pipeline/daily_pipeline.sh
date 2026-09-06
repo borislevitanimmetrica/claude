@@ -77,6 +77,8 @@ if [ "$DRY_RUN" -eq 0 ]; then
   take_mutation_lock "$MUTATION_LOCK" "$MUTATION_LOCK_WARN"
 fi
 
+begin_notify
+
 log "=============================================================="
 log "daily pipeline starting (GEO_HOME=$GEO_HOME bgp_mode=$BGP_MODE dry_run=$DRY_RUN)"
 
