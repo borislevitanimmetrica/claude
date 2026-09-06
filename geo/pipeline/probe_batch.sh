@@ -17,7 +17,7 @@
 # needed here.
 #
 # No credentials are taken from the command line or the crontab. DATABASE_URL
-# comes from $HOME/.geo-pipeline.env (override with GEO_CONFIG).
+# comes from /etc/trugeo.env (override with GEO_CONFIG).
 #
 # Usage:
 #   probe_batch.sh              probe BATCH ranges (default 2400)

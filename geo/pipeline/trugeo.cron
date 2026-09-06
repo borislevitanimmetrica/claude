@@ -1,5 +1,6 @@
 PATH=/usr/local/bin:/usr/bin:/bin
 SHELL=/bin/bash
+HOME=/var/trugeo
 MAILTO=root
 CRON_TZ=America/New_York
 PGDATABASE=postgres

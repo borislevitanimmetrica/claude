@@ -26,6 +26,11 @@
 # visible without any work being silently dropped. This suits worldwide db-ip and
 # RouteViews ingestion, where run times are long and variable.
 #
+# NOTHING here depends on a home directory. The service account deliberately has
+# no login and no home: logs go to /var/log/trugeo and optional configuration to
+# /etc/trugeo.env, both system paths. Defaulting either to a home directory would
+# break the moment that directory is removed as unnecessary.
+#
 # Contains no backslash escape sequences and no mid-line hash characters, both of
 # which are destroyed in transit. All parameter defaulting is confined to the
 # block below, so every later reference is a plain expansion.
@@ -35,7 +40,7 @@ _geo_common_dir="$(cd "$(dirname "$_geo_common_src")" && pwd)"
 _geo_home_default="$(dirname "$_geo_common_dir")"
 
 GEO_HOME="${GEO_HOME:-$_geo_home_default}"
-GEO_CONFIG="${GEO_CONFIG:-$HOME/.geo-pipeline.env}"
+GEO_CONFIG="${GEO_CONFIG:-/etc/trugeo.env}"
 
 GEO_CONFIG_USED="environment"
 if [ -r "$GEO_CONFIG" ]; then
@@ -60,7 +65,7 @@ MUTATION_LOCK_WARN="${MUTATION_LOCK_WARN:-7200}"
 PROBE_LOCK_WARN="${PROBE_LOCK_WARN:-5400}"
 STEP_WARN_SECS="${STEP_WARN_SECS:-14400}"
 
-LOG_DIR="${LOG_DIR:-$HOME/geo-logs}"
+LOG_DIR="${LOG_DIR:-/var/log/trugeo}"
 
 if ! mkdir -p "$LOG_DIR" 2>/dev/null; then
   echo "FATAL: cannot create LOG_DIR $LOG_DIR as user $(id -un)" >&2
