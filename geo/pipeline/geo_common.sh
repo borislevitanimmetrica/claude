@@ -114,12 +114,35 @@ require_exec() {
 }
 
 # Serialise runs, so a cron overlap is a no-op rather than a concurrent run.
+# Uses fd 9. Non-blocking: if the lock is held, exit quietly.
 take_lock() {
   exec 9>"$1" || die "cannot open lock file $1"
   if ! flock -n 9; then
     log "another run holds $1; exiting without doing anything"
     exit 0
   fi
+}
+
+# Acquire a SECOND lock, blocking up to a timeout in seconds. Uses fd 8, so it
+# composes with take_lock rather than replacing it.
+#
+# This exists for the monthly import. That import ends with DROP TABLE plus
+# RENAME on ip2city_dbiplite_tbl, which needs an ACCESS EXCLUSIVE lock, and it
+# sets lock_timeout to a few seconds so a stuck reader cannot queue every other
+# query behind it. Meanwhile probe_batch reads that same table for roughly 53
+# minutes of every hour, so an unsynchronised import would nearly always fail on
+# lock timeout. Taking the probe lock makes the import wait for the current batch
+# to finish, and makes the next hourly batch exit quietly until the import is
+# done.
+take_lock_blocking() {
+  local lock="$1"
+  local wait_secs="$2"
+  exec 8>"$lock" || die "cannot open lock file $lock"
+  log "waiting up to ${wait_secs}s for $lock"
+  if ! flock -w "$wait_secs" 8; then
+    die "timed out after ${wait_secs}s waiting for $lock; something is holding it much longer than expected"
+  fi
+  log "acquired $lock"
 }
 
 # Scalar for reporting only. Yields ? on failure so a reporting query can never

@@ -84,6 +84,12 @@ take_lock "$LOCK_FILE"
 log "=============================================================="
 log "monthly db-ip import starting (GEO_HOME=$GEO_HOME month=${MONTH:-current} dry_run=$DRY_RUN)"
 
+PROBE_LOCK="${PROBE_LOCK:-$LOG_DIR/probe_batch.lock}"
+PROBE_LOCK_WAIT="${PROBE_LOCK_WAIT:-4200}"
+if [ "$DRY_RUN" -eq 0 ]; then
+  take_lock_blocking "$PROBE_LOCK" "$PROBE_LOCK_WAIT"
+fi
+
 BEFORE_DBIP=$(scalar "SELECT count(*) FROM ip2city_dbiplite_tbl WHERE source = 'dbip'")
 BEFORE_RV=$(scalar "SELECT count(*) FROM ip2city_dbiplite_tbl WHERE source = 'routeviews'")
 log "before: dbip_rows=$BEFORE_DBIP routeviews_rows=$BEFORE_RV"
