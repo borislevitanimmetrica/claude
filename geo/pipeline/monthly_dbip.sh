@@ -42,6 +42,11 @@ LOCK_FILE="${LOCK_FILE:-$LOG_DIR/monthly_dbip.lock}"
 DRY_RUN=0
 MONTH=""
 
+# Country filter passed through to the importer. Empty uses the built-in
+# default of US only. Set COUNTRIES to the literal word none for worldwide,
+# or to a comma separated list such as US,CA,MX.
+COUNTRIES="${COUNTRIES:-}"
+
 usage() {
   echo "monthly_dbip.sh - import the current month's free db-ip City Lite edition"
   echo ""
@@ -85,12 +90,10 @@ log "=============================================================="
 log "monthly db-ip import starting (GEO_HOME=$GEO_HOME month=${MONTH:-current} dry_run=$DRY_RUN)"
 
 MUTATION_LOCK="${MUTATION_LOCK:-$LOG_DIR/dbmutate.lock}"
-MUTATION_LOCK_WAIT="${MUTATION_LOCK_WAIT:-5400}"
 PROBE_LOCK="${PROBE_LOCK:-$LOG_DIR/probe_batch.lock}"
-PROBE_LOCK_WAIT="${PROBE_LOCK_WAIT:-4200}"
 if [ "$DRY_RUN" -eq 0 ]; then
-  take_mutation_lock "$MUTATION_LOCK" "$MUTATION_LOCK_WAIT"
-  take_lock_blocking "$PROBE_LOCK" "$PROBE_LOCK_WAIT"
+  take_mutation_lock "$MUTATION_LOCK" "$MUTATION_LOCK_WARN"
+  take_lock_blocking "$PROBE_LOCK" "$PROBE_LOCK_WARN"
 fi
 
 BEFORE_DBIP=$(scalar "SELECT count(*) FROM ip2city_dbiplite_tbl WHERE source = 'dbip'")
@@ -98,10 +101,14 @@ BEFORE_RV=$(scalar "SELECT count(*) FROM ip2city_dbiplite_tbl WHERE source = 'ro
 log "before: dbip_rows=$BEFORE_DBIP routeviews_rows=$BEFORE_RV"
 
 # -preserve-routeviews all is not optional; see the header.
+IMPORT_ARGS="-preserve-routeviews all"
+if [ -n "$COUNTRIES" ]; then
+  IMPORT_ARGS="$IMPORT_ARGS -countries $COUNTRIES"
+fi
 if [ -n "$MONTH" ]; then
-  run_step "dbip-mmdb-import (month=$MONTH)" "$IMPORT_BIN" -preserve-routeviews all -month "$MONTH"
+  run_step "dbip-mmdb-import (month=$MONTH countries=$COUNTRIES)" "$IMPORT_BIN" $IMPORT_ARGS -month "$MONTH"
 else
-  run_step "dbip-mmdb-import" "$IMPORT_BIN" -preserve-routeviews all
+  run_step "dbip-mmdb-import (countries=$COUNTRIES)" "$IMPORT_BIN" $IMPORT_ARGS
 fi
 
 AFTER_DBIP=$(scalar "SELECT count(*) FROM ip2city_dbiplite_tbl WHERE source = 'dbip'")

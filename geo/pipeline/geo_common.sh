@@ -2,46 +2,47 @@
 #
 # geo_common.sh - shared setup for the cron scripts. Sourced, not executed.
 #
-# Provides: GEO_HOME, LOG_DIR, log(), die(), psql_q(), require_database(),
-#           require_exec(), take_lock(), scalar(), run_step().
+# Provides: GEO_HOME, LOG_DIR, log(), alert(), die(), psql_q(),
+#           require_database(), require_exec(), take_lock(),
+#           take_lock_blocking(), take_mutation_lock(), scalar(), run_step().
 #
 # GEO_HOME is derived from this file's own location, so the scripts work from any
-# checkout path and need no configuration to find the tool binaries.
+# install path and need no configuration to find the tool binaries.
 #
-# DATABASE_URL IS OPTIONAL. When it is empty, psql is called with no connection
-# string and pgx is given an empty one; both then resolve the connection from the
+# DATABASE_URL IS OPTIONAL. When empty, psql is called with no connection string
+# and pgx is given an empty one; both then resolve the connection from the
 # standard libpq environment (PGHOST, PGPORT, PGUSER, PGDATABASE, PGPASSFILE) and
 # their built-in defaults. That is how a service account connects over a Unix
-# socket with peer authentication, with no credentials in the crontab or on disk.
+# socket with peer authentication, with no credentials in cron or on disk.
 #
-# An optional config file, by default $HOME/.geo-pipeline.env, may export
-# DATABASE_URL or libpq variables. Its absence is not an error.
+# LOCK POLICY
+# A lock is held for the whole life of the job: flock keeps it until the file
+# descriptor closes, which happens when the process exits, however it exits.
+# There is no lease that can lapse mid-run.
 #
-# Contains no backslash escape sequences. All parameter defaulting is confined to
-# the single block below, so every later reference is a plain expansion.
+# Waiting for a lock is NEVER abandoned. A job that finds a lock held waits
+# indefinitely and starts as soon as it frees. Exceeding the expected wait raises
+# an alert to the log and by email, repeated at each interval, so a long queue is
+# visible without any work being silently dropped. This suits worldwide db-ip and
+# RouteViews ingestion, where run times are long and variable.
+#
+# Contains no backslash escape sequences and no mid-line hash characters, both of
+# which are destroyed in transit. All parameter defaulting is confined to the
+# block below, so every later reference is a plain expansion.
 
-# ---------------------------------------------------------------------------
-# Resolve this file's own directory, even when sourced, then step up one level
-# to get GEO_HOME.
-# ---------------------------------------------------------------------------
 _geo_common_src="${BASH_SOURCE[0]}"
 _geo_common_dir="$(cd "$(dirname "$_geo_common_src")" && pwd)"
 _geo_home_default="$(dirname "$_geo_common_dir")"
 
-# ---------------------------------------------------------------------------
-# Parameter defaulting, all in one place.
-# ---------------------------------------------------------------------------
 GEO_HOME="${GEO_HOME:-$_geo_home_default}"
 GEO_CONFIG="${GEO_CONFIG:-$HOME/.geo-pipeline.env}"
 
 GEO_CONFIG_USED="environment"
 if [ -r "$GEO_CONFIG" ]; then
-  # shellcheck disable=SC1090
   . "$GEO_CONFIG"
   GEO_CONFIG_USED="$GEO_CONFIG"
 fi
 
-# Normalise after sourcing, so the config file may set any of these.
 DATABASE_URL="${DATABASE_URL:-}"
 PGHOST="${PGHOST:-}"
 PGPORT="${PGPORT:-}"
@@ -49,24 +50,21 @@ PGUSER="${PGUSER:-}"
 PGDATABASE="${PGDATABASE:-}"
 DRY_RUN="${DRY_RUN:-0}"
 
-# Logs and lock files live under the invoking account's home, so the cron account
-# never needs write access to the tool tree.
+ALERT_EMAIL="${ALERT_EMAIL:-root}"
+
+# Alert thresholds in seconds. These are NOT timeouts: nothing is abandoned when
+# they pass, an alert is raised and the job carries on. Sized for worldwide
+# ingestion, where a full db-ip edition is about 14.7M rows against 5.5M for the
+# United States alone, and a worldwide split scan is correspondingly slower.
+MUTATION_LOCK_WARN="${MUTATION_LOCK_WARN:-7200}"
+PROBE_LOCK_WARN="${PROBE_LOCK_WARN:-5400}"
+STEP_WARN_SECS="${STEP_WARN_SECS:-14400}"
+
 LOG_DIR="${LOG_DIR:-$HOME/geo-logs}"
 mkdir -p "$LOG_DIR"
 
-# ---------------------------------------------------------------------------
-# Helpers. From here on every expansion is plain.
-# ---------------------------------------------------------------------------
-
-# echo rather than printf with a newline escape, keeping this file free of
-# backslashes so it survives copy/paste through any channel.
 log() {
   echo "$(date -u '+%Y-%m-%dT%H:%M:%SZ')  $*" | tee -a "$LOG_FILE"
-}
-
-die() {
-  log "FATAL: $*"
-  exit 1
 }
 
 _shown() {
@@ -77,6 +75,36 @@ _shown() {
   fi
 }
 
+# Send one message, preferring the mail client, falling back to a direct
+# sendmail envelope. Never fatal: a missing MTA must not break a working job.
+send_mail() {
+  local subject="$1"
+  local body="$2"
+  if command -v mail >/dev/null 2>&1; then
+    echo "$body" | mail -s "$subject" "$ALERT_EMAIL" 2>/dev/null || true
+  elif command -v sendmail >/dev/null 2>&1; then
+    {
+      echo "To: $ALERT_EMAIL"
+      echo "Subject: $subject"
+      echo ""
+      echo "$body"
+    } | sendmail -t 2>/dev/null || true
+  else
+    log "no mail client found, so this alert was logged only"
+  fi
+}
+
+alert() {
+  log "ALERT: $*"
+  send_mail "trugeo alert on $(hostname -s)" "$*"
+}
+
+die() {
+  log "FATAL: $*"
+  send_mail "trugeo FAILURE on $(hostname -s)" "$*"
+  exit 1
+}
+
 report_db_mode() {
   if [ -n "$DATABASE_URL" ]; then
     log "database: DATABASE_URL set, from $GEO_CONFIG_USED"
@@ -85,8 +113,6 @@ report_db_mode() {
   fi
 }
 
-# Run one query. The connection string is passed only when there is one: giving
-# psql an empty first argument would make it treat that as a database name.
 psql_q() {
   if [ -n "$DATABASE_URL" ]; then
     psql "$DATABASE_URL" -tAc "$1"
@@ -95,9 +121,6 @@ psql_q() {
   fi
 }
 
-# Confirm the database is reachable by whichever path is in use, so a
-# misconfigured account fails immediately with a clear message rather than at the
-# first real query.
 require_database() {
   local who
   if ! who=$(psql_q "SELECT current_user || '@' || current_database()" 2>&1); then
@@ -113,8 +136,9 @@ require_exec() {
   [ -x "$1" ] || die "missing or non-executable: $1"
 }
 
-# Serialise runs, so a cron overlap is a no-op rather than a concurrent run.
-# Uses fd 9. Non-blocking: if the lock is held, exit quietly.
+# Non-blocking lock on fd 9, guarding against two copies of the SAME job. Held
+# until this process exits. If a previous run is still going, exit quietly: cron
+# will try again on the next tick.
 take_lock() {
   exec 9>"$1" || die "cannot open lock file $1"
   if ! flock -n 9; then
@@ -123,60 +147,70 @@ take_lock() {
   fi
 }
 
-# Acquire a SECOND lock, blocking up to a timeout in seconds. Uses fd 8, so it
-# composes with take_lock rather than replacing it.
-#
-# This exists for the monthly import. That import ends with DROP TABLE plus
-# RENAME on ip2city_dbiplite_tbl, which needs an ACCESS EXCLUSIVE lock, and it
-# sets lock_timeout to a few seconds so a stuck reader cannot queue every other
-# query behind it. Meanwhile probe_batch reads that same table for roughly 53
-# minutes of every hour, so an unsynchronised import would nearly always fail on
-# lock timeout. Taking the probe lock makes the import wait for the current batch
-# to finish, and makes the next hourly batch exit quietly until the import is
-# done.
+# Wait for a lock on an already-open descriptor, without any timeout. Raises an
+# alert every warn_secs while still waiting, so a long queue is visible but no
+# work is dropped. The lock is then held until the process exits.
+_wait_for_lock_fd() {
+  local fd="$1"
+  local lock="$2"
+  local warn_secs="$3"
+  local what="$4"
+
+  if flock -n "$fd"; then
+    log "acquired $what immediately"
+    return 0
+  fi
+
+  log "$what is held by another job; waiting with no timeout, alerting every ${warn_secs}s"
+
+  local sentinel
+  sentinel="$LOG_DIR/.waiting.$$.$fd"
+  : > "$sentinel"
+
+  (
+    elapsed=0
+    while [ -f "$sentinel" ]; do
+      sleep "$warn_secs"
+      if [ -f "$sentinel" ]; then
+        elapsed=$((elapsed + warn_secs))
+        alert "still waiting for the $what after ${elapsed}s (lock file $lock). The job has NOT been abandoned and will start as soon as the lock frees. Check for a long-running worldwide ingest."
+      fi
+    done
+  ) &
+  local watchdog=$!
+
+  flock "$fd"
+
+  rm -f "$sentinel"
+  kill "$watchdog" 2>/dev/null || true
+  wait "$watchdog" 2>/dev/null || true
+
+  log "acquired $what"
+}
+
+# The probe lock, fd 8. Taken by the monthly import so its DROP TABLE and RENAME,
+# which need an ACCESS EXCLUSIVE lock, cannot collide with a probe batch reading
+# the same table.
 take_lock_blocking() {
-  local lock="$1"
-  local wait_secs="$2"
-  exec 8>"$lock" || die "cannot open lock file $lock"
-  log "waiting up to ${wait_secs}s for $lock"
-  if ! flock -w "$wait_secs" 8; then
-    die "timed out after ${wait_secs}s waiting for $lock; something is holding it much longer than expected"
-  fi
-  log "acquired $lock"
+  exec 8>"$1" || die "cannot open lock file $1"
+  _wait_for_lock_fd 8 "$1" "$2" "probe lock"
 }
 
-# The shared mutation lock, on fd 7. Held by BOTH daily_pipeline and
-# monthly_dbip, blocking, because both mutate ip2city_dbiplite_tbl and must never
-# do so at the same time.
-#
-# Normally they are hours apart, but the monthly import can be delayed while it
-# waits for the probe lock, and a schedule change or a timezone move could align
-# them. Without this, apply_splits could be inserting rows while the import runs
-# DROP TABLE, which would either abort the import on lock timeout or fail the
-# daily run with a missing relation.
-#
-# Both wait rather than skip, so neither job is silently dropped: whichever
-# arrives second simply starts when the first finishes.
+# The shared mutation lock, fd 7. Held by BOTH daily_pipeline and monthly_dbip,
+# because both mutate ip2city_dbiplite_tbl and must never do so at once. Whichever
+# arrives second waits and then runs; neither is skipped.
 take_mutation_lock() {
-  local lock="$1"
-  local wait_secs="$2"
-  exec 7>"$lock" || die "cannot open lock file $lock"
-  log "waiting up to ${wait_secs}s for the shared mutation lock $lock"
-  if ! flock -w "$wait_secs" 7; then
-    die "timed out after ${wait_secs}s waiting for $lock; another mutating job is still running"
-  fi
-  log "acquired mutation lock $lock"
+  exec 7>"$1" || die "cannot open lock file $1"
+  _wait_for_lock_fd 7 "$1" "$2" "mutation lock"
 }
 
-# Scalar for reporting only. Yields ? on failure so a reporting query can never
-# abort a run.
 scalar() {
   psql_q "$1" 2>/dev/null || echo "?"
 }
 
-# Run a step, timing it. Any non-zero exit aborts the whole script, so a later
-# step never acts on incomplete data. Tool output goes to the log, keeping cron
-# mail short.
+# Run a step, timing it. A non-zero exit aborts the script, so no later step acts
+# on incomplete data. A step slower than STEP_WARN_SECS raises an alert but is
+# allowed to finish, since worldwide ingestion is legitimately slow.
 run_step() {
   local name="$1"
   shift
@@ -194,6 +228,9 @@ run_step() {
   secs=$(( $(date +%s) - t0 ))
   if [ "$rc" -ne 0 ]; then
     die "$name failed with exit $rc after ${secs}s (see $LOG_FILE)"
+  fi
+  if [ "$secs" -gt "$STEP_WARN_SECS" ]; then
+    alert "step $name took ${secs}s, beyond the ${STEP_WARN_SECS}s expectation. It completed successfully. Raise STEP_WARN_SECS if this is the new normal for worldwide data."
   fi
   log "DONE  $name in ${secs}s"
 }

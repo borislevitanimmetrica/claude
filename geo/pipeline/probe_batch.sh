@@ -37,6 +37,7 @@ LOCK_FILE="${LOCK_FILE:-$LOG_DIR/probe_batch.lock}"
 
 BATCH="${BATCH:-2400}"
 COUNTRY="${COUNTRY:-US}"
+BATCH_WARN_SECS="${BATCH_WARN_SECS:-4200}"
 REPORT_ONLY=0
 
 usage() {
@@ -119,6 +120,13 @@ secs=$(( $(date +%s) - t0 ))
 
 AFTER=$(remaining)
 log "batch finished in ${secs}s with exit $rc; backlog after=$AFTER"
+
+# A batch of 2400 should take about 53 minutes at 45 calls a minute. Much longer
+# means ip-api is throttling or the network is degraded, and an hourly schedule
+# will start overlapping. Alert but do not fail: the work itself succeeded.
+if [ "$secs" -gt "$BATCH_WARN_SECS" ]; then
+  alert "probe batch of $BATCH took ${secs}s, beyond the ${BATCH_WARN_SECS}s expectation. Successive hourly runs may now overlap and exit on the lock. Check for ip-api throttling or lower BATCH."
+fi
 
 if [ "$rc" -ne 0 ]; then
   die "check_geo_ip-api exited $rc (see $LOG_FILE)"
