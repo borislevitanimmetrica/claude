@@ -2,6 +2,7 @@ PATH=/usr/local/bin:/usr/bin:/bin
 SHELL=/bin/bash
 MAILTO=root
 CRON_TZ=America/New_York
+PGDATABASE=postgres
 
 0 2 * * *   cronuser /var/trugeo/pipeline/daily_pipeline.sh
 5 * * * *   cronuser /var/trugeo/pipeline/probe_batch.sh
