@@ -84,9 +84,12 @@ take_lock "$LOCK_FILE"
 log "=============================================================="
 log "monthly db-ip import starting (GEO_HOME=$GEO_HOME month=${MONTH:-current} dry_run=$DRY_RUN)"
 
+MUTATION_LOCK="${MUTATION_LOCK:-$LOG_DIR/dbmutate.lock}"
+MUTATION_LOCK_WAIT="${MUTATION_LOCK_WAIT:-5400}"
 PROBE_LOCK="${PROBE_LOCK:-$LOG_DIR/probe_batch.lock}"
 PROBE_LOCK_WAIT="${PROBE_LOCK_WAIT:-4200}"
 if [ "$DRY_RUN" -eq 0 ]; then
+  take_mutation_lock "$MUTATION_LOCK" "$MUTATION_LOCK_WAIT"
   take_lock_blocking "$PROBE_LOCK" "$PROBE_LOCK_WAIT"
 fi
 

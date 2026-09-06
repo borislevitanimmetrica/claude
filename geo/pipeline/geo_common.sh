@@ -145,6 +145,29 @@ take_lock_blocking() {
   log "acquired $lock"
 }
 
+# The shared mutation lock, on fd 7. Held by BOTH daily_pipeline and
+# monthly_dbip, blocking, because both mutate ip2city_dbiplite_tbl and must never
+# do so at the same time.
+#
+# Normally they are hours apart, but the monthly import can be delayed while it
+# waits for the probe lock, and a schedule change or a timezone move could align
+# them. Without this, apply_splits could be inserting rows while the import runs
+# DROP TABLE, which would either abort the import on lock timeout or fail the
+# daily run with a missing relation.
+#
+# Both wait rather than skip, so neither job is silently dropped: whichever
+# arrives second simply starts when the first finishes.
+take_mutation_lock() {
+  local lock="$1"
+  local wait_secs="$2"
+  exec 7>"$lock" || die "cannot open lock file $lock"
+  log "waiting up to ${wait_secs}s for the shared mutation lock $lock"
+  if ! flock -w "$wait_secs" 7; then
+    die "timed out after ${wait_secs}s waiting for $lock; another mutating job is still running"
+  fi
+  log "acquired mutation lock $lock"
+}
+
 # Scalar for reporting only. Yields ? on failure so a reporting query can never
 # abort a run.
 scalar() {

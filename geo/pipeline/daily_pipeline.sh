@@ -72,6 +72,12 @@ require_exec "$APPLY_BIN"
 
 take_lock "$LOCK_FILE"
 
+MUTATION_LOCK="${MUTATION_LOCK:-$LOG_DIR/dbmutate.lock}"
+MUTATION_LOCK_WAIT="${MUTATION_LOCK_WAIT:-5400}"
+if [ "$DRY_RUN" -eq 0 ]; then
+  take_mutation_lock "$MUTATION_LOCK" "$MUTATION_LOCK_WAIT"
+fi
+
 log "=============================================================="
 log "daily pipeline starting (GEO_HOME=$GEO_HOME bgp_mode=$BGP_MODE dry_run=$DRY_RUN)"
 
