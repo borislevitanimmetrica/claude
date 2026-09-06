@@ -1,0 +1,8 @@
+PATH=/usr/local/bin:/usr/bin:/bin
+SHELL=/bin/bash
+MAILTO=root
+CRON_TZ=America/New_York
+
+0 2 * * *   cronuser /home/boris/geo/pipeline/daily_pipeline.sh
+5 * * * *   cronuser /home/boris/geo/pipeline/probe_batch.sh
+0 0 2 * *   cronuser /home/boris/geo/pipeline/monthly_dbip.sh
