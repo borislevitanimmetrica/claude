@@ -21,7 +21,7 @@
 # not automated, because it spends from the same 45/min ip-api budget as probing.
 #
 # No credentials are taken from the command line or the crontab. DATABASE_URL
-# comes from $HOME/.geo-pipeline.env (override with GEO_CONFIG).
+# comes from /etc/trugeo.env (override with GEO_CONFIG).
 #
 # Usage:
 #   monthly_dbip.sh                normal run, current month

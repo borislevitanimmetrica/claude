@@ -11,7 +11,7 @@
 # probe_batch.sh on an hourly schedule for that.
 #
 # No credentials are taken from the command line or the crontab. DATABASE_URL
-# comes from $HOME/.geo-pipeline.env (override with GEO_CONFIG). GEO_HOME is
+# comes from /etc/trugeo.env (override with GEO_CONFIG). GEO_HOME is
 # derived from this script's own location.
 #
 # Usage:
