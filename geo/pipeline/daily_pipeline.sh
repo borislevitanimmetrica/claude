@@ -30,8 +30,17 @@ _self_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 LOG_FILE="$LOG_DIR/daily_pipeline.log"
 LOCK_FILE="${LOCK_FILE:-$LOG_DIR/daily_pipeline.lock}"
 
-DRY_RUN=0
-BGP_MODE=updates
+DRY_RUN="${DRY_RUN:-0}"
+BGP_MODE="${BGP_MODE:-updates}"
+
+if [ "$DRY_RUN" != "0" ] && [ "$DRY_RUN" != "1" ]; then
+  echo "DRY_RUN must be 0 or 1, got: $DRY_RUN" >&2
+  exit 2
+fi
+if [ "$BGP_MODE" != "updates" ] && [ "$BGP_MODE" != "full" ]; then
+  echo "BGP_MODE must be updates or full, got: $BGP_MODE" >&2
+  exit 2
+fi
 
 usage() {
   echo "daily_pipeline.sh - RouteViews import, split detection, /24 decomposition"

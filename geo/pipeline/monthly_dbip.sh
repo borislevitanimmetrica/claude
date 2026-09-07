@@ -39,8 +39,13 @@ _self_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 LOG_FILE="$LOG_DIR/monthly_dbip.log"
 LOCK_FILE="${LOCK_FILE:-$LOG_DIR/monthly_dbip.lock}"
 
-DRY_RUN=0
-MONTH=""
+DRY_RUN="${DRY_RUN:-0}"
+MONTH="${MONTH:-}"
+
+if [ "$DRY_RUN" != "0" ] && [ "$DRY_RUN" != "1" ]; then
+  echo "DRY_RUN must be 0 or 1, got: $DRY_RUN" >&2
+  exit 2
+fi
 
 # Country filter passed through to the importer. Empty uses the built-in
 # default of US only. Set COUNTRIES to the literal word none for worldwide,
