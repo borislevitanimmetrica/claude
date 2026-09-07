@@ -109,11 +109,17 @@ for entry in $TOOLS; do
   printf 'deploy:   %-26s ' "$name"
   ( cd "$target" && go build -o "$STAGE/$name" "$pkg" ) || fail "build failed for $name"
 
-  modified=$(go version -m "$STAGE/$name" | awk '$1=="build" && $2=="vcs.modified" {print $3}')
+  modified=$(go version -m "$STAGE/$name" | grep vcs.modified | cut -d= -f2)
   if [ -z "$modified" ]; then
-    modified="unknown"
+    modified="absent"
   fi
   echo "ok  vcs.modified=$modified"
+
+  # The artifact itself is the authority, not the earlier tree check, because
+  # only the binary records what it was actually built from.
+  if [ "$modified" != "false" ] && [ "${ALLOW_DIRTY:-0}" != "1" ]; then
+    fail "$name reports vcs.modified=$modified, so it matches no commit. Refusing to deploy it."
+  fi
   BUILT=$((BUILT + 1))
 done
 say "built $BUILT tools"
@@ -148,8 +154,8 @@ for entry in $TOOLS; do
   name=$(echo "$entry" | cut -d: -f1)
   subpath=$(echo "$entry" | cut -d: -f3)
   installed="$GEO_HOME/$subpath/bin/$name"
-  rev=$(go version -m "$installed" | awk '$1=="build" && $2=="vcs.revision" {print substr($3,1,7)}')
-  mod=$(go version -m "$installed" | awk '$1=="build" && $2=="vcs.modified" {print $3}')
+  rev=$(go version -m "$installed" | grep vcs.revision | cut -d= -f2 | cut -c1-7)
+  mod=$(go version -m "$installed" | grep vcs.modified | cut -d= -f2)
   say "  $name revision=$rev modified=$mod"
 done
 
