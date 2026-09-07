@@ -221,6 +221,7 @@ func runUpdates(ctx context.Context, conn *pgx.Conn, client *http.Client, bgpdat
 			log.Fatal("no ingest state for this collector: run -mode full first, or pass -since")
 		}
 		since = s
+		log.Printf("resuming from stored state for collector %s: last_file_ts=%s", collector, since.Format(time.RFC3339))
 	}
 
 	refs, err := updatesSince(client, bgpdata, since)
@@ -235,7 +236,7 @@ func runUpdates(ctx context.Context, conn *pgx.Conn, client *http.Client, bgpdat
 		refs[0].ts.Format("2006-01-02 15:04"), refs[len(refs)-1].ts.Format("2006-01-02 15:04"))
 
 	totalAnn, totalWd := 0, 0
-	for _, ref := range refs {
+	for i, ref := range refs {
 		body, closer, err := openMRT(client, ref.url)
 		if err != nil {
 			log.Fatalf("open %s: %v", ref.url, err)
@@ -247,7 +248,17 @@ func runUpdates(ctx context.Context, conn *pgx.Conn, client *http.Client, bgpdat
 		}
 		totalAnn += ann
 		totalWd += wd
-		log.Printf("  %s: announced=%d withdrawn=%d", ref.ts.Format("2006-01-02 15:04"), ann, wd)
+		if dryRun {
+			log.Printf("  %s: announced=%d withdrawn=%d", ref.ts.Format("2006-01-02 15:04"), ann, wd)
+		} else {
+			// applyUpdatesFile has already committed this file together with its
+			// state advance, so reporting the new watermark here makes resume
+			// behaviour auditable from the log instead of inferred. An
+			// interrupted run resumes from the last line printed.
+			log.Printf("  %s: announced=%d withdrawn=%d, committed, state advanced to %s (file %d of %d)",
+				ref.ts.Format("2006-01-02 15:04"), ann, wd,
+				ref.ts.Format(time.RFC3339), i+1, len(refs))
+		}
 		if limit > 0 && totalAnn+totalWd >= limit {
 			break
 		}
