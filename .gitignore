@@ -1,0 +1,6 @@
+# Compiled Go tools are never tracked. They are built from the checked-out
+# commit by geo/pipeline/deploy.sh, so a deployed binary always corresponds to
+# known source. Tracked binaries previously reported vcs.modified=true and
+# matched no commit, which made stale-binary failures very hard to diagnose.
+geo/*/bin/
+geo/dma_export/*/bin/
