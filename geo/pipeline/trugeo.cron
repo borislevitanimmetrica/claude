@@ -6,6 +6,19 @@ CRON_TZ=America/New_York
 PGDATABASE=postgres
 LOG_DIR=/var/log/trugeo
 
-0 2 * * *   cronuser /var/trugeo/pipeline/daily_pipeline.sh
-5 * * * *   cronuser /var/trugeo/pipeline/probe_batch.sh
-0 0 2 * *   cronuser /var/trugeo/pipeline/monthly_dbip.sh
+# Each job discards stdout but NOT stderr.
+#
+# log() tees every line to both the log file and stdout, so without the
+# redirect cron sees output on every single run and mails MAILTO regardless of
+# exit code. That produced a duplicate of every notification: for probe_batch,
+# three mails an hour instead of two, roughly 72 a day.
+#
+# Discarding stdout costs nothing, because tee still writes the log file, and
+# the scripts send their own start, success and error mail. stderr is kept
+# deliberately: the only thing that writes to it is the guard that fires when
+# LOG_DIR is unwritable, which happens before the mail path is usable, so cron
+# mail is the sole notification channel for exactly that failure.
+
+0 2 * * *   cronuser /var/trugeo/pipeline/daily_pipeline.sh >/dev/null
+5 * * * *   cronuser /var/trugeo/pipeline/probe_batch.sh >/dev/null
+0 0 2 * *   cronuser /var/trugeo/pipeline/monthly_dbip.sh >/dev/null
