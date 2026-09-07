@@ -241,25 +241,34 @@ func runUpdates(ctx context.Context, conn *pgx.Conn, client *http.Client, bgpdat
 		if err != nil {
 			log.Fatalf("open %s: %v", ref.url, err)
 		}
-		ann, wd, err := applyUpdatesFile(ctx, conn, body, ref.ts, collector, peerFilter, dedupe, dryRun, limit)
+		ann, wd, truncated, err := applyUpdatesFile(ctx, conn, body, ref.ts, collector, peerFilter, dedupe, dryRun, limit)
 		closer()
 		if err != nil {
 			log.Fatalf("applying %s: %v", ref.url, err)
 		}
 		totalAnn += ann
 		totalWd += wd
-		if dryRun {
+		filesDone := i + 1
+		switch {
+		case dryRun:
 			log.Printf("  %s: announced=%d withdrawn=%d", ref.ts.Format("2006-01-02 15:04"), ann, wd)
-		} else {
+		case truncated:
+			// The watermark deliberately did not move, so this file will be
+			// reprocessed in full on the next run. Say so, because a moved
+			// watermark on a partial file silently discards the remainder.
+			log.Printf("  %s: announced=%d withdrawn=%d, committed, WATERMARK NOT ADVANCED: -limit truncated this file part-way, so it stays queued for reprocessing (file %d of %d)",
+				ref.ts.Format("2006-01-02 15:04"), ann, wd, filesDone, len(refs))
+		default:
 			// applyUpdatesFile has already committed this file together with its
 			// state advance, so reporting the new watermark here makes resume
 			// behaviour auditable from the log instead of inferred. An
 			// interrupted run resumes from the last line printed.
 			log.Printf("  %s: announced=%d withdrawn=%d, committed, state advanced to %s (file %d of %d)",
 				ref.ts.Format("2006-01-02 15:04"), ann, wd,
-				ref.ts.Format(time.RFC3339), i+1, len(refs))
+				ref.ts.Format(time.RFC3339), filesDone, len(refs))
 		}
 		if limit > 0 && totalAnn+totalWd >= limit {
+			log.Printf("stopping after %d of %d files because -limit %d was reached", filesDone, len(refs), limit)
 			break
 		}
 	}
@@ -280,13 +289,16 @@ func runUpdates(ctx context.Context, conn *pgx.Conn, client *http.Client, bgpdat
 //
 // All changes for one file happen in a single transaction; state advances to
 // the file's timestamp on commit. In dry-run nothing is written.
-func applyUpdatesFile(ctx context.Context, conn *pgx.Conn, r io.Reader, fileTS time.Time, collector, peerFilter string, dedupe, dryRun bool, limit int) (int, int, error) {
+// applyUpdatesFile applies one updates file. The third return value reports
+// whether -limit truncated the file part-way, in which case the ingest
+// watermark is deliberately left where it was.
+func applyUpdatesFile(ctx context.Context, conn *pgx.Conn, r io.Reader, fileTS time.Time, collector, peerFilter string, dedupe, dryRun bool, limit int) (int, int, bool, error) {
 	var tx pgx.Tx
 	var err error
 	if !dryRun {
 		tx, err = conn.Begin(ctx)
 		if err != nil {
-			return 0, 0, err
+			return 0, 0, false, err
 		}
 		defer tx.Rollback(context.Background())
 	}
@@ -365,19 +377,32 @@ func applyUpdatesFile(ctx context.Context, conn *pgx.Conn, r io.Reader, fileTS t
 		}
 		return nil
 	})
-	if err != nil && err != errStopEarly {
-		return annCount, wdCount, err
+	truncated := false
+	if err == errStopEarly {
+		truncated = true
+	} else if err != nil {
+		return annCount, wdCount, false, err
 	}
 
 	if !dryRun {
-		if err := setState(ctx, tx, collector, fileTS); err != nil {
-			return annCount, wdCount, err
+		// A file truncated by -limit has NOT been fully applied, so the
+		// watermark must not move past it. updatesSince selects files strictly
+		// after the watermark, so advancing here would skip the remainder of
+		// this file permanently and silently.
+		//
+		// The rows already written are still committed, because every
+		// announcement is a DELETE followed by an INSERT for that prefix and is
+		// therefore idempotent when the file is reprocessed in full later.
+		if !truncated {
+			if err := setState(ctx, tx, collector, fileTS); err != nil {
+				return annCount, wdCount, truncated, err
+			}
 		}
 		if err := tx.Commit(ctx); err != nil {
-			return annCount, wdCount, err
+			return annCount, wdCount, truncated, err
 		}
 	}
-	return annCount, wdCount, nil
+	return annCount, wdCount, truncated, nil
 }
 
 var errStopEarly = fmt.Errorf("stop early (limit reached)")
