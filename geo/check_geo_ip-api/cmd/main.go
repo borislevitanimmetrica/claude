@@ -196,7 +196,12 @@ WHERE NOT EXISTS (
     WHERE tr.network = t.network
       AND tr.city IS NOT NULL
 )
-AND NOT (t.network <<= '100.64.0.0/10'::cidr)
+-- CGNAT (100.64.0.0/10) was previously excluded here. That decision was
+-- reversed on 2026-09-08, so shared address space is now probed like any other
+-- range. The same filter was removed from probe_batch.sh and from the probe
+-- table populate at the same time: if the populate loaded CGNAT while this
+-- query skipped it, those rows would keep ran_at NULL forever and block the
+-- cycle-complete gate permanently.
 AND NOT EXISTS (
     SELECT 1 FROM geo_exclusions x
     WHERE x.active AND x.prefix IS NOT NULL

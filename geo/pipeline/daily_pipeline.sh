@@ -138,7 +138,15 @@ if [ "$PROBE_TBL_REBUILD" = "1" ]; then
     if [ ! -f "$REBUILD_SQL" ]; then
       die "PROBE_TBL_REBUILD=1 but $REBUILD_SQL is missing"
     fi
-    run_step "rebuild_probe_tbl (country=$PROBE_COUNTRY)" psql_file "$REBUILD_SQL" "geo.country = '$PROBE_COUNTRY'"
+    # geo.family must agree with the -ipv4-only that probe_batch.sh passes, which
+    # is why both derive from the single PROBE_IPV4_ONLY in geo_common.sh. 0 means
+    # both families.
+    REBUILD_FAMILY=0
+    if [ "$PROBE_IPV4_ONLY" = "1" ]; then
+      REBUILD_FAMILY=4
+    fi
+    log "probe table scope: country=$PROBE_COUNTRY family=$REBUILD_FAMILY ipv4_only=$PROBE_IPV4_ONLY"
+    run_step "rebuild_probe_tbl (country=$PROBE_COUNTRY family=$REBUILD_FAMILY)" psql_file "$REBUILD_SQL" "geo.country = '$PROBE_COUNTRY'" "geo.family = '$REBUILD_FAMILY'"
   fi
 else
   log "rebuild_probe_tbl not run: PROBE_TBL_REBUILD is $PROBE_TBL_REBUILD"

@@ -78,12 +78,16 @@ remaining() {
   if [ -n "$COUNTRY" ]; then
     extra="AND t.country_iso_code = '$COUNTRY'"
   fi
+  local family_clause="AND true"
+  if [ "$PROBE_IPV4_ONLY" = "1" ]; then
+    family_clause="AND family(t.network) = 4"
+  fi
   psql_q "
     SELECT count(*) FROM ip2city_dbiplite_tbl t
-    WHERE family(t.network) = 4
+    WHERE true
+      $family_clause
       AND NOT EXISTS (SELECT 1 FROM ip2city_dbiplite_traceroute_tbl tr
                       WHERE tr.network = t.network AND tr.city IS NOT NULL)
-      AND NOT (t.network <<= '100.64.0.0/10'::cidr)
       AND NOT EXISTS (SELECT 1 FROM geo_exclusions x
                       WHERE x.active AND x.prefix IS NOT NULL
                         AND t.network <<= x.prefix)
@@ -109,13 +113,21 @@ begin_notify
 BEFORE=$(remaining)
 log "starting batch of $BATCH (country=${COUNTRY:-all}); backlog before=$BEFORE"
 
+# The address family scope MUST be passed explicitly. The tool's -ipv4-only flag
+# defaults to false, so omitting it sampled both families while remaining() above
+# counted IPv4 only, leaving the reported backlog and the probe scope disagreeing.
+GEO_ARGS=(-count "$BATCH")
+if [ -n "$COUNTRY" ]; then
+  GEO_ARGS+=(-country "$COUNTRY")
+fi
+if [ "$PROBE_IPV4_ONLY" = "1" ]; then
+  GEO_ARGS+=(-ipv4-only)
+fi
+log "probe scope: country=${COUNTRY:-all} ipv4_only=$PROBE_IPV4_ONLY"
+
 t0=$(date +%s)
 set +e
-if [ -n "$COUNTRY" ]; then
-  "$GEO_BIN" -count "$BATCH" -country "$COUNTRY" >> "$LOG_FILE" 2>&1
-else
-  "$GEO_BIN" -count "$BATCH" >> "$LOG_FILE" 2>&1
-fi
+"$GEO_BIN" "${GEO_ARGS[@]}" >> "$LOG_FILE" 2>&1
 rc=$?
 set -e
 secs=$(( $(date +%s) - t0 ))

@@ -70,6 +70,26 @@ ALERT_EMAIL="${ALERT_EMAIL:-boris@immetrica.com}"
 NOTIFY_START="${NOTIFY_START:-1}"
 NOTIFY_SUCCESS="${NOTIFY_SUCCESS:-1}"
 
+# Address family scope. IPv6 is out of scope for now by decision, so the default
+# is IPv4 only.
+#
+# THIS LIVES HERE, NOT IN EITHER SCRIPT, ON PURPOSE. It drives both the probe
+# table populate in daily_pipeline.sh and the probe itself in probe_batch.sh. If
+# those two disagreed about address family, the excluded family would be loaded
+# but never probed, its rows would keep ran_at NULL forever, and the
+# cycle-complete gate would never open again. One variable, one definition, both
+# consumers.
+#
+# Set PROBE_IPV4_ONLY=0 to bring IPv6 into scope. Nothing else needs changing:
+# geo_exclusions containment is already family-correct, and sampleRanges,
+# apply_splits and classify_ranges all handle both families.
+PROBE_IPV4_ONLY="${PROBE_IPV4_ONLY:-1}"
+
+if [ "$PROBE_IPV4_ONLY" != "0" ] && [ "$PROBE_IPV4_ONLY" != "1" ]; then
+  echo "PROBE_IPV4_ONLY must be 0 or 1, got: $PROBE_IPV4_ONLY" >&2
+  exit 2
+fi
+
 # Alert thresholds in seconds. These are NOT timeouts: nothing is abandoned when
 # they pass, an alert is raised and the job carries on. Sized for worldwide
 # ingestion, where a full db-ip edition is about 14.7M rows against 5.5M for the
@@ -228,11 +248,16 @@ psql_q() {
 # with -c so the file itself needs no parameter substitution.
 psql_file() {
   local file="$1"
-  local setting="${2-}"
+  shift
   local args=(-v ON_ERROR_STOP=1)
-  if [ -n "$setting" ]; then
-    args+=(-c "SET $setting")
-  fi
+  # One -c per setting: SET accepts a single parameter per statement, so
+  # "SET a = '1', b = '2'" is a syntax error. psql runs -c and -f in the order
+  # given on one connection, and SET is session scoped, so these persist into the
+  # file that follows.
+  while [ -n "${1-}" ]; do
+    args+=(-c "SET $1")
+    shift
+  done
   args+=(-f "$file")
   if [ -n "$DATABASE_URL" ]; then
     psql "$DATABASE_URL" "${args[@]}"
