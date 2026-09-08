@@ -64,6 +64,11 @@ type rangeRow struct {
 	network string
 	start   netip.Addr
 	end     netip.Addr
+	// query is the address to probe, chosen at random within the range when
+	// daily_pipeline.sh rebuilt the probe table and stored in
+	// ip2city_dbiplite_probe_tbl.query. It is used as-is rather than re-rolled
+	// here, so the stored value is always the address actually probed.
+	query netip.Addr
 }
 
 // geoTarget is a single (network, sampled address) unit of work.
@@ -135,10 +140,23 @@ func main() {
 	)
 
 	for i, rr := range ranges {
-		ip, err := randomAddrInRange(rr.start, rr.end)
-		if err != nil {
-			log.Printf("[%d/%d] %s: cannot sample address: %v", i+1, len(ranges), rr.network, err)
-			continue
+		// The address was chosen and stored when the probe table was rebuilt, so
+		// it is used verbatim. Re-rolling it here would make
+		// ip2city_dbiplite_probe_tbl.query, and the history row derived from it,
+		// disagree with the address that was actually probed.
+		//
+		// randomAddrInRange remains as the fallback for a row whose query somehow
+		// did not survive the rebuild, which the NOT NULL constraint should make
+		// impossible.
+		ip := rr.query
+		if !ip.IsValid() {
+			var err error
+			ip, err = randomAddrInRange(rr.start, rr.end)
+			if err != nil {
+				log.Printf("[%d/%d] %s: query was not set and no address could be sampled: %v", i+1, len(ranges), rr.network, err)
+				continue
+			}
+			log.Printf("[%d/%d] %s: query was not set, sampled %s instead", i+1, len(ranges), rr.network, ip)
 		}
 		tgt := geoTarget{network: rr.network, ip: ip}
 
@@ -204,10 +222,13 @@ func sampleRanges(ctx context.Context, conn *pgx.Conn, n int, country string, ip
 	// predicates below are therefore assertions that the caller and the rebuild
 	// agree, not independent filters, and they are applied only when explicitly
 	// requested.
+	// start_ip, end_ip and query are all materialised by the rebuild, so this
+	// reads them rather than recomputing the range bounds or choosing an address.
 	query := `
 SELECT p.network::text,
-       host(network(p.network))::inet   AS start_ip,
-       host(broadcast(p.network))::inet AS end_ip
+       p.start_ip,
+       p.end_ip,
+       p.query
 FROM ip2city_dbiplite_probe_tbl p
 WHERE p.ran_at IS NULL`
 
@@ -241,11 +262,11 @@ WHERE p.ran_at IS NULL`
 	var out []rangeRow
 	for rows.Next() {
 		var netText string
-		var start, end netip.Addr
-		if err := rows.Scan(&netText, &start, &end); err != nil {
+		var start, end, q netip.Addr
+		if err := rows.Scan(&netText, &start, &end, &q); err != nil {
 			return nil, err
 		}
-		out = append(out, rangeRow{network: netText, start: start, end: end})
+		out = append(out, rangeRow{network: netText, start: start, end: end, query: q})
 	}
 	return out, rows.Err()
 }
