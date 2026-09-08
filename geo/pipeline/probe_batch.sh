@@ -76,21 +76,16 @@ require_exec "$GEO_BIN"
 remaining() {
   local extra=""
   if [ -n "$COUNTRY" ]; then
-    extra="AND t.country_iso_code = '$COUNTRY'"
+    extra="AND t.countrycode = '$COUNTRY'"
   fi
   local family_clause="AND true"
   if [ "$PROBE_IPV4_ONLY" = "1" ]; then
     family_clause="AND family(t.network) = 4"
   fi
   psql_q "
-    SELECT count(*) FROM ip2city_dbiplite_tbl t
-    WHERE true
+    SELECT count(*) FROM ip2city_dbiplite_probe_tbl t
+    WHERE t.ran_at IS NULL
       $family_clause
-      AND NOT EXISTS (SELECT 1 FROM ip2city_dbiplite_traceroute_tbl tr
-                      WHERE tr.network = t.network AND tr.city IS NOT NULL)
-      AND NOT EXISTS (SELECT 1 FROM geo_exclusions x
-                      WHERE x.active AND x.prefix IS NOT NULL
-                        AND t.network <<= x.prefix)
       $extra
   " 2>/dev/null || echo "?"
 }

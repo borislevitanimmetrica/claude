@@ -156,16 +156,11 @@ AFTER_BGP=$(scalar "SELECT count(*) FROM bgp_route_views")
 AFTER_DBIP=$(scalar "SELECT count(*) FROM ip2city_dbiplite_tbl WHERE source = 'dbip'")
 AFTER_RV=$(scalar "SELECT count(*) FROM ip2city_dbiplite_tbl WHERE source = 'routeviews'")
 CANDIDATES=$(scalar "SELECT count(*) FROM dbip_split_candidates")
-UNPROBED=$(scalar "SELECT count(*) FROM ip2city_dbiplite_tbl t
-                   WHERE family(t.network) = 4
-                     AND NOT EXISTS (SELECT 1 FROM ip2city_dbiplite_traceroute_tbl tr
-                                     WHERE tr.network = t.network AND tr.city IS NOT NULL)
-                     AND NOT EXISTS (SELECT 1 FROM geo_exclusions x
-                                     WHERE x.active AND x.prefix IS NOT NULL
-                                       AND t.network <<= x.prefix)")
+UNPROBED=$(scalar "SELECT count(*) FROM ip2city_dbiplite_probe_tbl WHERE ran_at IS NULL")
+PROBED=$(scalar "SELECT count(*) FROM ip2city_dbiplite_probe_tbl WHERE ran_at IS NOT NULL")
 
 log "after:  bgp=$AFTER_BGP dbip_rows=$AFTER_DBIP routeviews_rows=$AFTER_RV"
 log "split candidates=$CANDIDATES"
-log "IPv4 ranges still awaiting an ip-api city=$UNPROBED"
+log "probe table: probed=$PROBED awaiting a probe=$UNPROBED"
 log "daily pipeline finished"
 log "=============================================================="

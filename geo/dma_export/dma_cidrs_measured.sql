@@ -14,10 +14,15 @@
 -- trusted. Compare its row count against dma_cidrs.sql and investigate any
 -- shortfall rather than assuming it is an improvement.
 --
--- The traceroute table stores region as the two-letter code and regionname as
--- the full state name; db-ip's state column holds the full name, so regionname
--- is the correct column to compare against dma2city_tbl.state. If your
--- dma2city_tbl.state holds two-letter codes, use tr.region instead.
+-- The probe table stores state_code as the two-letter code and state as the full
+-- state name; db-ip's state column holds the full name, so state is the correct
+-- column to compare against dma2city_tbl.state. If your dma2city_tbl.state holds
+-- two-letter codes, use tr.state_code instead.
+--
+-- MEASURED IS tr.ran_at IS NOT NULL, NOT tr.city IS NOT NULL. The probe table is
+-- seeded with db-ip's city and state for every range when it is rebuilt, so city
+-- is populated whether or not the range has been probed. ran_at is NULL until a
+-- probe stamps it, so it is the only reliable test.
 --
 -- Single statement with the DMA name inlined, so the output pipes cleanly.
 -- To change the DMA, edit the quoted name below.
@@ -26,11 +31,11 @@
 
 SELECT DISTINCT s.network::text
 FROM ip2city_dbiplite_tbl s
-LEFT JOIN ip2city_dbiplite_traceroute_tbl tr
-       ON tr.network = s.network AND tr.city IS NOT NULL
+LEFT JOIN ip2city_dbiplite_probe_tbl tr
+       ON tr.network = s.network AND tr.ran_at IS NOT NULL
 JOIN dma2city_tbl d
   ON coalesce(tr.city, s.city) = d.city
- AND coalesce(tr.regionname, s.state) = d.state
+ AND coalesce(tr.state, s.state) = d.state
 WHERE d.dma = 'Indianapolis, IN DMA'
   AND family(s.network) = 4
 ORDER BY 1;

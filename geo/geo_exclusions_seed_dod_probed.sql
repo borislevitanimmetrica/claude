@@ -36,12 +36,21 @@
 -- It changes nothing. It shows exactly what steps 2 and 3 would exclude.
 -- ---------------------------------------------------------------------------
 
+-- Probe evidence lives in TWO tables. ip2city_dbiplite_probe_tbl is where
+-- check_geo_ip-api writes now; ip2city_dbiplite_traceroute_tbl holds the earlier
+-- results, including the three ranges named above. Both are read so that no
+-- evidence is lost across the changeover.
+WITH probed AS (
+    SELECT isp, org, "as", city FROM ip2city_dbiplite_probe_tbl WHERE ran_at IS NOT NULL
+    UNION ALL
+    SELECT isp, org, "as", city FROM ip2city_dbiplite_traceroute_tbl
+)
 SELECT tr.isp,
        tr."as",
        count(*)                        AS ranges_probed,
        count(DISTINCT tr.city)         AS distinct_cities,
        min(tr.city)                    AS example_city
-FROM ip2city_dbiplite_traceroute_tbl tr
+FROM probed tr
 WHERE tr.isp ILIKE '%DoD Network Information Center%'
    OR tr.isp ILIKE '%United States Department of Defense%'
    OR tr.isp ILIKE '%Department of Defense (DoD)%'
@@ -89,7 +98,11 @@ ON CONFLICT DO NOTHING;
 INSERT INTO geo_exclusions (origin_asn, reason)
 SELECT (substring(split_part(tr."as", ' ', 1) from 3))::bigint AS asn,
        'probe-verified DoD ASN, registrant geo only: ' || min(tr.isp)
-FROM ip2city_dbiplite_traceroute_tbl tr
+FROM (
+    SELECT isp, org, "as", city FROM ip2city_dbiplite_probe_tbl WHERE ran_at IS NOT NULL
+    UNION ALL
+    SELECT isp, org, "as", city FROM ip2city_dbiplite_traceroute_tbl
+) tr
 WHERE tr."as" LIKE 'AS%'
   AND (tr.isp ILIKE '%DoD Network Information Center%'
     OR tr.isp ILIKE '%United States Department of Defense%'
@@ -123,5 +136,5 @@ JOIN geo_exclusions x ON x.active
                      AND x.origin_asn IS NOT NULL
                      AND b.origin_asn = x.origin_asn
 WHERE family(t.network) = 4
-  AND NOT EXISTS (SELECT 1 FROM ip2city_dbiplite_traceroute_tbl tr
-                  WHERE tr.network = t.network AND tr.city IS NOT NULL);
+  AND NOT EXISTS (SELECT 1 FROM ip2city_dbiplite_probe_tbl p
+                  WHERE p.network = t.network AND p.ran_at IS NOT NULL);

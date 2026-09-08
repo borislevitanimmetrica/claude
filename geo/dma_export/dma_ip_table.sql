@@ -122,10 +122,10 @@ CREATE INDEX dma_ip_export_network_idx ON dma_ip_export (network);
 SELECT '5. populate - the slow step' AS section;
 WITH m AS (
     SELECT DISTINCT s.network, s.city, s.state, s.source, d.dma,
-           (tr.city IS NULL) AS dbip_only
+           (tr.ran_at IS NULL) AS dbip_only
     FROM ip2city_dbiplite_tbl s
-    LEFT JOIN ip2city_dbiplite_traceroute_tbl tr
-           ON tr.network = s.network AND tr.city IS NOT NULL
+    LEFT JOIN ip2city_dbiplite_probe_tbl tr
+           ON tr.network = s.network AND tr.ran_at IS NOT NULL
     JOIN dma2city_tbl d
       ON s.city = d.city AND s.state = d.state
     WHERE (coalesce(current_setting('geo.dma', true), '') = ''

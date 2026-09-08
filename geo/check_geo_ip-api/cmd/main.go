@@ -1,6 +1,6 @@
 // Command check_geo_ip-api geolocates a random IP address from each sampled
 // network range using the free ip-api.com JSON endpoint and writes the result
-// into the identically-named columns of ip2city_dbiplite_traceroute_tbl.
+// into the identically-named columns of ip2city_dbiplite_probe_tbl.
 //
 // This replaces the mtr traceroute method for populating geography. It reuses
 // the same "one random address per range" sampling.
@@ -186,56 +186,51 @@ func main() {
 // row (city IS NULL), excluding RFC 6598 CGNAT space, optionally IPv4-only and
 // country-filtered, in random order.
 func sampleRanges(ctx context.Context, conn *pgx.Conn, n int, country string, ipv4Only bool) ([]rangeRow, error) {
-	query := `
-SELECT t.network::text,
-       host(network(t.network))::inet   AS start_ip,
-       host(broadcast(t.network))::inet AS end_ip
-FROM ip2city_dbiplite_tbl t
-WHERE NOT EXISTS (
-    SELECT 1 FROM ip2city_dbiplite_traceroute_tbl tr
-    WHERE tr.network = t.network
-      AND tr.city IS NOT NULL
-)
--- CGNAT (100.64.0.0/10) was previously excluded here. That decision was
--- reversed on 2026-09-08, so shared address space is now probed like any other
--- range. The same filter was removed from probe_batch.sh and from the probe
--- table populate at the same time: if the populate loaded CGNAT while this
--- query skipped it, those rows would keep ran_at NULL forever and block the
--- cycle-complete gate permanently.
-AND NOT EXISTS (
-    SELECT 1 FROM geo_exclusions x
-    WHERE x.active AND x.prefix IS NOT NULL
-      AND t.network <<= x.prefix
-)`
-	// IPv6: the exclusion clause above is already family-correct. PostgreSQL's
-	// <<= only matches within the same address family, so an IPv4 rule cannot
-	// suppress an IPv6 range. Seeding IPv6 prefixes into geo_exclusions is
-	// enough to make exclusion work here; no code change is required.
+	// Source of work is ip2city_dbiplite_probe_tbl, which daily_pipeline.sh
+	// rebuilds from the reconciled db-ip and RouteViews data once per cycle. A
+	// row awaits probing exactly when ran_at IS NULL: the rebuild seeds every row
+	// with ran_at NULL and db-ip's city and state, and this tool stamps ran_at
+	// when it probes.
 	//
-	// The CGNAT exclusion immediately above it is IPv4-only by nature. The IPv6
-	// analogue would be unique-local fc00::/7 and, if unwanted, link-local
-	// fe80::/10 -- neither is currently filtered.
+	// ran_at, not city, is the measured/unmeasured test. city is seeded from
+	// db-ip for every row at populate time, so "city IS NOT NULL" no longer
+	// distinguishes a measured range from an inherited one.
+	//
+	// The scope filters (address family, country, CGNAT, geo_exclusions) are
+	// applied by the rebuild, not here, so this query does not repeat them. That
+	// is deliberate and it is load bearing: if this query filtered out rows the
+	// rebuild had loaded, those rows would keep ran_at NULL forever and the
+	// cycle-complete gate would never open again. The family and country
+	// predicates below are therefore assertions that the caller and the rebuild
+	// agree, not independent filters, and they are applied only when explicitly
+	// requested.
+	query := `
+SELECT p.network::text,
+       host(network(p.network))::inet   AS start_ip,
+       host(broadcast(p.network))::inet AS end_ip
+FROM ip2city_dbiplite_probe_tbl p
+WHERE p.ran_at IS NULL`
 
 	args := []any{n}
 	if ipv4Only {
-		query += " AND family(t.network) = 4"
+		query += " AND family(p.network) = 4"
 	}
 	if country != "" {
-		query += fmt.Sprintf(" AND t.country_iso_code = $%d", len(args)+1)
+		query += fmt.Sprintf(" AND p.countrycode = $%d", len(args)+1)
 		args = append(args, country)
 	}
 	// RouteViews-derived /24 rows are the time-sensitive ones: they exist
 	// because a db-ip range was seen to split and we do not want to wait for
 	// next month's edition. Under a plain ORDER BY random() they would compete
-	// with ~1.7M other unprobed db-ip rows and take months to be reached by
+	// with millions of other unprobed rows and take months to be reached by
 	// chance, so probe them first and fall back to random order within each
 	// group.
 	//
-	// PREREQUISITE: the source column must exist. It is created by
-	// dbip-mmdb-import, or by apply_splits -ensure-source-column. If it is
-	// absent this query fails to parse; the coalesce below only guards against
-	// NULL values, not against a missing column.
-	query += " ORDER BY (coalesce(t.source, 'dbip') = 'routeviews') DESC, random() LIMIT $1"
+	// The probe table has no source column, so that ordering is recovered by
+	// joining back to ip2city_dbiplite_tbl. A missing row there sorts last,
+	// which is correct: it can only be a range that has since disappeared from
+	// the reconciled set.
+	query += ` ORDER BY (coalesce((SELECT s.source FROM ip2city_dbiplite_tbl s WHERE s.network = p.network), 'dbip') = 'routeviews') DESC, random() LIMIT $1`
 
 	rows, err := conn.Query(ctx, query, args...)
 	if err != nil {
@@ -352,7 +347,8 @@ func isMobileISP(isp, org string) bool {
 	return false
 }
 
-// writeGeo upserts one geolocation result into ip2city_dbiplite_traceroute_tbl.
+// writeGeo records one geolocation result against the seeded row in
+// ip2city_dbiplite_probe_tbl.
 // The geographic values map to identically-named columns. The sampled IP is
 // stored in the "query" column (aligned with the JSON schema — ip-api echoes
 // the queried IP there); there is no separate sampled_ip column. On a transport
@@ -390,44 +386,60 @@ func writeGeo(ctx context.Context, conn *pgx.Conn, tgt geoTarget, g geoResult, c
 	}
 	mobile := success && isMobileISP(g.ISP, g.Org)
 
-	query := nullIfEmpty(g.Query)
-	if query == nil {
-		query = tgt.ip.String()
-	}
-
-	_, err := conn.Exec(ctx, `
-INSERT INTO ip2city_dbiplite_traceroute_tbl
-    (network, status, probe_method, likely_mobile_cgnat, hop_count, attempts,
-     classification_note, country, countrycode, region, regionname, city, zip, lat, lon,
-     timezone, isp, org, "as", query, ran_at)
-VALUES ($1, $2, 'ip-api', $3, 0, 0,
-        $4, $5, $6, $7, $8, $9, $10, $11, $12,
-        $13, $14, $15, $16, $17, now())
-ON CONFLICT (network) DO UPDATE SET
-    status              = EXCLUDED.status,
-    probe_method        = EXCLUDED.probe_method,
-    likely_mobile_cgnat = EXCLUDED.likely_mobile_cgnat,
-    classification_note = EXCLUDED.classification_note,
-    country             = EXCLUDED.country,
-    countrycode         = EXCLUDED.countrycode,
-    region              = EXCLUDED.region,
-    regionname          = EXCLUDED.regionname,
-    city                = EXCLUDED.city,
-    zip                 = EXCLUDED.zip,
-    lat                 = EXCLUDED.lat,
-    lon                 = EXCLUDED.lon,
-    timezone            = EXCLUDED.timezone,
-    isp                 = EXCLUDED.isp,
-    org                 = EXCLUDED.org,
-    "as"                = EXCLUDED."as",
-    query               = EXCLUDED.query,
+	// UPDATE, not INSERT. The row already exists: daily_pipeline.sh seeded it from
+	// the reconciled db-ip and RouteViews data with ran_at NULL. Probing replaces
+	// the inherited values with the measured ones and stamps ran_at.
+	//
+	// The measured city and state OVERWRITE the db-ip seed. That is the purpose of
+	// probing, and the seed is the pre-probe baseline so that a range never
+	// probed still carries a best-known location.
+	//
+	// last_hop_ip receives the address actually probed. query keeps the network
+	// base address written at populate time, since it is NOT NULL there and
+	// records nothing about the probe.
+	//
+	// ran_at is stamped on EVERY outcome, including an API error or a "fail"
+	// status. If a permanently failing range were left with ran_at NULL it would
+	// never leave the backlog, the cycle would never complete, and the probe table
+	// would never be rebuilt again. status and classification_note record what
+	// happened; ran_at records only that it was attempted.
+	tag, err := conn.Exec(ctx, `
+UPDATE ip2city_dbiplite_probe_tbl SET
+    last_hop_ip         = $2,
+    status              = $3,
+    probe_method        = 'ip-api',
+    likely_mobile_cgnat = $4,
+    classification_note = $5,
+    country             = $6,
+    countrycode         = coalesce($7, countrycode),
+    state_code          = coalesce($8, state_code),
+    state               = coalesce($9, state),
+    city                = coalesce($10, city),
+    zip                 = $11,
+    lat                 = $12,
+    lon                 = $13,
+    timezone            = $14,
+    isp                 = $15,
+    org                 = $16,
+    "as"                = $17,
+    attempts            = coalesce(attempts, 0) + 1,
     ran_at              = now()
+WHERE network = $1
 `,
-		tgt.network, status, mobile, note,
+		tgt.network, tgt.ip.String(), status, mobile, note,
 		nullIfEmpty(g.Country), nullIfEmpty(g.CountryCode), nullIfEmpty(g.Region), nullIfEmpty(g.RegionName),
 		nullIfEmpty(g.City), nullIfEmpty(g.Zip), latArg, lonArg,
-		nullIfEmpty(g.Timezone), nullIfEmpty(g.ISP), nullIfEmpty(g.Org), nullIfEmpty(g.As), query)
-	return err
+		nullIfEmpty(g.Timezone), nullIfEmpty(g.ISP), nullIfEmpty(g.Org), nullIfEmpty(g.As))
+	if err != nil {
+		return err
+	}
+	// A miss means the row vanished between sampling and writing, which should be
+	// impossible inside one cycle. Report it rather than silently leaving the
+	// range unprobed and the gate blocked.
+	if tag.RowsAffected() == 0 {
+		return fmt.Errorf("no row in ip2city_dbiplite_probe_tbl for network %s, so ran_at was not stamped", tgt.network)
+	}
+	return nil
 }
 
 func nullIfEmpty(s string) any {
