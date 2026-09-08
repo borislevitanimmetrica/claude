@@ -237,6 +237,13 @@ func runUpdates(ctx context.Context, conn *pgx.Conn, client *http.Client, bgpdat
 
 	totalAnn, totalWd := 0, 0
 	for i, ref := range refs {
+		// Announce the file BEFORE fetching it. A file commits as one
+		// transaction, so without this the log is silent for as long as the
+		// file takes, and a run still working on file one is indistinguishable
+		// from a run that exited.
+		if !dryRun {
+			log.Printf("  %s: fetching and applying (file %d of %d)", ref.ts.Format("2006-01-02 15:04"), i+1, len(refs))
+		}
 		body, closer, err := openMRT(client, ref.url)
 		if err != nil {
 			log.Fatalf("open %s: %v", ref.url, err)
