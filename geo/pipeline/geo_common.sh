@@ -221,6 +221,26 @@ psql_q() {
   fi
 }
 
+# Run a .sql file. ON_ERROR_STOP makes a failed statement abort with non-zero
+# status instead of continuing through the rest of the file, which for a
+# transactional script is the difference between a clean rollback and a
+# half-applied change. Second argument is an optional GUC assignment, passed
+# with -c so the file itself needs no parameter substitution.
+psql_file() {
+  local file="$1"
+  local setting="${2-}"
+  local args=(-v ON_ERROR_STOP=1)
+  if [ -n "$setting" ]; then
+    args+=(-c "SET $setting")
+  fi
+  args+=(-f "$file")
+  if [ -n "$DATABASE_URL" ]; then
+    psql "$DATABASE_URL" "${args[@]}"
+  else
+    psql "${args[@]}"
+  fi
+}
+
 require_database() {
   local who
   if ! who=$(psql_q "SELECT current_user || '@' || current_database()" 2>&1); then

@@ -33,6 +33,15 @@ LOCK_FILE="${LOCK_FILE:-$LOG_DIR/daily_pipeline.lock}"
 DRY_RUN="${DRY_RUN:-0}"
 BGP_MODE="${BGP_MODE:-updates}"
 
+# Probe table rebuild. Off by default: it changes what feeds the DMA export, so
+# it must be enabled deliberately after a verified first run.
+PROBE_TBL_REBUILD="${PROBE_TBL_REBUILD:-0}"
+
+# Must match the -country that probe_batch.sh passes to check_geo_ip-api. If
+# these disagree, the populate loads ranges that probing will never select, their
+# ran_at stays NULL, and the cycle-complete gate never opens again.
+PROBE_COUNTRY="${PROBE_COUNTRY:-US}"
+
 if [ "$DRY_RUN" != "0" ] && [ "$DRY_RUN" != "1" ]; then
   echo "DRY_RUN must be 0 or 1, got: $DRY_RUN" >&2
   exit 2
@@ -112,6 +121,27 @@ if [ "$DRY_RUN" -eq 1 ]; then
   run_step "apply_splits (dry run)" "$APPLY_BIN" -dry-run
 else
   run_step "apply_splits" "$APPLY_BIN"
+fi
+
+# Step 4. Rebuild the probe table, but only when the previous probing cycle has
+# finished. See rebuild_probe_tbl.sql for the gate and for why the populate must
+# apply exactly the same filters as check_geo_ip-api's sampleRanges.
+#
+# DEFAULT OFF. The probe table redesign changes what feeds the DMA export, so it
+# is opt-in until you have verified a rebuild on this database. Enable with
+# PROBE_TBL_REBUILD=1, either in the cron file or for a single manual run.
+if [ "$PROBE_TBL_REBUILD" = "1" ]; then
+  if [ "$DRY_RUN" -eq 1 ]; then
+    log "SKIP rebuild_probe_tbl: dry run"
+  else
+    REBUILD_SQL="$_self_dir/rebuild_probe_tbl.sql"
+    if [ ! -f "$REBUILD_SQL" ]; then
+      die "PROBE_TBL_REBUILD=1 but $REBUILD_SQL is missing"
+    fi
+    run_step "rebuild_probe_tbl (country=$PROBE_COUNTRY)" psql_file "$REBUILD_SQL" "geo.country = '$PROBE_COUNTRY'"
+  fi
+else
+  log "rebuild_probe_tbl not run: PROBE_TBL_REBUILD is $PROBE_TBL_REBUILD"
 fi
 
 AFTER_BGP=$(scalar "SELECT count(*) FROM bgp_route_views")
