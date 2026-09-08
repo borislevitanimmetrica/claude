@@ -112,10 +112,17 @@ func main() {
 	}
 	defer conn.Close(context.Background())
 
+	// Sampling scans every unprobed row to pick the batch, so on a freshly
+	// rebuilt table it touches millions of rows. Announce it and time it: with no
+	// output here, a slow query is indistinguishable from a hung process, and
+	// that has already cost one diagnosis.
+	log.Printf("sampling %d ranges from ip2city_dbiplite_probe_tbl where ran_at is null (country=%q ipv4-only=%v)", *count, *country, *ipv4Only)
+	sampleStart := time.Now()
 	ranges, err := sampleRanges(ctx, conn, *count, *country, *ipv4Only)
 	if err != nil {
 		log.Fatalf("sampling ranges: %v", err)
 	}
+	log.Printf("sampling returned %d ranges in %s", len(ranges), time.Since(sampleStart).Truncate(time.Millisecond))
 	if len(ranges) == 0 {
 		// An empty backlog is success, not failure. This used to be log.Fatal,
 		// which exited 1, so probe_batch.sh treated a fully drained backlog as
@@ -240,18 +247,24 @@ WHERE p.ran_at IS NULL`
 		query += fmt.Sprintf(" AND p.countrycode = $%d", len(args)+1)
 		args = append(args, country)
 	}
-	// RouteViews-derived /24 rows are the time-sensitive ones: they exist
-	// because a db-ip range was seen to split and we do not want to wait for
-	// next month's edition. Under a plain ORDER BY random() they would compete
-	// with millions of other unprobed rows and take months to be reached by
-	// chance, so probe them first and fall back to random order within each
-	// group.
+	// Plain random order, no source-based prioritisation.
 	//
-	// The probe table has no source column, so that ordering is recovered by
-	// joining back to ip2city_dbiplite_tbl. A missing row there sorts last,
-	// which is correct: it can only be a range that has since disappeared from
-	// the reconciled set.
-	query += ` ORDER BY (coalesce((SELECT s.source FROM ip2city_dbiplite_tbl s WHERE s.network = p.network), 'dbip') = 'routeviews') DESC, random() LIMIT $1`
+	// The old query put RouteViews-derived rows first, because the backlog was
+	// never fully drained and a /24 from a fresh split could otherwise wait
+	// months to be reached by chance. That reasoning does not carry over: the
+	// probe table is rebuilt once per cycle and EVERY row in it is probed before
+	// the cycle completes, so prioritising only changes the order within a cycle,
+	// not whether a range is ever reached.
+	//
+	// Do NOT reintroduce it by looking source up in ip2city_dbiplite_tbl. The
+	// probe table has no source column, so that requires a correlated subquery
+	// or a join evaluated across every candidate row before LIMIT can apply.
+	// Written that way it took over seven minutes on 2.09 million rows without
+	// returning, because ORDER BY ... LIMIT can no longer use a top-N heapsort
+	// once the sort key depends on another table. If prioritisation is wanted
+	// again, denormalise source into the probe table at rebuild time so the sort
+	// key stays local to this relation.
+	query += ` ORDER BY random() LIMIT $1`
 
 	rows, err := conn.Query(ctx, query, args...)
 	if err != nil {
