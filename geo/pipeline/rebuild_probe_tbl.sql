@@ -76,6 +76,8 @@ DECLARE
     v_loaded    bigint;
     v_archived  bigint;
     v_nostate   bigint;
+    v_asnpfx    bigint;
+    v_t0        timestamptz;
 BEGIN
     -- Fail early and legibly if the history table can still hold only one cycle.
     -- Without this the second rebuild dies on a unique violation whose message
@@ -123,7 +125,33 @@ BEGIN
         RAISE NOTICE 'archived % rows into ip2city_dbiplite_history_tbl', v_archived;
     END IF;
 
+    -- Materialise the prefixes excluded by ASN rules ONCE.
+    --
+    -- Previously the populate carried a correlated NOT EXISTS that joined
+    -- bgp_route_views for every candidate row, which is millions of containment
+    -- probes into a 1.1 million row table. The set of ASN-excluded prefixes is
+    -- small, so building it once and probing that instead is far cheaper, and it
+    -- gives the operator a progress checkpoint in a statement sequence that was
+    -- otherwise silent for its whole duration.
+    v_t0 := clock_timestamp();
+    CREATE TEMP TABLE excluded_asn_prefixes ON COMMIT DROP AS
+    SELECT DISTINCT b.cidr_block
+      FROM bgp_route_views b
+      JOIN geo_exclusions x
+        ON x.active
+       AND x.origin_asn IS NOT NULL
+       AND b.origin_asn = x.origin_asn;
+
+    CREATE INDEX ON excluded_asn_prefixes USING gist (cidr_block inet_ops);
+    ANALYZE excluded_asn_prefixes;
+    SELECT count(*) INTO v_asnpfx FROM excluded_asn_prefixes;
+    RAISE NOTICE 'ASN exclusion rules expand to % prefixes, resolved in %', v_asnpfx, clock_timestamp() - v_t0;
+
+    RAISE NOTICE 'truncating the probe table';
     TRUNCATE ip2city_dbiplite_probe_tbl;
+
+    RAISE NOTICE 'populating for country % family % (0 means both). This is one INSERT of roughly two million rows and emits no further output until it completes. Watch n_tup_ins in pg_stat_user_tables to see it progress.', v_country, v_family;
+    v_t0 := clock_timestamp();
 
     -- query is NOT NULL in this table, but no address has been selected yet at
     -- populate time: the probe picks one at random and writes it to last_hop_ip.
@@ -160,17 +188,12 @@ BEGIN
                AND s.network <<= x.prefix
           )
       AND NOT EXISTS (
-            SELECT 1
-              FROM bgp_route_views b
-              JOIN geo_exclusions x
-                ON x.active
-               AND x.origin_asn IS NOT NULL
-               AND b.origin_asn = x.origin_asn
-             WHERE s.network <<= b.cidr_block
+            SELECT 1 FROM excluded_asn_prefixes e
+             WHERE s.network <<= e.cidr_block
           );
 
     SELECT count(*) INTO v_loaded FROM ip2city_dbiplite_probe_tbl;
-    RAISE NOTICE 'repopulated probe table with % rows for country % family % (0 means both)', v_loaded, v_country, v_family;
+    RAISE NOTICE 'repopulated probe table with % rows for country % family % (0 means both), in %', v_loaded, v_country, v_family, clock_timestamp() - v_t0;
 
     SELECT count(*) INTO v_nostate
       FROM ip2city_dbiplite_probe_tbl
