@@ -339,11 +339,38 @@ func applyUpdatesFile(ctx context.Context, conn *pgx.Conn, r io.Reader, fileTS t
 
 	annCount, wdCount := 0, 0
 
-	// Progress reporting. A file is one transaction issuing roughly two
-	// statements per prefix, so it can run for minutes. Without periodic output
-	// there is no way to tell a slow file from a hung or dead process, and no
-	// way to measure the throughput that determines whether a backlog is
-	// tractable at all.
+	// Rows are accumulated in memory and applied in one bulk operation per
+	// file, rather than issuing a DELETE and an INSERT per prefix. A file holds
+	// on the order of 20000 prefixes, so this costs a few megabytes and removes
+	// roughly 38000 round trips per file.
+	//
+	// Keyed so that a prefix appearing several times within one file collapses
+	// to its last occurrence, which is what the previous per-prefix
+	// DELETE-then-INSERT achieved implicitly. stageOrder preserves first-seen
+	// order so the applied result is deterministic.
+	type staged struct {
+		cidr      string
+		start     string
+		end       string
+		originASN any
+		peer      any
+		asPath    any
+		withdrawn bool
+	}
+	stageOrder := make([]string, 0, 4096)
+	stageRows := make(map[string]staged, 4096)
+	stage := func(key string, row staged) {
+		if _, seen := stageRows[key]; !seen {
+			stageOrder = append(stageOrder, key)
+		}
+		stageRows[key] = row
+	}
+
+	// Progress reporting. Parsing a file is fast, but the bulk apply that
+	// follows is not, so both are reported. Without periodic output there is no
+	// way to tell a slow file from a hung or dead process, and no way to
+	// measure the throughput that determines whether a backlog is tractable at
+	// all.
 	started := time.Now()
 	reportedAt := 0
 	report := func(final bool) {
@@ -395,11 +422,10 @@ func applyUpdatesFile(ctx context.Context, conn *pgx.Conn, r io.Reader, fileTS t
 		for _, cidr := range withdrawn {
 			// In deduped mode we cannot safely delete on a single-peer
 			// withdrawal (the prefix may still be routed via other peers), so
-			// we only count it. In per-peer mode we delete that (prefix,peer).
+			// we only count it. In per-peer mode we stage a delete-only row for
+			// that (prefix,peer).
 			if !dryRun && !dedupe {
-				if _, err := tx.Exec(ctx, `DELETE FROM bgp_route_views WHERE cidr_block=$1 AND peer_ip=$2`, cidr, peer); err != nil {
-					return err
-				}
+				stage(cidr+"|"+peer, staged{cidr: cidr, peer: peer, withdrawn: true})
 			}
 			wdCount++
 		}
@@ -410,25 +436,12 @@ func applyUpdatesFile(ctx context.Context, conn *pgx.Conn, r io.Reader, fileTS t
 			}
 			if !dryRun {
 				if dedupe {
-					if _, err := tx.Exec(ctx, `DELETE FROM bgp_route_views WHERE cidr_block=$1`, cidr); err != nil {
-						return err
-					}
-					if _, err := tx.Exec(ctx, `INSERT INTO bgp_route_views
-						(cidr_block, start_address, end_address, origin_asn, peer_ip, as_path, updated_at)
-						VALUES ($1,$2,$3,$4,NULL,NULL,$5)`,
-						cidr, start, end, nullASN(origin), fileTS); err != nil {
-						return err
-					}
+					stage(cidr, staged{cidr: cidr, start: start, end: end, originASN: nullASN(origin)})
 				} else {
-					if _, err := tx.Exec(ctx, `DELETE FROM bgp_route_views WHERE cidr_block=$1 AND peer_ip=$2`, cidr, peer); err != nil {
-						return err
-					}
-					if _, err := tx.Exec(ctx, `INSERT INTO bgp_route_views
-						(cidr_block, start_address, end_address, origin_asn, peer_ip, as_path, updated_at)
-						VALUES ($1,$2,$3,$4,$5,$6,$7)`,
-						cidr, start, end, nullASN(origin), peer, nullStr(asPath), fileTS); err != nil {
-						return err
-					}
+					stage(cidr+"|"+peer, staged{
+						cidr: cidr, start: start, end: end,
+						originASN: nullASN(origin), peer: peer, asPath: nullStr(asPath),
+					})
 				}
 			}
 			annCount++
@@ -447,10 +460,78 @@ func applyUpdatesFile(ctx context.Context, conn *pgx.Conn, r io.Reader, fileTS t
 
 	if !dryRun {
 		report(true)
-		// The COMMIT is itself slow enough to matter on a large transaction, so
-		// say that we have reached it. A stall here is a stall in PostgreSQL,
-		// not in parsing, and the distinction decides where to look next.
-		log.Printf("    %s: committing %d records", fileTS.Format("2006-01-02 15:04"), annCount+wdCount)
+		stamp := fileTS.Format("2006-01-02 15:04")
+
+		// Bulk apply. The staged rows go into a temp table in one COPY, then a
+		// single set-based DELETE removes the prefixes being replaced and a
+		// single INSERT writes the new versions. That is three statements per
+		// file in place of roughly 38000, and it lets PostgreSQL maintain the
+		// four indexes on this table in bulk rather than row by row.
+		//
+		// Columns are text here and cast on use. The cast sits on the staging
+		// side of the join predicate, so the index on bgp_route_views.cidr_block
+		// remains usable.
+		if _, err := tx.Exec(ctx, `CREATE TEMP TABLE bgp_stage (
+    cidr_block    text,
+    start_address text,
+    end_address   text,
+    origin_asn    bigint,
+    peer_ip       text,
+    as_path       text,
+    updated_at    timestamptz,
+    withdrawn     boolean
+) ON COMMIT DROP`); err != nil {
+			return annCount, wdCount, truncated, err
+		}
+
+		rows := make([][]any, 0, len(stageOrder))
+		for _, k := range stageOrder {
+			s := stageRows[k]
+			rows = append(rows, []any{s.cidr, s.start, s.end, s.originASN, s.peer, s.asPath, fileTS, s.withdrawn})
+		}
+
+		t0 := time.Now()
+		copied, err := tx.CopyFrom(ctx, pgx.Identifier{"bgp_stage"},
+			[]string{"cidr_block", "start_address", "end_address", "origin_asn", "peer_ip", "as_path", "updated_at", "withdrawn"},
+			pgx.CopyFromRows(rows))
+		if err != nil {
+			return annCount, wdCount, truncated, err
+		}
+		log.Printf("    %s: staged %d rows in %s", stamp, copied, time.Since(t0).Truncate(time.Millisecond))
+
+		// A freshly created temp table has no statistics, so the planner would
+		// guess at its size and could pick a nested loop over the staged rows,
+		// which is the per-prefix probing this change exists to eliminate.
+		if _, err := tx.Exec(ctx, `ANALYZE bgp_stage`); err != nil {
+			return annCount, wdCount, truncated, err
+		}
+
+		delSQL := `DELETE FROM bgp_route_views b USING bgp_stage s WHERE b.cidr_block = s.cidr_block::inet`
+		if !dedupe {
+			delSQL = delSQL + ` AND b.peer_ip = s.peer_ip::inet`
+		}
+		t0 = time.Now()
+		delTag, err := tx.Exec(ctx, delSQL)
+		if err != nil {
+			return annCount, wdCount, truncated, err
+		}
+		log.Printf("    %s: deleted %d superseded rows in %s", stamp, delTag.RowsAffected(), time.Since(t0).Truncate(time.Millisecond))
+
+		t0 = time.Now()
+		insTag, err := tx.Exec(ctx, `INSERT INTO bgp_route_views
+    (cidr_block, start_address, end_address, origin_asn, peer_ip, as_path, updated_at)
+SELECT cidr_block::inet, start_address::inet, end_address::inet, origin_asn, peer_ip::inet, as_path, updated_at
+FROM bgp_stage
+WHERE NOT withdrawn`)
+		if err != nil {
+			return annCount, wdCount, truncated, err
+		}
+		log.Printf("    %s: inserted %d rows in %s", stamp, insTag.RowsAffected(), time.Since(t0).Truncate(time.Millisecond))
+
+		// A stall after this line is a stall inside PostgreSQL rather than in
+		// parsing or in the bulk statements, and that distinction decides where
+		// to look next.
+		log.Printf("    %s: committing", stamp)
 	}
 
 	if !dryRun {
@@ -459,9 +540,9 @@ func applyUpdatesFile(ctx context.Context, conn *pgx.Conn, r io.Reader, fileTS t
 		// after the watermark, so advancing here would skip the remainder of
 		// this file permanently and silently.
 		//
-		// The rows already written are still committed, because every
-		// announcement is a DELETE followed by an INSERT for that prefix and is
-		// therefore idempotent when the file is reprocessed in full later.
+		// The rows already written are still committed, because the staged
+		// apply deletes each prefix before reinserting it and is therefore
+		// idempotent when the file is reprocessed in full later.
 		if !truncated {
 			if err := setState(ctx, tx, collector, fileTS); err != nil {
 				return annCount, wdCount, truncated, err
