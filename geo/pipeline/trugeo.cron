@@ -6,6 +6,37 @@ CRON_TZ=America/New_York
 PGDATABASE=postgres
 LOG_DIR=/var/log/trugeo
 
+# NOTIFICATION VOLUME
+#
+# As shipped, every run mails on start and on success, which is about 50
+# messages a day, dominated by the 24 hourly probe batches. That is deliberate
+# while the free ip-api tier caps throughput at 45 calls a minute and a full
+# probing cycle therefore takes weeks: each hourly batch is the only visible
+# evidence of progress.
+#
+# ONCE COMMERCIAL ip-api ACCESS IS IN PLACE, a full cycle completes in a day or
+# less, so per-batch mail stops being informative. Uncomment the two lines below
+# to reduce probe mail to cycle boundaries and failures only.
+#
+# NOTIFY_START=0
+# NOTIFY_SUCCESS=0
+#
+# What each does:
+#   NOTIFY_START=0     no "starting" mail
+#   NOTIFY_SUCCESS=0   no "ran correctly, finishing" mail
+#
+# What you still receive with both set to 0:
+#   every error, from any job, always. Error mail is not suppressible.
+#   the "cycle complete" mail from probe_batch when the backlog reaches zero,
+#     which is the end-of-cycle signal, sent regardless of these two settings.
+#   lock-wait and slow-step alerts.
+#
+# These are cron-wide. To silence probe mail but keep the daily and monthly jobs
+# verbose, delete the two lines above and append the variables to the probe job
+# line instead, so that only it is affected:
+#
+# 5 * * * *   cronuser NOTIFY_START=0 NOTIFY_SUCCESS=0 /var/trugeo/pipeline/probe_batch.sh >/dev/null
+
 # Each job discards stdout but NOT stderr.
 #
 # log() tees every line to both the log file and stdout, so without the
