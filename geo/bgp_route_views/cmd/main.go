@@ -46,6 +46,12 @@ import (
 
 const fileTSLayout = "20060102.1504" // e.g. 20260831.1045 (UTC)
 
+// progressEvery is how many applied records pass between progress lines within
+// a single updates file. A file holds on the order of 20000 records and is
+// applied in one transaction, so without periodic output a healthy but slow
+// file is indistinguishable from a hung process.
+const progressEvery = 2000
+
 func main() {
 	mode := flag.String("mode", "updates", "which data to ingest: 'full' (latest RIB, full reload) or 'updates' (incremental changes only)")
 	collector := flag.String("collector", "route-views2", "RouteViews collector name (archive path component)")
@@ -261,6 +267,7 @@ func runUpdates(ctx context.Context, conn *pgx.Conn, client *http.Client, bgpdat
 		// transaction, so without this the log is silent for as long as the
 		// file takes, and a run still working on file one is indistinguishable
 		// from a run that exited.
+		fileStart := time.Now()
 		if !dryRun {
 			log.Printf("  %s: fetching and applying (file %d of %d)", ref.ts.Format("2006-01-02 15:04"), i+1, len(refs))
 		}
@@ -290,8 +297,8 @@ func runUpdates(ctx context.Context, conn *pgx.Conn, client *http.Client, bgpdat
 			// state advance, so reporting the new watermark here makes resume
 			// behaviour auditable from the log instead of inferred. An
 			// interrupted run resumes from the last line printed.
-			log.Printf("  %s: announced=%d withdrawn=%d, committed, state advanced to %s (file %d of %d)",
-				ref.ts.Format("2006-01-02 15:04"), ann, wd,
+			log.Printf("  %s: announced=%d withdrawn=%d, committed in %s, state advanced to %s (file %d of %d)",
+				ref.ts.Format("2006-01-02 15:04"), ann, wd, time.Since(fileStart).Truncate(time.Second),
 				ref.ts.Format(time.RFC3339), filesDone, len(refs))
 		}
 		if limit > 0 && totalAnn+totalWd >= limit {
@@ -331,7 +338,34 @@ func applyUpdatesFile(ctx context.Context, conn *pgx.Conn, r io.Reader, fileTS t
 	}
 
 	annCount, wdCount := 0, 0
+
+	// Progress reporting. A file is one transaction issuing roughly two
+	// statements per prefix, so it can run for minutes. Without periodic output
+	// there is no way to tell a slow file from a hung or dead process, and no
+	// way to measure the throughput that determines whether a backlog is
+	// tractable at all.
+	started := time.Now()
+	reportedAt := 0
+	report := func(final bool) {
+		done := annCount + wdCount
+		elapsed := time.Since(started)
+		rate := 0.0
+		if elapsed.Seconds() > 0 {
+			rate = float64(done) / elapsed.Seconds()
+		}
+		state := "applying"
+		if final {
+			state = "parsed"
+		}
+		log.Printf("    %s: %s %d records in %s (%.0f rec/s)",
+			fileTS.Format("2006-01-02 15:04"), state, done, elapsed.Truncate(time.Second), rate)
+		reportedAt = done
+	}
+
 	err = eachMRT(r, func(h *mrt.MRTHeader, msg *mrt.MRTMessage) error {
+		if !dryRun && annCount+wdCount-reportedAt >= progressEvery {
+			report(false)
+		}
 		bm, ok := msg.Body.(*mrt.BGP4MPMessage)
 		if !ok || bm.BGPMessage == nil {
 			return nil
@@ -409,6 +443,14 @@ func applyUpdatesFile(ctx context.Context, conn *pgx.Conn, r io.Reader, fileTS t
 		truncated = true
 	} else if err != nil {
 		return annCount, wdCount, false, err
+	}
+
+	if !dryRun {
+		report(true)
+		// The COMMIT is itself slow enough to matter on a large transaction, so
+		// say that we have reached it. A stall here is a stall in PostgreSQL,
+		// not in parsing, and the distinction decides where to look next.
+		log.Printf("    %s: committing %d records", fileTS.Format("2006-01-02 15:04"), annCount+wdCount)
 	}
 
 	if !dryRun {
