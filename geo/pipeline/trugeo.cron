@@ -21,6 +21,33 @@ LOG_DIR=/var/log/trugeo
 # NOTIFY_START=0
 # NOTIFY_SUCCESS=0
 #
+# ADDRESS FAMILY SCOPE
+#
+# IPv6 is out of scope by decision, so the default is IPv4 only. Uncomment the
+# line below to bring IPv6 into scope when adoption makes it worthwhile.
+#
+# PROBE_IPV4_ONLY=0
+#
+# That ONE variable drives both the probe table populate in daily_pipeline.sh and
+# the probe in probe_batch.sh. Do not set the family in one place only: if the
+# populate loads a family that the probe never selects, those rows keep ran_at
+# NULL forever and the cycle-complete gate never opens again, so the probe table
+# is never rebuilt.
+#
+# Nothing else needs changing to support IPv6. geo_exclusions containment is
+# family-correct, so an IPv4 rule cannot suppress an IPv6 range, and
+# sampleRanges, apply_splits and classify_ranges all handle both families. What
+# is missing is only exclusion DATA: no IPv6 government prefixes have been
+# probe-verified, so none are seeded.
+#
+# PROBE TABLE REBUILD
+#
+# Off by default, because it changes what feeds the DMA export. Uncomment to
+# enable once the history primary key has been changed to (network, ran_at) and a
+# manual rebuild has been verified on this database.
+#
+# PROBE_TBL_REBUILD=1
+#
 # What each does:
 #   NOTIFY_START=0     no "starting" mail
 #   NOTIFY_SUCCESS=0   no "ran correctly, finishing" mail

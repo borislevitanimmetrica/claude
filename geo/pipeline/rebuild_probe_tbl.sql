@@ -19,13 +19,27 @@
 -- ever diverge, the pipeline deadlocks silently: probing skips a row, the row
 -- keeps ran_at NULL, and the gate never opens. The filters are:
 --
---   family(network) = 4          IPv6 is never probed, so it must not be loaded
---   NOT network <<= 100.64.0.0/10  CGNAT is never probed
---   country_iso_code = COUNTRY   probe_batch passes -country US
---   NOT IN geo_exclusions        DoD and other exclusions are never probed
+--   family(network) = geo.family   IPv6 is out of scope for now, see below
+--   country_iso_code = geo.country probe_batch passes the same -country
+--   NOT IN geo_exclusions          DoD prefixes AND ASNs are never probed
 --
 -- The exclusion filter matters most: the DoD rules would otherwise freeze the
 -- pipeline permanently the first time a cycle finished.
+--
+-- CGNAT (100.64.0.0/10) is deliberately NOT excluded. That exclusion was
+-- reversed by decision on 2026-09-08, and the matching filter was removed from
+-- sampleRanges in check_geo_ip-api and from probe_batch.sh at the same time.
+-- Loading CGNAT here while probing still skipped it would leave those rows at
+-- ran_at NULL forever and block every future rebuild.
+--
+-- IPv6 IS REVERSIBLE BY CONFIGURATION. Set PROBE_IPV4_ONLY=0 to include it.
+-- That single variable drives both this populate and the probe, which is why it
+-- lives in geo_common.sh rather than in either script: if the populate and the
+-- probe disagreed about address family, the excluded family would sit at
+-- ran_at NULL and deadlock the gate. See the commented block in trugeo.cron.
+--
+--   PROBE_IPV4_ONLY=1  geo.family = 4, IPv4 only, current default
+--   PROBE_IPV4_ONLY=0  geo.family = 0, both families
 --
 -- ASN-based exclusions are also honoured, via bgp_route_views, because an
 -- origin_asn rule suppresses probing just as a prefix rule does.
@@ -56,6 +70,7 @@
 DO $rebuild$
 DECLARE
     v_country   text := coalesce(nullif(current_setting('geo.country', true), ''), 'US');
+    v_family    int  := coalesce(nullif(current_setting('geo.family', true), '')::int, 4);
     v_total     bigint;
     v_pending   bigint;
     v_loaded    bigint;
@@ -136,8 +151,7 @@ BEGIN
     FROM ip2city_dbiplite_tbl s
     LEFT JOIN trugeo_states_tbl st
            ON st.state = s.state
-    WHERE family(s.network) = 4
-      AND NOT (s.network <<= '100.64.0.0/10'::cidr)
+    WHERE (v_family = 0 OR family(s.network) = v_family)
       AND s.country_iso_code = v_country
       AND NOT EXISTS (
             SELECT 1 FROM geo_exclusions x
@@ -156,7 +170,7 @@ BEGIN
           );
 
     SELECT count(*) INTO v_loaded FROM ip2city_dbiplite_probe_tbl;
-    RAISE NOTICE 'repopulated probe table with % rows for country %', v_loaded, v_country;
+    RAISE NOTICE 'repopulated probe table with % rows for country % family % (0 means both)', v_loaded, v_country, v_family;
 
     SELECT count(*) INTO v_nostate
       FROM ip2city_dbiplite_probe_tbl
