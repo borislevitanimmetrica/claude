@@ -224,6 +224,26 @@ func runUpdates(ctx context.Context, conn *pgx.Conn, client *http.Client, bgpdat
 		log.Printf("resuming from stored state for collector %s: last_file_ts=%s", collector, since.Format(time.RFC3339))
 	}
 
+	// Updates mode issues one DELETE per announced prefix, keyed on cidr_block,
+	// roughly 19000 times per file. Without this index every one of those is a
+	// sequential scan of the whole table, which makes a single file take many
+	// minutes instead of seconds.
+	//
+	// schema.sql has always documented that the tool creates this index "after
+	// the full COPY, and at the start of an updates run", but only runFull ever
+	// did so. An updates-only run against a table lacking the index therefore
+	// crawled, with no indication why. Creating it here makes the code match
+	// the documented invariant.
+	//
+	// It is created outside the per-file transactions, once, and is a no-op
+	// when it already exists.
+	if !dryRun {
+		log.Printf("ensuring index bgp_route_views_cidr_peer_idx exists before applying updates")
+		if _, err := conn.Exec(ctx, `CREATE INDEX IF NOT EXISTS bgp_route_views_cidr_peer_idx ON bgp_route_views (cidr_block, peer_ip)`); err != nil {
+			log.Fatalf("ensuring updates index: %v", err)
+		}
+	}
+
 	refs, err := updatesSince(client, bgpdata, since)
 	if err != nil {
 		log.Fatalf("listing updates: %v", err)
