@@ -68,6 +68,6 @@ WITH m AS (
       AND family(s.network) = 4
 )
 SELECT count(*) AS matched_ranges,
-       count(tr.network) FILTER (WHERE tr.city IS NOT NULL) AS with_measured_city
+       count(tr.network) FILTER (WHERE tr.ran_at IS NOT NULL) AS with_measured_city
 FROM m
-LEFT JOIN ip2city_dbiplite_traceroute_tbl tr ON tr.network = m.network;
+LEFT JOIN ip2city_dbiplite_probe_tbl tr ON tr.network = m.network;
