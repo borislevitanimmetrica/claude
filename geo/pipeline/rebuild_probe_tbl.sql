@@ -150,17 +150,29 @@ BEGIN
     RAISE NOTICE 'truncating the probe table';
     TRUNCATE ip2city_dbiplite_probe_tbl;
 
-    -- To watch this from another session, sample the RELATION SIZE, not the
-    -- tuple counters:
+    -- WATCHING THIS FROM ANOTHER SESSION.
     --
-    --   select pg_size_pretty(pg_relation_size('ip2city_dbiplite_probe_tbl'));
+    -- Nothing that touches this table works while it runs. The TRUNCATE above
+    -- holds ACCESS EXCLUSIVE until this transaction commits, and pg_relation_size
+    -- opens the relation with AccessShareLock, which conflicts. A query against
+    -- the table therefore BLOCKS rather than reporting progress, and looks
+    -- indistinguishable from a hang.
     --
-    -- pg_stat_user_tables.n_tup_ins is useless here. A backend accumulates tuple
-    -- counters locally and flushes them at transaction boundaries, so a single
-    -- long INSERT reports zero until it commits however much work it has done.
-    -- Relation size grows as pages are written, uncommitted, so it does track
-    -- progress.
-    RAISE NOTICE 'populating for country % family % (0 means both). This is one INSERT of roughly two million rows and emits no further output until it completes. To watch it, sample pg_relation_size on ip2city_dbiplite_probe_tbl from another session; n_tup_ins will read zero until commit.', v_country, v_family;
+    -- pg_stat_user_tables.n_tup_ins does not work either, for a different
+    -- reason: a backend accumulates tuple counters locally and flushes them at
+    -- transaction boundaries, so it reads zero until commit however many rows
+    -- have been written.
+    --
+    -- Use signals that never touch the relation:
+    --
+    --   select pg_current_wal_lsn();
+    --      sample twice, an advancing LSN proves the transaction is writing
+    --   select pg_size_pretty(pg_database_size('postgres'));
+    --      sums directories, takes no relation locks
+    --   select pid, state, wait_event_type, wait_event, now()-query_start
+    --     from pg_stat_activity where usename = 'cronuser' and state <> 'idle';
+    --      active with a null wait_event means CPU bound rather than blocked
+    RAISE NOTICE 'populating for country % family % (0 means both). This is one INSERT of roughly two million rows and emits no further output until it completes. Do NOT query this table to check progress: the truncate holds ACCESS EXCLUSIVE and your query will block. Sample pg_current_wal_lsn or pg_database_size instead.', v_country, v_family;
     v_t0 := clock_timestamp();
 
     -- query is NOT NULL in this table, but no address has been selected yet at
