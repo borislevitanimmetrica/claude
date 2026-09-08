@@ -137,3 +137,13 @@ fi
 if [ "$BEFORE" != "?" ] && [ "$AFTER" != "?" ]; then
   log "resolved $(( BEFORE - AFTER )) ranges this batch"
 fi
+
+# The end of a full probing cycle: nothing is left awaiting a city. This is the
+# event worth an email once routine per-run mail is switched off, so it is sent
+# regardless of NOTIFY_START and NOTIFY_SUCCESS.
+#
+# check_geo_ip-api exits 0 on an empty backlog rather than treating it as an
+# error, so reaching this point with AFTER=0 is a normal, successful outcome.
+if [ "$AFTER" = "0" ]; then
+  notify_cycle "Probing cycle complete: no IPv4 ranges awaiting an ip-api city for country=${COUNTRY:-all}. Backlog was $BEFORE at the start of this batch."
+fi

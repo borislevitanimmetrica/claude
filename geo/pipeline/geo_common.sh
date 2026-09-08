@@ -57,6 +57,19 @@ DRY_RUN="${DRY_RUN:-0}"
 
 ALERT_EMAIL="${ALERT_EMAIL:-boris@immetrica.com}"
 
+# Notification volume controls. Both default to 1, which is the current
+# behaviour: mail on start and on success for every run.
+#
+# Error mail is NOT controllable and is always sent. Silencing failures is never
+# a reasonable configuration.
+#
+# These exist so that switching to per-cycle notification, once commercial
+# ip-api access removes the 45/min ceiling, is a configuration change in the
+# cron file rather than a code change. See trugeo.cron for the exact lines to
+# uncomment.
+NOTIFY_START="${NOTIFY_START:-1}"
+NOTIFY_SUCCESS="${NOTIFY_SUCCESS:-1}"
+
 # Alert thresholds in seconds. These are NOT timeouts: nothing is abandoned when
 # they pass, an alert is raised and the job carries on. Sized for worldwide
 # ingestion, where a full db-ip edition is about 14.7M rows against 5.5M for the
@@ -148,8 +161,20 @@ notify_error() {
 
 begin_notify() {
   _notify_enabled=1
-  log "notifying start by email to $ALERT_EMAIL"
-  notify_start
+  if [ "$NOTIFY_START" = "1" ]; then
+    log "notifying start by email to $ALERT_EMAIL"
+    notify_start
+  else
+    log "start mail suppressed by NOTIFY_START=$NOTIFY_START"
+  fi
+}
+
+# Send a cycle-boundary message regardless of NOTIFY_START and NOTIFY_SUCCESS.
+# Used for events that matter even when routine per-run mail is switched off,
+# such as a probing backlog reaching zero.
+notify_cycle() {
+  log "CYCLE: $*"
+  send_mail "Geo script $SCRIPT_NAME cycle complete at time $(_etz_now) ETZ" "$*"
 }
 
 _on_exit() {
@@ -161,7 +186,11 @@ _on_exit() {
     return
   fi
   if [ "$code" -eq 0 ]; then
-    notify_success
+    if [ "$NOTIFY_SUCCESS" = "1" ]; then
+      notify_success
+    else
+      log "success mail suppressed by NOTIFY_SUCCESS=$NOTIFY_SUCCESS"
+    fi
   else
     notify_error "$code" "Exited without a diagnostic. See $LOG_FILE"
   fi

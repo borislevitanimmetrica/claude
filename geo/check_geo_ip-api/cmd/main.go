@@ -112,7 +112,16 @@ func main() {
 		log.Fatalf("sampling ranges: %v", err)
 	}
 	if len(ranges) == 0 {
-		log.Fatal("no eligible ranges found (all already geolocated, or filters too strict)")
+		// An empty backlog is success, not failure. This used to be log.Fatal,
+		// which exited 1, so probe_batch.sh treated a fully drained backlog as
+		// an error and sent an error email. On an hourly schedule that would be
+		// 24 spurious alerts a day, starting the moment the work was finished.
+		//
+		// A genuine misconfiguration still surfaces: too-strict filters are
+		// named in this message, and every other failure mode still exits
+		// non-zero.
+		log.Printf("no eligible ranges found: nothing left to probe for country=%q ipv4-only=%v, or the filters exclude everything. Exiting successfully with no work done.", *country, *ipv4Only)
+		return
 	}
 	log.Printf("selected %d ranges (requested %d; country=%q ipv4-only=%v); rate=%d/min",
 		len(ranges), *count, *country, *ipv4Only, *rate)
