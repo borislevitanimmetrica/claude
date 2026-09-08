@@ -150,7 +150,17 @@ BEGIN
     RAISE NOTICE 'truncating the probe table';
     TRUNCATE ip2city_dbiplite_probe_tbl;
 
-    RAISE NOTICE 'populating for country % family % (0 means both). This is one INSERT of roughly two million rows and emits no further output until it completes. Watch n_tup_ins in pg_stat_user_tables to see it progress.', v_country, v_family;
+    -- To watch this from another session, sample the RELATION SIZE, not the
+    -- tuple counters:
+    --
+    --   select pg_size_pretty(pg_relation_size('ip2city_dbiplite_probe_tbl'));
+    --
+    -- pg_stat_user_tables.n_tup_ins is useless here. A backend accumulates tuple
+    -- counters locally and flushes them at transaction boundaries, so a single
+    -- long INSERT reports zero until it commits however much work it has done.
+    -- Relation size grows as pages are written, uncommitted, so it does track
+    -- progress.
+    RAISE NOTICE 'populating for country % family % (0 means both). This is one INSERT of roughly two million rows and emits no further output until it completes. To watch it, sample pg_relation_size on ip2city_dbiplite_probe_tbl from another session; n_tup_ins will read zero until commit.', v_country, v_family;
     v_t0 := clock_timestamp();
 
     -- query is NOT NULL in this table, but no address has been selected yet at
