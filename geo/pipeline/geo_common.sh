@@ -288,6 +288,22 @@ take_lock() {
   exec 9>"$1" || die "cannot open lock file $1"
   if ! flock -n 9; then
     log "another run holds $1; exiting without doing anything"
+    local holders=""
+    if command -v fuser >/dev/null 2>&1; then
+      holders=$(fuser "$1" 2>/dev/null | tr -s ' ' | tr ' ' ',' | sed 's/^,//; s/,$//')
+    fi
+    if [ -n "$holders" ]; then
+      log "lock held by pid $holders, running for:"
+      ps -o pid=,etime=,cmd= -p "$holders" 2>/dev/null | while read -r line; do
+        log "  $line"
+      done
+    fi
+    # Said explicitly because it has caused real confusion: this invocation ran
+    # no probe at all, so none of the probe tool's own output follows in this
+    # log. An absent sampling or selection line here means the batch never
+    # started, not that the probe failed.
+    log "this invocation probed nothing, so no output from check_geo_ip-api follows"
+    log "to verify the deployed binary without waiting for the lock, run it directly with a small -count"
     exit 0
   fi
 }
