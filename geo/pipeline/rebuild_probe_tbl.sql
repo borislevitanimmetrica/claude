@@ -107,14 +107,16 @@ BEGIN
     -- first run has nothing to archive.
     IF v_total > 0 THEN
         INSERT INTO ip2city_dbiplite_history_tbl (
-            network, query, last_hop_ip, last_hop_hostname, city, state, state_code,
+            network, start_ip, end_ip, query, last_hop_ip, last_hop_hostname,
+            city, state, state_code,
             zip, lat, lon, country, countrycode, timezone, rdap_lookup, hop_count,
             probe_method, status, isp, org, "as", likely_mobile_cgnat,
             last_hop_number, is_infrastructure, is_unreachable_local_carrier,
             classification_note, attempts, ran_at
         )
         SELECT
-            network, query, last_hop_ip, last_hop_hostname, city, state, state_code,
+            network, start_ip, end_ip, query, last_hop_ip, last_hop_hostname,
+            city, state, state_code,
             zip, lat, lon, country, countrycode, timezone, rdap_lookup, hop_count,
             probe_method, status, isp, org, "as", likely_mobile_cgnat,
             last_hop_number, is_infrastructure, is_unreachable_local_carrier,
@@ -175,18 +177,36 @@ BEGIN
     RAISE NOTICE 'populating for country % family % (0 means both). This is one INSERT of roughly two million rows and emits no further output until it completes. Do NOT query this table to check progress: the truncate holds ACCESS EXCLUSIVE and your query will block. Sample pg_current_wal_lsn or pg_database_size instead.', v_country, v_family;
     v_t0 := clock_timestamp();
 
-    -- query is NOT NULL in this table, but no address has been selected yet at
-    -- populate time: the probe picks one at random and writes it to last_hop_ip.
-    -- The network's base address is used as a deterministic placeholder so the
-    -- constraint is satisfied without a DDL change. It is NOT the probed
-    -- address; last_hop_ip is the probed address.
+    -- query is the address that will be probed, chosen at random within the range
+    -- HERE rather than by the probe.
+    --
+    -- Choosing it at rebuild time makes the target auditable before any traffic is
+    -- sent, makes a retry hit the same address, and satisfies the NOT NULL
+    -- constraint with a meaningful value. check_geo_ip-api reads this column and
+    -- uses it verbatim; it no longer rolls its own address, because that would
+    -- leave this column, and the history row derived from it, disagreeing with the
+    -- address actually probed.
+    --
+    -- The offset spans the whole prefix including the network and broadcast
+    -- addresses, which is deliberate: usability is determined by the subnet mask,
+    -- not by the last octet.
+    --
+    -- The least(...) bound keeps the offset inside bigint. For IPv4 it never
+    -- binds, since a /0 is 2^32. It only matters if IPv6 is brought into scope,
+    -- where an address is then drawn from the first 2^32 addresses of the prefix.
     INSERT INTO ip2city_dbiplite_probe_tbl (
-        network, query, city, state, state_code, countrycode, lat, lon,
-        status, probe_method, attempts, hop_count, ran_at
+        network, start_ip, end_ip, query, city, state, state_code, countrycode,
+        lat, lon, status, probe_method, attempts, hop_count, ran_at
     )
     SELECT
         s.network,
         host(network(s.network))::inet,
+        host(broadcast(s.network))::inet,
+        network(s.network) + (floor(random() * least(
+            2::numeric ^ (CASE WHEN family(s.network) = 4
+                               THEN 32 - masklen(s.network)
+                               ELSE 128 - masklen(s.network) END),
+            4294967296::numeric)))::bigint,
         s.city,
         s.state,
         st.state_code,
