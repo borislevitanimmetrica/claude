@@ -150,6 +150,7 @@ sudo install -o root -g root -m 0755 "$_self_dir/deploy.sh" "$GEO_HOME/pipeline/
 # its own directory, so it must be installed next to the scripts or the
 # probe-table rebuild fails with a missing-file error.
 sudo install -o root -g root -m 0644 "$_self_dir/rebuild_probe_tbl.sql" "$GEO_HOME/pipeline/"
+sudo install -o root -g root -m 0755 "$_self_dir/scratch_test_rollover.sh" "$GEO_HOME/pipeline/"
 
 say "installing cron file to $CRON_TARGET"
 sudo install -o root -g root -m 0644 "$_self_dir/trugeo.cron" "$CRON_TARGET"
