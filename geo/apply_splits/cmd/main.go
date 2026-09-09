@@ -38,6 +38,7 @@ import (
 	"log"
 	"net/netip"
 	"os"
+	"sort"
 	"time"
 
 	"github.com/jackc/pgx/v5"
@@ -55,6 +56,15 @@ type parent struct {
 	masklen  int
 	children int64
 	probes   int64
+
+	// probed is true when this range has an ip-api result, which is the only
+	// source of its registrant. A range with no probe has no known registrant.
+	probed bool
+	// operator is the registrant as ip-api reported it, isp preferred over org.
+	operator string
+	// opExcluded is true when operator matches an active decomposition_exclusions
+	// pattern.
+	opExcluded bool
 }
 
 func main() {
@@ -69,6 +79,12 @@ func main() {
 	ensureSource := flag.Bool("ensure-source-column", true,
 		"add the source column to ip2city_dbiplite_tbl if the monthly importer has not yet created it")
 	dryRun := flag.Bool("dry-run", false, "report what would be done and write nothing")
+	operatorCheck := flag.Bool("operator-check", true,
+		"consult decomposition_exclusions and refuse to decompose a range whose registrant matches. "+
+			"Disabling this reverts to the older behaviour where datacentre space was decomposed and probed")
+	deferUnprobed := flag.Bool("defer-unprobed", true,
+		"skip a range that has never been probed, because its registrant is unknown. "+
+			"Disabling this decomposes before the registrant is known, which defeats the exclusion entirely")
 	flag.Parse()
 
 	// An empty DATABASE_URL is NOT an error. pgx.Connect with an empty string
@@ -100,7 +116,7 @@ func main() {
 	}
 	log.Printf("loaded %d active prefix exclusions", len(excluded))
 
-	parents, err := loadParents(ctx, conn, *sourceTable)
+	parents, err := loadParents(ctx, conn, *sourceTable, *operatorCheck)
 	if err != nil {
 		log.Fatalf("loading candidates: %v", err)
 	}
@@ -108,6 +124,8 @@ func main() {
 
 	var work []parent
 	var skippedExcluded, skippedNarrow, skippedTooBig int
+	var skippedOperator, deferredUnprobed int
+	operatorCounts := map[string]int{}
 	var totalProbes int64
 
 	for _, p := range parents {
@@ -120,6 +138,21 @@ func main() {
 			skippedExcluded++
 			continue
 		}
+		// Registrant checks come before the size cap, so the log attributes a skip
+		// to the reason that actually matters rather than to whichever test ran
+		// first.
+		if *operatorCheck && p.opExcluded {
+			skippedOperator++
+			operatorCounts[p.operator] += int(p.probes)
+			continue
+		}
+		if *deferUnprobed && !p.probed {
+			// No probe means no registrant, and decomposing now would bypass the
+			// exclusion entirely. The range is not lost: it becomes eligible once
+			// probed, on a later run.
+			deferredUnprobed++
+			continue
+		}
 		if *maxProbes > 0 && p.probes > *maxProbes {
 			skippedTooBig++
 			continue
@@ -128,8 +161,16 @@ func main() {
 		totalProbes += p.probes
 	}
 
-	log.Printf("skipped: %d already /24 or narrower, %d excluded, %d over -max-probes",
+	log.Printf("skipped: %d already /24 or narrower, %d excluded by prefix, %d over -max-probes",
 		skippedNarrow, skippedExcluded, skippedTooBig)
+	log.Printf("registrant: %d excluded by operator, %d deferred with no probe and therefore no known registrant",
+		skippedOperator, deferredUnprobed)
+	if len(operatorCounts) > 0 {
+		log.Printf("operator exclusions avoided these /24 rows:")
+		for _, name := range sortedByValue(operatorCounts) {
+			log.Printf("  %-44s %d", name, operatorCounts[name])
+		}
+	}
 	log.Printf("to decompose: %d parents into %d /24 rows", len(work), totalProbes)
 
 	if *limit > 0 && len(work) > *limit {
@@ -256,8 +297,31 @@ func loadExcludedPrefixes(ctx context.Context, conn *pgx.Conn) ([]netip.Prefix, 
 
 // loadParents returns candidate ranges that are STILL present as db-ip rows, so
 // re-running after a partial pass does no double work.
-func loadParents(ctx context.Context, conn *pgx.Conn, table string) ([]parent, error) {
+func loadParents(ctx context.Context, conn *pgx.Conn, table string, operatorCheck bool) ([]parent, error) {
 	ident := pgx.Identifier{table}.Sanitize()
+
+	// The registrant comes from ip-api, recorded on the probe row for the same
+	// network, and the exclusion is matched on the operator NAME rather than on an
+	// ASN. An ASN rule oversweeps: it captures everything an operator announces
+	// regardless of what it has bought, sold or sub-allocated, and keeps capturing
+	// it after ownership changes. A name follows the range.
+	//
+	// Both isp and org are tested, because ip-api populates them inconsistently and
+	// a registrant can appear in either.
+	opExpr := "false"
+	if operatorCheck {
+		var haveTable bool
+		if err := conn.QueryRow(ctx,
+			"SELECT to_regclass('public.decomposition_exclusions') IS NOT NULL").Scan(&haveTable); err != nil {
+			return nil, err
+		}
+		if !haveTable {
+			return nil, fmt.Errorf("decomposition_exclusions does not exist: run geo/decomposition_exclusions.sql, " +
+				"or pass -operator-check=false to decompose without consulting it")
+		}
+		opExpr = "EXISTS (SELECT 1 FROM decomposition_exclusions x WHERE x.active " +
+			"AND (p.isp ILIKE x.operator_pattern OR p.org ILIKE x.operator_pattern))"
+	}
 
 	var hasChildren bool
 	if err := conn.QueryRow(ctx,
@@ -286,9 +350,11 @@ func loadParents(ctx context.Context, conn *pgx.Conn, table string) ([]parent, e
 	// accepts IPv6 prefixes, and coveredBy is family-correct. Only the
 	// decomposition is IPv4-bound.
 	q := "SELECT c.network::text, masklen(c.network), " + childExpr + ", " +
-		"(2::numeric ^ greatest(0, 24 - masklen(c.network)))::bigint " +
+		"(2::numeric ^ greatest(0, 24 - masklen(c.network)))::bigint, " +
+		"(p.ran_at IS NOT NULL), coalesce(p.isp, p.org, ''), " + opExpr + " " +
 		"FROM " + ident + " c " +
 		"JOIN ip2city_dbiplite_tbl d ON d.network = c.network AND d.source = 'dbip' " +
+		"LEFT JOIN ip2city_dbiplite_probe_tbl p ON p.network = c.network " +
 		"WHERE family(c.network) = 4 " +
 		"ORDER BY masklen(c.network), c.network"
 
@@ -300,7 +366,8 @@ func loadParents(ctx context.Context, conn *pgx.Conn, table string) ([]parent, e
 	var out []parent
 	for rows.Next() {
 		var p parent
-		if err := rows.Scan(&p.network, &p.masklen, &p.children, &p.probes); err != nil {
+		if err := rows.Scan(&p.network, &p.masklen, &p.children, &p.probes,
+			&p.probed, &p.operator, &p.opExcluded); err != nil {
 			return nil, err
 		}
 		out = append(out, p)
@@ -315,6 +382,22 @@ func loadParents(ctx context.Context, conn *pgx.Conn, table string) ([]parent, e
 // exclusion can never match an IPv6 range even though its Bits() is numerically
 // smaller. Seeding IPv6 prefixes into geo_exclusions is therefore sufficient to
 // make exclusion work for IPv6 here.
+// sortedByValue returns the keys of m ordered by descending value, so the log
+// names the operators that saved the most work first.
+func sortedByValue(m map[string]int) []string {
+	keys := make([]string, 0, len(m))
+	for k := range m {
+		keys = append(keys, k)
+	}
+	sort.Slice(keys, func(i, j int) bool {
+		if m[keys[i]] != m[keys[j]] {
+			return m[keys[i]] > m[keys[j]]
+		}
+		return keys[i] < keys[j]
+	})
+	return keys
+}
+
 func coveredBy(network string, excluded []netip.Prefix) bool {
 	p, err := netip.ParsePrefix(network)
 	if err != nil {
