@@ -179,6 +179,18 @@ check "every row has a probe target" "$NOQ" "0"
 check "every target lies inside its range" "$OOR" "0"
 check_gt "state_code resolved for at least some rows" "$SC"
 
+# Asserted explicitly because the range comparison alone was not enough to catch
+# it the first time round. network() preserves the prefix length, so an unwrapped
+# "network(x) + offset" stored a /24 into query. inet ordering puts a /24 below
+# its own /32 start_ip, which surfaced as every row being out of range without
+# saying why. These three assertions name the cause directly.
+MASKQ=$(q "select count(*) from scratch.ip2city_dbiplite_probe_tbl where family(query) = 4 and masklen(query) <> 32")
+MASKS=$(q "select count(*) from scratch.ip2city_dbiplite_probe_tbl where family(start_ip) = 4 and masklen(start_ip) <> 32")
+MASKE=$(q "select count(*) from scratch.ip2city_dbiplite_probe_tbl where family(end_ip) = 4 and masklen(end_ip) <> 32")
+check "query is a host address, not a prefix" "$MASKQ" "0"
+check "start_ip is a host address" "$MASKS" "0"
+check "end_ip is a host address" "$MASKE" "0"
+
 say "step 6: rebuild again while rows are unprobed. The gate must refuse"
 psqlb -c "SET search_path = scratch" -c "SET geo.country = 'US'" -c "SET geo.family = '4'" -f "$REBUILD_SQL"
 assert_live_untouched "after gated rebuild"
