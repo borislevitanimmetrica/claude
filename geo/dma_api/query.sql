@@ -34,10 +34,28 @@
 
 
 -- ---------------------------------------------------------------------------
--- 1. Set the DMA code. Everything below reads it.
+-- 1. The DMA code. Everything below reads it.
+--
+--    Either edit the default below, or set it on the command line, which takes
+--    precedence:
+--
+--      psql -c "SET geo.dma_code = '510'" -f query.sql
+--
+--    A plain SET here would have overridden the command line silently, which is
+--    exactly the sort of quiet override that wastes an afternoon. This sets the
+--    default only when the value is not already present.
 -- ---------------------------------------------------------------------------
 
-SET geo.dma_code = '527';
+DO $setcode$
+BEGIN
+    IF coalesce(current_setting('geo.dma_code', true), '') = '' THEN
+        PERFORM set_config('geo.dma_code', '527', false);
+        RAISE NOTICE 'geo.dma_code was not set, defaulting to %', current_setting('geo.dma_code');
+    ELSE
+        RAISE NOTICE 'using geo.dma_code = % as supplied', current_setting('geo.dma_code');
+    END IF;
+END
+$setcode$;
 
 
 -- ---------------------------------------------------------------------------
@@ -51,7 +69,6 @@ JOIN dma2city_tbl d
   ON d.city = p.city
  AND d.state_code = p.state_code
 WHERE d.dma_code = current_setting('geo.dma_code')::int
-  AND family(p.network) = 4
 ORDER BY 1;
 
 
@@ -62,9 +79,22 @@ ORDER BY 1;
 --    they are ordinary usable addresses, and a few never-assigned addresses cost
 --    nothing.
 --
---    generate_series over the integer form is used rather than any inet
+--    generate_series over the integer offset is used rather than any inet
 --    arithmetic shortcut, because it is the only formulation that stays correct
 --    for every prefix length.
+--
+--    THE family(m.network) = 4 FILTER HERE IS NECESSARY, UNLIKE THE ONES REMOVED
+--    FROM THE OTHER SECTIONS. Those were redundant, because the table holds only
+--    IPv4, and a redundant filter silently excludes IPv6 the day it is enabled.
+--    This one is different in kind: an IPv6 prefix has no finite address list, a
+--    single /64 being 18446744073709551616 addresses, so enumeration is not
+--    something IPv6 can have. Without the filter this query would attempt a
+--    generate_series of that size.
+--
+--    Because the filter is real, its effect is made VISIBLE: section 7 reports any
+--    IPv6 ranges in the DMA that this section therefore did not expand. Run it
+--    whenever IPv6 is in scope, so an incomplete answer announces itself instead
+--    of looking complete.
 --
 --    RUN THE COUNT IN SECTION 4 FIRST. A large DMA is tens of millions of rows,
 --    and psql buffers a result set in client memory by default. Either redirect
@@ -78,11 +108,11 @@ WITH m AS (
       ON d.city = p.city
      AND d.state_code = p.state_code
     WHERE d.dma_code = current_setting('geo.dma_code')::int
-      AND family(p.network) = 4
 )
 SELECT host((network(m.network)::inet + g.i))::text AS ip
 FROM m
 CROSS JOIN LATERAL generate_series(0, (2 ^ (32 - masklen(m.network)))::bigint - 1) AS g(i)
+WHERE family(m.network) = 4
 ORDER BY 1;
 
 
@@ -101,13 +131,16 @@ WITH m AS (
       ON d.city = p.city
      AND d.state_code = p.state_code
     WHERE d.dma_code = current_setting('geo.dma_code')::int
-      AND family(p.network) = 4
 )
-SELECT count(*)                                                    AS ranges,
-       coalesce(sum(2::numeric ^ (32 - masklen(network))), 0)::bigint AS addresses,
+SELECT count(*)                                                   AS ranges,
+       count(*) FILTER (WHERE family(network) = 4)                 AS ipv4_ranges,
+       count(*) FILTER (WHERE family(network) = 6)                 AS ipv6_ranges,
+       coalesce(sum(2::numeric ^ (32 - masklen(network)))
+                FILTER (WHERE family(network) = 4), 0)::bigint     AS ipv4_addresses,
        count(*) FILTER (WHERE ran_at IS NOT NULL)                  AS measured_ranges,
-       min(masklen(network))                                       AS widest_masklen,
-       pg_size_pretty(coalesce(sum(2::numeric ^ (32 - masklen(network))), 0)::bigint * 15) AS text_size_estimate
+       min(masklen(network)) FILTER (WHERE family(network) = 4)    AS widest_ipv4_masklen,
+       pg_size_pretty(coalesce(sum(2::numeric ^ (32 - masklen(network)))
+                FILTER (WHERE family(network) = 4), 0)::bigint * 15) AS text_size_estimate
 FROM m;
 
 
@@ -145,7 +178,33 @@ FROM dma2city_tbl d
 LEFT JOIN ip2city_dbiplite_probe_tbl p
        ON d.city = p.city
       AND d.state_code = p.state_code
-      AND family(p.network) = 4
 WHERE d.dma_code = current_setting('geo.dma_code')::int
 GROUP BY d.city, d.state_code
 ORDER BY ranges DESC, d.city;
+
+
+
+-- ---------------------------------------------------------------------------
+-- 7. Visibility for the one filter that remains: which IPv6 ranges in this DMA
+--    were NOT expanded by section 3.
+--
+--    Returns nothing while the probe table is IPv4 only, which is the state today.
+--    It starts returning rows the moment PROBE_IPV4_ONLY=0 brings IPv6 into scope,
+--    which is precisely when an address list silently stops being complete.
+--
+--    The API enforces this rather than merely reporting it: the addresses endpoint
+--    refuses with HTTP 409 when a DMA contains any IPv6 range, and enumerates the
+--    IPv4 ranges only if the caller explicitly passes skip_ipv6=1, in which case
+--    the response carries an X-Incomplete header.
+-- ---------------------------------------------------------------------------
+
+SELECT DISTINCT p.network::text AS ipv6_range_not_expanded,
+       p.city,
+       p.state_code
+FROM ip2city_dbiplite_probe_tbl p
+JOIN dma2city_tbl d
+  ON d.city = p.city
+ AND d.state_code = p.state_code
+WHERE d.dma_code = current_setting('geo.dma_code')::int
+  AND family(p.network) = 6
+ORDER BY 1;

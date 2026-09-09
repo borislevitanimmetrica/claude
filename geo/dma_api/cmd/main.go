@@ -75,6 +75,13 @@ ORDER BY dma`
 
 // rangesSQL is the canonical join. Kept identical between the summary, the CIDR
 // endpoint and the address endpoint so all three agree by construction.
+// There is deliberately NO address family filter here. The table holds only IPv4
+// today, so a filter would be redundant, and a redundant filter is worse than
+// none: when IPv6 is switched on with PROBE_IPV4_ONLY=0 it would keep excluding
+// IPv6 silently, to be discovered by its absence rather than by an error.
+//
+// Where a family distinction is genuinely unavoidable, which is address
+// enumeration, it is enforced explicitly and loudly instead. See handleAddresses.
 const rangesSQL = `
 SELECT DISTINCT p.network
 FROM ip2city_dbiplite_probe_tbl p
@@ -82,11 +89,14 @@ JOIN dma2city_tbl d
   ON d.city = p.city
  AND d.state_code = p.state_code
 WHERE d.dma_code = $1
-  AND family(p.network) = 4
 ORDER BY 1`
 
 // summarySQL counts without materialising an address list. The address total is
 // summed in numeric because a wide prefix overflows an int before the cast.
+// Families are counted separately rather than filtered. addresses covers the IPv4
+// ranges only, because an IPv6 prefix cannot be enumerated: a single /64 is
+// 18446744073709551616 addresses. Reporting the two counts side by side means a
+// caller can see that IPv6 space exists rather than having it quietly omitted.
 const summarySQL = `
 WITH m AS (
     SELECT DISTINCT p.network, p.ran_at
@@ -95,12 +105,15 @@ WITH m AS (
       ON d.city = p.city
      AND d.state_code = p.state_code
     WHERE d.dma_code = $1
-      AND family(p.network) = 4
 )
-SELECT count(*)::bigint                                              AS ranges,
-       coalesce(sum(2::numeric ^ (32 - masklen(network))), 0)::bigint AS addresses,
-       count(*) FILTER (WHERE ran_at IS NOT NULL)::bigint             AS measured_ranges,
-       coalesce(min(masklen(network)), 0)::int                        AS widest_masklen
+SELECT count(*)::bigint                                          AS ranges,
+       count(*) FILTER (WHERE family(network) = 4)::bigint        AS ipv4_ranges,
+       count(*) FILTER (WHERE family(network) = 6)::bigint        AS ipv6_ranges,
+       coalesce(sum(2::numeric ^ (32 - masklen(network)))
+                FILTER (WHERE family(network) = 4), 0)::bigint    AS addresses,
+       count(*) FILTER (WHERE ran_at IS NOT NULL)::bigint         AS measured_ranges,
+       coalesce(min(masklen(network))
+                FILTER (WHERE family(network) = 4), 0)::int       AS widest_masklen
 FROM m`
 
 const dmaNameSQL = `
@@ -120,7 +133,6 @@ FROM dma2city_tbl d
 LEFT JOIN ip2city_dbiplite_probe_tbl p
        ON d.city = p.city
       AND d.state_code = p.state_code
-      AND family(p.network) = 4
 WHERE d.dma_code = $1
 GROUP BY d.city, d.state_code
 ORDER BY ranges DESC, d.city`
@@ -129,6 +141,8 @@ type summary struct {
 	DMACode        int    `json:"dma_code"`
 	DMA            string `json:"dma"`
 	Ranges         int64  `json:"ranges"`
+	IPv4Ranges     int64  `json:"ipv4_ranges"`
+	IPv6Ranges     int64  `json:"ipv6_ranges"`
 	Addresses      int64  `json:"addresses"`
 	MeasuredRanges int64  `json:"measured_ranges"`
 	WidestMasklen  int    `json:"widest_masklen"`
@@ -277,7 +291,8 @@ func (s *server) summaryFor(ctx context.Context, code int) (summary, error) {
 	var sum summary
 	sum.DMACode = code
 	err := s.pool.QueryRow(ctx, summarySQL, code).
-		Scan(&sum.Ranges, &sum.Addresses, &sum.MeasuredRanges, &sum.WidestMasklen)
+		Scan(&sum.Ranges, &sum.IPv4Ranges, &sum.IPv6Ranges,
+			&sum.Addresses, &sum.MeasuredRanges, &sum.WidestMasklen)
 	if err != nil {
 		return sum, err
 	}
@@ -348,7 +363,9 @@ func (s *server) handleCIDRs(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusInternalServerError, err.Error())
 		return
 	}
-	s.streamRanges(w, r, code, sum, false)
+	// The CIDR endpoint is family agnostic: a prefix is a prefix, so IPv6 needs no
+	// special handling and is returned alongside IPv4.
+	s.streamRanges(w, r, code, sum, false, false)
 }
 
 func (s *server) handleAddresses(w http.ResponseWriter, r *http.Request) {
@@ -382,12 +399,25 @@ func (s *server) handleAddresses(w http.ResponseWriter, r *http.Request) {
 			code, sum.Addresses, limit))
 		return
 	}
-	s.streamRanges(w, r, code, sum, true)
+
+	// IPv6 cannot be enumerated, so if this DMA contains any IPv6 range the request
+	// is refused by default and says why. Skipping those ranges quietly would hand
+	// back an answer that looks complete and is not, which is exactly how a
+	// forgotten family filter causes damage. Skipping is available, but only when
+	// the caller asks for it, and it is then reported in a response header.
+	skipIPv6 := r.URL.Query().Get("skip_ipv6") == "1"
+	if sum.IPv6Ranges > 0 && !skipIPv6 {
+		writeError(w, http.StatusConflict, fmt.Sprintf(
+			"DMA %d contains %d IPv6 ranges alongside %d IPv4 ranges. IPv6 prefixes have no finite address list, so this endpoint cannot return a complete answer. Use the cidrs endpoint for all families, or add skip_ipv6=1 to enumerate the IPv4 ranges only and accept an incomplete result.",
+			code, sum.IPv6Ranges, sum.IPv4Ranges))
+		return
+	}
+	s.streamRanges(w, r, code, sum, true, skipIPv6)
 }
 
 // streamRanges writes either the prefixes or every address in them, straight from
 // the cursor to the socket.
-func (s *server) streamRanges(w http.ResponseWriter, r *http.Request, code int, sum summary, expand bool) {
+func (s *server) streamRanges(w http.ResponseWriter, r *http.Request, code int, sum summary, expand, skipIPv6 bool) {
 	rows, err := s.pool.Query(r.Context(), rangesSQL, code)
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, err.Error())
@@ -400,6 +430,13 @@ func (s *server) streamRanges(w http.ResponseWriter, r *http.Request, code int, 
 	w.Header().Set("X-Range-Count", strconv.FormatInt(sum.Ranges, 10))
 	w.Header().Set("X-Address-Count", strconv.FormatInt(sum.Addresses, 10))
 	w.Header().Set("X-Measured-Ranges", strconv.FormatInt(sum.MeasuredRanges, 10))
+	w.Header().Set("X-IPv4-Ranges", strconv.FormatInt(sum.IPv4Ranges, 10))
+	w.Header().Set("X-IPv6-Ranges", strconv.FormatInt(sum.IPv6Ranges, 10))
+	if expand && skipIPv6 && sum.IPv6Ranges > 0 {
+		// The result is knowingly incomplete, so it says so in a header rather than
+		// looking like a full answer.
+		w.Header().Set("X-Incomplete", fmt.Sprintf("%d IPv6 ranges omitted at caller request", sum.IPv6Ranges))
+	}
 
 	kind := "cidrs"
 	if expand {
@@ -420,6 +457,7 @@ func (s *server) streamRanges(w http.ResponseWriter, r *http.Request, code int, 
 
 	buf := newFlushWriter(out, w)
 	var written int64
+	var skipped int64
 
 	for rows.Next() {
 		var p netip.Prefix
@@ -428,6 +466,10 @@ func (s *server) streamRanges(w http.ResponseWriter, r *http.Request, code int, 
 			break
 		}
 		if expand {
+			if skipIPv6 && !p.Addr().Is4() {
+				skipped++
+				continue
+			}
 			n, err := writeAddresses(buf, p)
 			if err != nil {
 				log.Printf("dma %d: writing addresses: %v", code, err)
@@ -457,6 +499,10 @@ func (s *server) streamRanges(w http.ResponseWriter, r *http.Request, code int, 
 			log.Printf("dma %d: closing gzip: %v", code, err)
 		}
 	}
+	if skipped > 0 {
+		log.Printf("dma %d: streamed %d %s, omitting %d IPv6 ranges at caller request", code, written, kind, skipped)
+		return
+	}
 	log.Printf("dma %d: streamed %d %s", code, written, kind)
 }
 
@@ -469,8 +515,12 @@ func (s *server) streamRanges(w http.ResponseWriter, r *http.Request, code int, 
 // response that difference is the whole cost of the endpoint.
 func writeAddresses(w *flushWriter, p netip.Prefix) (int64, error) {
 	p = p.Masked()
+	// Returning zero here would silently omit the prefix, which is the same trap as
+	// a redundant family filter in the SQL. An IPv6 prefix reaching this function
+	// is a caller or routing error, so it is reported rather than skipped. The
+	// endpoint decides the policy; this function refuses to guess.
 	if !p.Addr().Is4() {
-		return 0, nil
+		return 0, fmt.Errorf("cannot enumerate %s: an IPv6 prefix has no finite address list, a single /64 being 18446744073709551616 addresses", p)
 	}
 	first := p.Addr().As4()
 	base := binary.BigEndian.Uint32(first[:])
