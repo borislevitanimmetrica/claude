@@ -1,7 +1,7 @@
 // Command probe_range_split tests whether a range that both db-ip and RouteViews
 // treat as unitary is in fact geographically split.
 //
-// THE HYPOTHESIS
+// # THE HYPOTHESIS
 //
 // apply_splits decomposes a db-ip parent into /24 rows only when BGP shows the
 // parent being split by more specific announcements. If a provider serves several
@@ -12,21 +12,21 @@
 //
 // This probes several /24s inside one range and reports whether the answers vary.
 //
-// READING THE RESULT
+// # READING THE RESULT
 //
 // Three outcomes, and they mean different things:
 //
-//   Cities and ZIPs vary          the range IS split. Decomposition cannot rely on
-//                                 BGP evidence alone.
-//   One city, one ZIP, plausible  the range is genuinely unitary, or the provider
-//                                 serves it from one location.
-//   One city across a huge range   registrant or facility address, not subscriber
-//                                 geography. Same signature as the DoD /8s and as
-//                                 4.0.0.0/8 resolving to Monroe LA, which is
-//                                 Lumen headquarters. Such a range is not
-//                                 targetable at any granularity and is a
-//                                 candidate for exclusion rather than for
-//                                 decomposition.
+//	Cities and ZIPs vary          the range IS split. Decomposition cannot rely on
+//	                              BGP evidence alone.
+//	One city, one ZIP, plausible  the range is genuinely unitary, or the provider
+//	                              serves it from one location.
+//	One city across a huge range   registrant or facility address, not subscriber
+//	                              geography. Same signature as the DoD /8s and as
+//	                              4.0.0.0/8 resolving to Monroe LA, which is
+//	                              Lumen headquarters. Such a range is not
+//	                              targetable at any granularity and is a
+//	                              candidate for exclusion rather than for
+//	                              decomposition.
 //
 // CHOOSE EYEBALL RANGES. Testing cloud or backbone space answers nothing: AWS
 // 3.0.0.0/8 and Lumen 4.0.0.0/8 report facility and headquarters locations. Pick
@@ -156,7 +156,7 @@ func main() {
 		}
 	}
 
-	report(parent, results)
+	report(parent, results, len(subnets))
 }
 
 // quarterSubnets returns every /24 inside p. p is assumed to be a /24 or wider.
@@ -206,7 +206,7 @@ func lookup(client *http.Client, endpoint string, addr netip.Addr) (geoResult, e
 	return g, nil
 }
 
-func report(parent netip.Prefix, results []sample) {
+func report(parent netip.Prefix, results []sample, total24 int) {
 	cities := map[string]int{}
 	zips := map[string]int{}
 	isps := map[string]int{}
@@ -225,7 +225,7 @@ func report(parent netip.Prefix, results []sample) {
 
 	fmt.Println()
 	fmt.Println("=== result for " + parent.String() + " ===")
-	fmt.Printf("probes succeeding: %d of %d\n", ok, len(results))
+	outf("probes succeeding: %d of %d", ok, len(results))
 	if ok == 0 {
 		fmt.Println("no successful probes, so nothing can be concluded")
 		os.Exit(1)
@@ -234,36 +234,65 @@ func report(parent netip.Prefix, results []sample) {
 	fmt.Println()
 	fmt.Println("cities returned:")
 	for _, k := range sortedKeys(cities) {
-		fmt.Printf("  %-40s %d\n", k, cities[k])
+		outf("  %-40s %d", k, cities[k])
 	}
 	fmt.Println("ZIPs returned:")
 	for _, k := range sortedKeys(zips) {
-		fmt.Printf("  %-40s %d\n", k, zips[k])
+		outf("  %-40s %d", k, zips[k])
 	}
 	fmt.Println("ISPs returned:")
 	for _, k := range sortedKeys(isps) {
-		fmt.Printf("  %-40s %d\n", k, isps[k])
+		outf("  %-40s %d", k, isps[k])
 	}
 
 	addresses := 1 << uint(32-parent.Bits())
 	fmt.Println()
 	switch {
-	case len(cities) > 1 || len(zips) > 1:
-		fmt.Printf("VERDICT: SPLIT. %d distinct cities and %d distinct ZIPs inside a range that both db-ip and RouteViews treat as one.\n",
-			len(cities), len(zips))
-		fmt.Printf("Assigning one city to all %d addresses is wrong for at least some of them, and BGP evidence alone would never have revealed it.\n", addresses)
-		fmt.Println("Implication: decomposition needs to be driven by measurement, not only by observed BGP splits.")
+	case len(cities) > 1:
+		// City variation breaks BOTH services, because the DMA path resolves through
+		// city and the ZIP path resolves through it too.
+		outf("VERDICT: SPLIT BY CITY. %d distinct cities and %d distinct ZIPs across %d addresses that both db-ip and RouteViews treat as one range.",
+			len(cities), len(zips), addresses)
+		fmt.Println("This breaks DMA targeting as well as ZIP targeting: assigning one city to the whole range is wrong for part of it,")
+		fmt.Println("and BGP evidence alone would never have revealed it. Decomposition must be driven by measurement.")
+	case len(zips) > 1:
+		// ZIP variation with a constant city is the more interesting case: the DMA
+		// service is unaffected, because DMA is resolved through city, while the ZIP
+		// service is wrong for part of the range.
+		outf("VERDICT: SPLIT BY ZIP ONLY. One city but %d distinct ZIPs across %d addresses.", len(zips), addresses)
+		fmt.Println("DMA targeting is unaffected, since that resolves through city. ZIP targeting is wrong for part of this range.")
+		fmt.Println("A single range therefore cannot carry one ZIP, which is an argument for landmark-derived ZIPs rather than range-level ones.")
 	case parent.Bits() <= 16:
-		fmt.Printf("VERDICT: SUSPECT UNITARY. One city and one ZIP across %d addresses.\n", addresses)
+		outf("VERDICT: SUSPECT UNITARY. One city and one ZIP across %d addresses.", addresses)
 		fmt.Println("A single answer for a range this wide is more likely a registrant or facility address than real subscriber geography.")
 		fmt.Println("Compare against the DoD /8s and 4.0.0.0/8 resolving to Monroe LA, which is Lumen headquarters.")
 		fmt.Println("Such a range is a candidate for exclusion rather than for decomposition. Verify the ISP above is an eyeball provider.")
 	default:
-		fmt.Printf("VERDICT: UNITARY. One city and one ZIP across %d addresses, at a width where that is plausible.\n", addresses)
+		outf("VERDICT: UNITARY. One city and one ZIP across %d addresses, at a width where that is plausible.", addresses)
 		fmt.Println("No decomposition needed for this range on this evidence.")
 	}
+	// A partial sample can only ever prove variation, never absence of it. This is
+	// not a theoretical caveat: on 76.90.64.0/20, four samples found two ZIPs, eight
+	// samples found one and reported UNITARY, and all sixteen found three. The
+	// eight-sample run was simply wrong, because 92544 and 92545 occupy three of
+	// the sixteen blocks and a random eight missed them.
+	if len(results) < total24 {
+		fmt.Println()
+		outf("SAMPLING CAVEAT: %d of the %d /24 blocks were probed. A verdict of UNITARY from a partial",
+			len(results), total24)
+		fmt.Println("sample is provisional: minority blocks are easily missed. Re-run with -samples set to the")
+		outf("full %d to settle it. Only a verdict of SPLIT is safe to trust from a partial sample.", total24)
+	}
+
 	fmt.Println()
 	fmt.Println("This tool wrote nothing to the database.")
+}
+
+// outf prints a formatted line. It exists so that no format string in this file
+// needs a backslash escape: the repository convention is that every file survives
+// a copy and paste path that converts backslash sequences into real newlines.
+func outf(format string, args ...any) {
+	fmt.Println(fmt.Sprintf(format, args...))
 }
 
 func sortedKeys(m map[string]int) []string {
