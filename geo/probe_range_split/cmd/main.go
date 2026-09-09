@@ -1,7 +1,7 @@
 // Command probe_range_split tests whether a range that both db-ip and RouteViews
 // treat as unitary is in fact geographically split.
 //
-// THE HYPOTHESIS
+// # THE HYPOTHESIS
 //
 // apply_splits decomposes a db-ip parent into /24 rows only when BGP shows the
 // parent being split by more specific announcements. If a provider serves several
@@ -12,21 +12,21 @@
 //
 // This probes several /24s inside one range and reports whether the answers vary.
 //
-// READING THE RESULT
+// # READING THE RESULT
 //
 // Three outcomes, and they mean different things:
 //
-//   Cities and ZIPs vary          the range IS split. Decomposition cannot rely on
-//                                 BGP evidence alone.
-//   One city, one ZIP, plausible  the range is genuinely unitary, or the provider
-//                                 serves it from one location.
-//   One city across a huge range   registrant or facility address, not subscriber
-//                                 geography. Same signature as the DoD /8s and as
-//                                 4.0.0.0/8 resolving to Monroe LA, which is
-//                                 Lumen headquarters. Such a range is not
-//                                 targetable at any granularity and is a
-//                                 candidate for exclusion rather than for
-//                                 decomposition.
+//	Cities and ZIPs vary          the range IS split. Decomposition cannot rely on
+//	                              BGP evidence alone.
+//	One city, one ZIP, plausible  the range is genuinely unitary, or the provider
+//	                              serves it from one location.
+//	One city across a huge range   registrant or facility address, not subscriber
+//	                              geography. Same signature as the DoD /8s and as
+//	                              4.0.0.0/8 resolving to Monroe LA, which is
+//	                              Lumen headquarters. Such a range is not
+//	                              targetable at any granularity and is a
+//	                              candidate for exclusion rather than for
+//	                              decomposition.
 //
 // CHOOSE EYEBALL RANGES. Testing cloud or backbone space answers nothing: AWS
 // 3.0.0.0/8 and Lumen 4.0.0.0/8 report facility and headquarters locations. Pick
@@ -45,6 +45,7 @@
 package main
 
 import (
+	"context"
 	"encoding/binary"
 	"encoding/json"
 	"flag"
@@ -58,6 +59,8 @@ import (
 	"sort"
 	"strings"
 	"time"
+
+	"github.com/jackc/pgx/v5"
 )
 
 type geoResult struct {
@@ -84,15 +87,16 @@ type sample struct {
 }
 
 func main() {
-	rangeFlag := flag.String("range", "", "the range to test, as a CIDR, for example 76.90.64.0/20; required")
+	rangeFlag := flag.String("range", "", "the range to test, as a CIDR, for example 76.90.64.0/20")
+	asnFlag := flag.Int("asn", 0, "instead of one range, sample /24s spread across every IPv4 prefix this ASN originates; answers whether a carrier IPv4 space is geographically resolvable at all")
 	samples := flag.Int("samples", 16, "how many distinct /24s inside the range to probe")
 	rate := flag.Int("rate", 45, "maximum ip-api calls per rolling minute")
 	endpoint := flag.String("endpoint", "http://ip-api.com/json/", "ip-api endpoint prefix")
 	timeout := flag.Duration("http-timeout", 20*time.Second, "per call timeout")
 	flag.Parse()
 
-	if *rangeFlag == "" {
-		log.Fatal("-range is required, for example -range 76.90.64.0/20")
+	if (*rangeFlag == "") == (*asnFlag == 0) {
+		log.Fatal("give exactly one of -range or -asn")
 	}
 	if *samples < 2 {
 		log.Fatal("-samples must be at least 2: a single probe cannot show variation")
@@ -101,28 +105,56 @@ func main() {
 		log.Fatal("-rate must be greater than zero")
 	}
 
-	parent, err := netip.ParsePrefix(*rangeFlag)
-	if err != nil {
-		log.Fatalf("bad -range: %v", err)
-	}
-	parent = parent.Masked()
-	if !parent.Addr().Is4() {
-		log.Fatal("only IPv4 ranges can be tested this way: an IPv6 prefix has no enumerable /24 structure")
-	}
-	if parent.Bits() > 24 {
-		log.Fatalf("%s is narrower than a /24, so it has no internal /24 structure to compare", parent)
-	}
+	var chosen []netip.Prefix
+	var label string
+	total24 := 0
 
-	subnets := quarterSubnets(parent)
-	log.Printf("%s contains %d /24 blocks", parent, len(subnets))
-
-	chosen := subnets
-	if len(subnets) > *samples {
-		rand.Shuffle(len(subnets), func(i, j int) { subnets[i], subnets[j] = subnets[j], subnets[i] })
-		chosen = subnets[:*samples]
-		sort.Slice(chosen, func(i, j int) bool { return chosen[i].Addr().Less(chosen[j].Addr()) })
+	if *asnFlag != 0 {
+		// Carrier mode. The question here is not whether one range is split but
+		// whether an entire operator IPv4 space carries any usable geography at
+		// all. A mobile carrier translating IPv6-only subscribers through a shared
+		// NAT64 pool will answer with the location of the translator, so the whole
+		// ASN collapses to a handful of cities however many addresses it holds.
+		prefixes, err := prefixesForASN(*asnFlag)
+		if err != nil {
+			log.Fatalf("reading prefixes for AS%d: %v", *asnFlag, err)
+		}
+		if len(prefixes) == 0 {
+			log.Fatalf("AS%d originates no IPv4 prefixes in bgp_route_views", *asnFlag)
+		}
+		log.Printf("AS%d originates %d IPv4 prefixes", *asnFlag, len(prefixes))
+		rand.Shuffle(len(prefixes), func(i, j int) { prefixes[i], prefixes[j] = prefixes[j], prefixes[i] })
+		// One /24 per distinct prefix first, so the sample spreads as widely across
+		// the operator footprint as possible before repeating any prefix.
+		for i := 0; i < *samples; i++ {
+			chosen = append(chosen, randomSubnet24In(prefixes[i%len(prefixes)]))
+		}
+		label = fmt.Sprintf("AS%d across %d distinct prefixes", *asnFlag, min(len(prefixes), *samples))
+		total24 = len(chosen)
+	} else {
+		parent, err := netip.ParsePrefix(*rangeFlag)
+		if err != nil {
+			log.Fatalf("bad -range: %v", err)
+		}
+		parent = parent.Masked()
+		if !parent.Addr().Is4() {
+			log.Fatal("only IPv4 ranges can be tested this way: an IPv6 prefix has no enumerable /24 structure")
+		}
+		if parent.Bits() > 24 {
+			log.Fatalf("%s is narrower than a /24, so it has no internal /24 structure to compare", parent)
+		}
+		subnets := quarterSubnets(parent)
+		total24 = len(subnets)
+		log.Printf("%s contains %d /24 blocks", parent, len(subnets))
+		chosen = subnets
+		if len(subnets) > *samples {
+			rand.Shuffle(len(subnets), func(i, j int) { subnets[i], subnets[j] = subnets[j], subnets[i] })
+			chosen = subnets[:*samples]
+			sort.Slice(chosen, func(i, j int) bool { return chosen[i].Addr().Less(chosen[j].Addr()) })
+		}
+		label = parent.String()
 	}
-	log.Printf("probing %d of them at %d calls per minute, roughly %ds", len(chosen), *rate,
+	log.Printf("probing %d blocks at %d calls per minute, roughly %ds", len(chosen), *rate,
 		(len(chosen)*60)/(*rate)+1)
 
 	client := &http.Client{Timeout: *timeout}
@@ -156,7 +188,7 @@ func main() {
 		}
 	}
 
-	report(parent, results)
+	report(label, results, total24, *asnFlag != 0)
 }
 
 // quarterSubnets returns every /24 inside p. p is assumed to be a /24 or wider.
@@ -206,7 +238,7 @@ func lookup(client *http.Client, endpoint string, addr netip.Addr) (geoResult, e
 	return g, nil
 }
 
-func report(parent netip.Prefix, results []sample) {
+func report(label string, results []sample, total24 int, asnMode bool) {
 	cities := map[string]int{}
 	zips := map[string]int{}
 	isps := map[string]int{}
@@ -224,8 +256,8 @@ func report(parent netip.Prefix, results []sample) {
 	}
 
 	fmt.Println()
-	fmt.Println("=== result for " + parent.String() + " ===")
-	fmt.Printf("probes succeeding: %d of %d\n", ok, len(results))
+	fmt.Println("=== result for " + label + " ===")
+	outf("probes succeeding: %d of %d", ok, len(results))
 	if ok == 0 {
 		fmt.Println("no successful probes, so nothing can be concluded")
 		os.Exit(1)
@@ -234,36 +266,146 @@ func report(parent netip.Prefix, results []sample) {
 	fmt.Println()
 	fmt.Println("cities returned:")
 	for _, k := range sortedKeys(cities) {
-		fmt.Printf("  %-40s %d\n", k, cities[k])
+		outf("  %-40s %d", k, cities[k])
 	}
 	fmt.Println("ZIPs returned:")
 	for _, k := range sortedKeys(zips) {
-		fmt.Printf("  %-40s %d\n", k, zips[k])
+		outf("  %-40s %d", k, zips[k])
 	}
 	fmt.Println("ISPs returned:")
 	for _, k := range sortedKeys(isps) {
-		fmt.Printf("  %-40s %d\n", k, isps[k])
+		outf("  %-40s %d", k, isps[k])
 	}
 
-	addresses := 1 << uint(32-parent.Bits())
 	fmt.Println()
+	if asnMode {
+		// Carrier verdict. The diagnostic quantity is how many distinct places the
+		// operator space resolves to, relative to how widely it was sampled.
+		switch {
+		case len(cities) == 1:
+			outf("VERDICT: NON GEOGRAPHIC. Every one of %d probes spread across this operator returned the same city.", ok)
+			fmt.Println("That is the signature of a shared translator or gateway pool: the address identifies the carrier")
+			fmt.Println("egress point, not the subscriber. Targeting any address in this space by locality is wrong for")
+			fmt.Println("almost every subscriber behind it, so including it pollutes output with confidently incorrect rows.")
+		case len(cities)*4 <= ok:
+			outf("VERDICT: HIGHLY CONCENTRATED. %d distinct cities from %d probes spread across the operator.", len(cities), ok)
+			fmt.Println("Consistent with a small number of regional egress gateways rather than per-market addressing.")
+			fmt.Println("Usable at region level at best. Check the counts above: a few cities dominating means most")
+			fmt.Println("subscribers are being attributed to a gateway city they do not live in.")
+		default:
+			outf("VERDICT: RESOLVABLE. %d distinct cities and %d distinct ZIPs from %d probes.", len(cities), len(zips), ok)
+			fmt.Println("The operator space varies geographically, so per-market attribution is meaningful for it.")
+		}
+		fmt.Println()
+		fmt.Println("Caveat: this measures what ip-api asserts, not where subscribers are. A carrier could be")
+		fmt.Println("geographically resolvable in truth while ip-api reports gateways, or the reverse. It answers")
+		fmt.Println("whether the data you hold can distinguish markets for this operator, which is the operative question.")
+		return
+	}
+
+	addresses := total24 * 256
 	switch {
-	case len(cities) > 1 || len(zips) > 1:
-		fmt.Printf("VERDICT: SPLIT. %d distinct cities and %d distinct ZIPs inside a range that both db-ip and RouteViews treat as one.\n",
-			len(cities), len(zips))
-		fmt.Printf("Assigning one city to all %d addresses is wrong for at least some of them, and BGP evidence alone would never have revealed it.\n", addresses)
-		fmt.Println("Implication: decomposition needs to be driven by measurement, not only by observed BGP splits.")
-	case parent.Bits() <= 16:
-		fmt.Printf("VERDICT: SUSPECT UNITARY. One city and one ZIP across %d addresses.\n", addresses)
+	case len(cities) > 1:
+		// City variation breaks BOTH services, because the DMA path resolves through
+		// city and the ZIP path resolves through it too.
+		outf("VERDICT: SPLIT BY CITY. %d distinct cities and %d distinct ZIPs across %d addresses that both db-ip and RouteViews treat as one range.",
+			len(cities), len(zips), addresses)
+		fmt.Println("This breaks DMA targeting as well as ZIP targeting: assigning one city to the whole range is wrong for part of it,")
+		fmt.Println("and BGP evidence alone would never have revealed it. Decomposition must be driven by measurement.")
+	case len(zips) > 1:
+		// ZIP variation with a constant city is the more interesting case: the DMA
+		// service is unaffected, because DMA is resolved through city, while the ZIP
+		// service is wrong for part of the range.
+		outf("VERDICT: SPLIT BY ZIP ONLY. One city but %d distinct ZIPs across %d addresses.", len(zips), addresses)
+		fmt.Println("DMA targeting is unaffected, since that resolves through city. ZIP targeting is wrong for part of this range.")
+		fmt.Println("A single range therefore cannot carry one ZIP, which is an argument for landmark-derived ZIPs rather than range-level ones.")
+	case total24 >= 256:
+		outf("VERDICT: SUSPECT UNITARY. One city and one ZIP across %d addresses.", addresses)
 		fmt.Println("A single answer for a range this wide is more likely a registrant or facility address than real subscriber geography.")
 		fmt.Println("Compare against the DoD /8s and 4.0.0.0/8 resolving to Monroe LA, which is Lumen headquarters.")
-		fmt.Println("Such a range is a candidate for exclusion rather than for decomposition. Verify the ISP above is an eyeball provider.")
+		fmt.Println("Verify from the ISP above that this is an eyeball provider before drawing any conclusion.")
 	default:
-		fmt.Printf("VERDICT: UNITARY. One city and one ZIP across %d addresses, at a width where that is plausible.\n", addresses)
+		outf("VERDICT: UNITARY. One city and one ZIP across %d addresses, at a width where that is plausible.", addresses)
 		fmt.Println("No decomposition needed for this range on this evidence.")
 	}
+
+	// A partial sample can only ever prove variation, never absence of it. This is
+	// not a theoretical caveat: on 76.90.64.0/20, four samples found two ZIPs, eight
+	// samples found one and reported UNITARY, and all sixteen found three. The
+	// eight-sample run was simply wrong, because 92544 and 92545 occupy three of
+	// the sixteen blocks and a random eight missed them.
+	if len(results) < total24 {
+		fmt.Println()
+		outf("SAMPLING CAVEAT: %d of the %d /24 blocks were probed. A verdict of UNITARY from a partial",
+			len(results), total24)
+		fmt.Println("sample is provisional: minority blocks are easily missed. Re-run with -samples set to the")
+		outf("full %d to settle it. Only a verdict of SPLIT is safe to trust from a partial sample.", total24)
+	}
+
 	fmt.Println()
 	fmt.Println("This tool wrote nothing to the database.")
+}
+
+// outf prints a formatted line. It exists so that no format string in this file
+// needs a backslash escape: the repository convention is that every file survives
+// a copy and paste path that converts backslash sequences into real newlines.
+// prefixesForASN reads every IPv4 prefix the ASN originates. Read only.
+//
+// DATABASE_URL is optional, as everywhere else in this pipeline: when empty, pgx
+// falls back to the libpq environment and defaults, so peer authentication over
+// the Unix socket works with no credential on disk.
+func prefixesForASN(asn int) ([]netip.Prefix, error) {
+	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
+	defer cancel()
+
+	conn, err := pgx.Connect(ctx, os.Getenv("DATABASE_URL"))
+	if err != nil {
+		return nil, err
+	}
+	defer conn.Close(context.Background())
+
+	rows, err := conn.Query(ctx,
+		"SELECT DISTINCT cidr_block FROM bgp_route_views WHERE origin_asn = $1 AND family(cidr_block) = 4", asn)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	var out []netip.Prefix
+	for rows.Next() {
+		var p netip.Prefix
+		if err := rows.Scan(&p); err != nil {
+			return nil, err
+		}
+		out = append(out, p.Masked())
+	}
+	return out, rows.Err()
+}
+
+// randomSubnet24In picks a random /24 inside p. A prefix already /24 or narrower
+// is returned as itself, since BGP occasionally carries longer prefixes and there
+// is no /24 structure inside them to choose from.
+func randomSubnet24In(p netip.Prefix) netip.Prefix {
+	if p.Bits() >= 24 {
+		return p
+	}
+	first := p.Addr().As4()
+	base := binary.BigEndian.Uint32(first[:])
+	blocks := uint32(1) << uint(24-p.Bits())
+	var b [4]byte
+	binary.BigEndian.PutUint32(b[:], base+uint32(rand.Int31n(int32(blocks)))*256)
+	return netip.PrefixFrom(netip.AddrFrom4(b), 24)
+}
+
+func min(a, b int) int {
+	if a < b {
+		return a
+	}
+	return b
+}
+
+func outf(format string, args ...any) {
+	fmt.Println(fmt.Sprintf(format, args...))
 }
 
 func sortedKeys(m map[string]int) []string {
