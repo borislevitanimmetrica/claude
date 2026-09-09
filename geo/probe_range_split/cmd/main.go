@@ -89,7 +89,8 @@ type sample struct {
 func main() {
 	rangeFlag := flag.String("range", "", "the range to test, as a CIDR, for example 76.90.64.0/20")
 	asnFlag := flag.Int("asn", 0, "instead of one range, sample /24s spread across every IPv4 prefix this ASN originates; answers whether a carrier IPv4 space is geographically resolvable at all")
-	samples := flag.Int("samples", 16, "how many distinct /24s inside the range to probe")
+	samples := flag.Int("samples", 16, "how many distinct sub-blocks to probe")
+	block := flag.Int("block", 24, "sub-block prefix length to sample at. 24 compares /24s inside a range; 28 compares /28s, which tests whether a provider resolves finer than a /24")
 	rate := flag.Int("rate", 45, "maximum ip-api calls per rolling minute")
 	endpoint := flag.String("endpoint", "http://ip-api.com/json/", "ip-api endpoint prefix")
 	timeout := flag.Duration("http-timeout", 20*time.Second, "per call timeout")
@@ -103,6 +104,9 @@ func main() {
 	}
 	if *rate <= 0 {
 		log.Fatal("-rate must be greater than zero")
+	}
+	if *block < 1 || *block > 32 {
+		log.Fatal("-block must be between 1 and 32")
 	}
 
 	var chosen []netip.Prefix
@@ -127,7 +131,7 @@ func main() {
 		// One /24 per distinct prefix first, so the sample spreads as widely across
 		// the operator footprint as possible before repeating any prefix.
 		for i := 0; i < *samples; i++ {
-			chosen = append(chosen, randomSubnet24In(prefixes[i%len(prefixes)]))
+			chosen = append(chosen, randomSubBlockIn(prefixes[i%len(prefixes)], *block))
 		}
 		label = fmt.Sprintf("AS%d across %d distinct prefixes", *asnFlag, min(len(prefixes), *samples))
 		total24 = len(chosen)
@@ -140,12 +144,12 @@ func main() {
 		if !parent.Addr().Is4() {
 			log.Fatal("only IPv4 ranges can be tested this way: an IPv6 prefix has no enumerable /24 structure")
 		}
-		if parent.Bits() > 24 {
-			log.Fatalf("%s is narrower than a /24, so it has no internal /24 structure to compare", parent)
+		if parent.Bits() > *block {
+			log.Fatalf("%s is narrower than a /%d, so it has no internal /%d structure to compare", parent, *block, *block)
 		}
-		subnets := quarterSubnets(parent)
+		subnets := subBlocksOf(parent, *block)
 		total24 = len(subnets)
-		log.Printf("%s contains %d /24 blocks", parent, len(subnets))
+		log.Printf("%s contains %d /%d blocks", parent, len(subnets), *block)
 		chosen = subnets
 		if len(subnets) > *samples {
 			rand.Shuffle(len(subnets), func(i, j int) { subnets[i], subnets[j] = subnets[j], subnets[i] })
@@ -154,7 +158,7 @@ func main() {
 		}
 		label = parent.String()
 	}
-	log.Printf("probing %d blocks at %d calls per minute, roughly %ds", len(chosen), *rate,
+	log.Printf("probing %d /%d blocks at %d calls per minute, roughly %ds", len(chosen), *block, *rate,
 		(len(chosen)*60)/(*rate)+1)
 
 	client := &http.Client{Timeout: *timeout}
@@ -188,19 +192,21 @@ func main() {
 		}
 	}
 
-	report(label, results, total24, *asnFlag != 0)
+	report(label, results, total24, *asnFlag != 0, *block)
 }
 
-// quarterSubnets returns every /24 inside p. p is assumed to be a /24 or wider.
-func quarterSubnets(p netip.Prefix) []netip.Prefix {
+// subBlocksOf returns every prefix of length blockBits inside p. p must be at
+// least as wide as blockBits.
+func subBlocksOf(p netip.Prefix, blockBits int) []netip.Prefix {
 	first := p.Addr().As4()
 	base := binary.BigEndian.Uint32(first[:])
-	count := 1 << uint(24-p.Bits())
+	count := 1 << uint(blockBits-p.Bits())
+	step := uint32(1) << uint(32-blockBits)
 	out := make([]netip.Prefix, 0, count)
 	for i := 0; i < count; i++ {
 		var b [4]byte
-		binary.BigEndian.PutUint32(b[:], base+uint32(i)*256)
-		out = append(out, netip.PrefixFrom(netip.AddrFrom4(b), 24))
+		binary.BigEndian.PutUint32(b[:], base+uint32(i)*step)
+		out = append(out, netip.PrefixFrom(netip.AddrFrom4(b), blockBits))
 	}
 	return out
 }
@@ -238,7 +244,7 @@ func lookup(client *http.Client, endpoint string, addr netip.Addr) (geoResult, e
 	return g, nil
 }
 
-func report(label string, results []sample, total24 int, asnMode bool) {
+func report(label string, results []sample, total24 int, asnMode bool, blockBits int) {
 	cities := map[string]int{}
 	zips := map[string]int{}
 	isps := map[string]int{}
@@ -303,7 +309,7 @@ func report(label string, results []sample, total24 int, asnMode bool) {
 		return
 	}
 
-	addresses := total24 * 256
+	addresses := total24 * (1 << uint(32-blockBits))
 	switch {
 	case len(cities) > 1:
 		// City variation breaks BOTH services, because the DMA path resolves through
@@ -336,8 +342,8 @@ func report(label string, results []sample, total24 int, asnMode bool) {
 	// the sixteen blocks and a random eight missed them.
 	if len(results) < total24 {
 		fmt.Println()
-		outf("SAMPLING CAVEAT: %d of the %d /24 blocks were probed. A verdict of UNITARY from a partial",
-			len(results), total24)
+		outf("SAMPLING CAVEAT: %d of the %d /%d blocks were probed. A verdict of UNITARY from a partial",
+			len(results), total24, blockBits)
 		fmt.Println("sample is provisional: minority blocks are easily missed. Re-run with -samples set to the")
 		outf("full %d to settle it. Only a verdict of SPLIT is safe to trust from a partial sample.", total24)
 	}
@@ -382,19 +388,20 @@ func prefixesForASN(asn int) ([]netip.Prefix, error) {
 	return out, rows.Err()
 }
 
-// randomSubnet24In picks a random /24 inside p. A prefix already /24 or narrower
-// is returned as itself, since BGP occasionally carries longer prefixes and there
-// is no /24 structure inside them to choose from.
-func randomSubnet24In(p netip.Prefix) netip.Prefix {
-	if p.Bits() >= 24 {
+// randomSubBlockIn picks a random prefix of length blockBits inside p. A prefix
+// already that narrow or narrower is returned as itself, since BGP occasionally
+// carries longer prefixes and there is no internal structure to choose from.
+func randomSubBlockIn(p netip.Prefix, blockBits int) netip.Prefix {
+	if p.Bits() >= blockBits {
 		return p
 	}
 	first := p.Addr().As4()
 	base := binary.BigEndian.Uint32(first[:])
-	blocks := uint32(1) << uint(24-p.Bits())
+	blocks := uint32(1) << uint(blockBits-p.Bits())
+	step := uint32(1) << uint(32-blockBits)
 	var b [4]byte
-	binary.BigEndian.PutUint32(b[:], base+uint32(rand.Int31n(int32(blocks)))*256)
-	return netip.PrefixFrom(netip.AddrFrom4(b), 24)
+	binary.BigEndian.PutUint32(b[:], base+uint32(rand.Int31n(int32(blocks)))*step)
+	return netip.PrefixFrom(netip.AddrFrom4(b), blockBits)
 }
 
 func min(a, b int) int {
