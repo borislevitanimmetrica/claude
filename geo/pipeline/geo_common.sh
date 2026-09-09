@@ -44,7 +44,16 @@ GEO_CONFIG="${GEO_CONFIG:-/etc/trugeo.env}"
 
 GEO_CONFIG_USED="environment"
 if [ -r "$GEO_CONFIG" ]; then
+  # set -a exports everything the config assigns, so a line works whether or not
+  # it carries an explicit export. Without this, a plain "PGDATABASE=postgres"
+  # would set a shell variable that psql and the Go tools never see, failing in a
+  # way that looks like a database problem rather than a config one.
+  #
+  # It also means the same file can be written in the KEY=value form that
+  # systemd EnvironmentFile requires, since systemd cannot parse an export prefix.
+  set -a
   . "$GEO_CONFIG"
+  set +a
   GEO_CONFIG_USED="$GEO_CONFIG"
 fi
 

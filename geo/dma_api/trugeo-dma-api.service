@@ -11,9 +11,21 @@ Group=cronuser
 
 # No DATABASE_URL. The service connects over the Unix socket using peer
 # authentication, exactly as the rest of the pipeline does, so no credential
-# exists anywhere on disk. PGDATABASE comes from the same config the cron jobs
-# use.
-EnvironmentFile=/etc/trugeo.env
+# exists anywhere on disk.
+#
+# PGDATABASE is set here rather than read from /etc/trugeo.env, because that file
+# is shell format and carries an export prefix on each line. systemd
+# EnvironmentFile does NOT accept export: it would read the variable name as
+# "export PGDATABASE", log a warning, skip the line, and the service would then
+# connect to a database named after the user and fail with an error that looks
+# like a database fault rather than a parsing one.
+#
+# The EnvironmentFile line below is optional, marked with a leading dash so an
+# unparseable or absent file cannot stop the service, and is present only so that
+# any KEY=value lines added there are still picked up. The Environment line is
+# what actually guarantees the database name.
+Environment=PGDATABASE=postgres
+EnvironmentFile=-/etc/trugeo.env
 
 # Bound to loopback deliberately. Enumerating a large DMA is an expensive
 # request, and there is no authentication here, so exposing it directly would let
