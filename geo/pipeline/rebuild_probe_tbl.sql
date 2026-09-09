@@ -194,6 +194,15 @@ BEGIN
     -- The least(...) bound keeps the offset inside bigint. For IPv4 it never
     -- binds, since a /0 is 2^32. It only matters if IPv6 is brought into scope,
     -- where an address is then drawn from the first 2^32 addresses of the prefix.
+    --
+    -- The host(...)::inet wrapper is REQUIRED, not decoration. network() returns
+    -- an inet that keeps the prefix length, so "network(x) + offset" yields
+    -- something like 1.2.3.7/24 rather than a host address. PostgreSQL orders inet
+    -- by network address, then masklen, then host bits, so a /24 value compares as
+    -- LESS THAN its own /32 start_ip and every row looks out of range. The Go
+    -- probe also scans this column into a netip.Addr, which carries no prefix.
+    -- host(...)::inet produces the /32 host address that both the comparison and
+    -- the probe require.
     INSERT INTO ip2city_dbiplite_probe_tbl (
         network, start_ip, end_ip, query, city, state, state_code, countrycode,
         lat, lon, status, probe_method, attempts, hop_count, ran_at
@@ -202,11 +211,11 @@ BEGIN
         s.network,
         host(network(s.network))::inet,
         host(broadcast(s.network))::inet,
-        network(s.network) + (floor(random() * least(
+        host(network(s.network) + (floor(random() * least(
             2::numeric ^ (CASE WHEN family(s.network) = 4
                                THEN 32 - masklen(s.network)
                                ELSE 128 - masklen(s.network) END),
-            4294967296::numeric)))::bigint,
+            4294967296::numeric)))::bigint)::inet,
         s.city,
         s.state,
         st.state_code,
