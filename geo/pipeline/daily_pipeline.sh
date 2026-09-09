@@ -42,6 +42,16 @@ PROBE_TBL_REBUILD="${PROBE_TBL_REBUILD:-0}"
 # ran_at stays NULL, and the cycle-complete gate never opens again.
 PROBE_COUNTRY="${PROBE_COUNTRY:-US}"
 
+# Registrant lookup during decomposition. Off until the decomposer consults
+# decomposition_exclusions, because it is what decides whether this run needs the
+# probe lock. See the lock block below.
+DECOMPOSE_LOOKUP_REGISTRANT="${DECOMPOSE_LOOKUP_REGISTRANT:-0}"
+
+if [ "$DECOMPOSE_LOOKUP_REGISTRANT" != "0" ] && [ "$DECOMPOSE_LOOKUP_REGISTRANT" != "1" ]; then
+  echo "DECOMPOSE_LOOKUP_REGISTRANT must be 0 or 1, got: $DECOMPOSE_LOOKUP_REGISTRANT" >&2
+  exit 2
+fi
+
 if [ "$DRY_RUN" != "0" ] && [ "$DRY_RUN" != "1" ]; then
   echo "DRY_RUN must be 0 or 1, got: $DRY_RUN" >&2
   exit 2
@@ -91,8 +101,31 @@ require_exec "$APPLY_BIN"
 take_lock "$LOCK_FILE"
 
 MUTATION_LOCK="${MUTATION_LOCK:-$LOG_DIR/dbmutate.lock}"
+PROBE_LOCK="${PROBE_LOCK:-$LOG_DIR/probe_batch.lock}"
 if [ "$DRY_RUN" -eq 0 ]; then
   take_mutation_lock "$MUTATION_LOCK" "$MUTATION_LOCK_WARN"
+
+  # The probe lock is taken ONLY when a step in this run will call ip-api.
+  #
+  # Confirmed by inspection: this script has never taken the probe lock, so it
+  # overlaps probe_batch every night. daily_pipeline runs from 02:00 for roughly
+  # seventeen minutes and the hourly probe batch starts at 02:05, inside that
+  # window. That has been harmless while nothing here called ip-api, because the
+  # two touch different tables.
+  #
+  # It stops being harmless the moment decomposition looks up a registrant, since
+  # both would then draw on the same 45 calls per minute and produce the HTTP 429
+  # storm already observed when two probe tools ran concurrently.
+  #
+  # Taking the lock unconditionally would cost a skipped hourly batch, roughly
+  # 2400 probes, on every night the pipeline is still running at 02:05, in exchange
+  # for nothing at all today. So it is conditional on the step that needs it. When
+  # the registrant lookup lands, DECOMPOSE_LOOKUP_REGISTRANT=1 is what serialises
+  # ip-api access across the whole pipeline.
+  if [ "$DECOMPOSE_LOOKUP_REGISTRANT" = "1" ]; then
+    log "registrant lookup enabled, so this run will call ip-api: taking the probe lock to serialise against probe_batch"
+    take_lock_blocking "$PROBE_LOCK" "$PROBE_LOCK_WARN"
+  fi
 fi
 
 begin_notify
