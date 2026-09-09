@@ -77,6 +77,7 @@ DECLARE
     v_archived  bigint;
     v_nostate   bigint;
     v_asnpfx    bigint;
+    v_widest    int;
     v_t0        timestamptz;
 BEGIN
     -- Fail early and legibly if the history table can still hold only one cycle.
@@ -148,6 +149,20 @@ BEGIN
     ANALYZE excluded_asn_prefixes;
     SELECT count(*) INTO v_asnpfx FROM excluded_asn_prefixes;
     RAISE NOTICE 'ASN exclusion rules expand to % prefixes, resolved in %', v_asnpfx, clock_timestamp() - v_t0;
+
+    -- Blast radius guard. An ASN rule removes every range inside every prefix that
+    -- ASN announces, so one over-broad announcement silently removes an enormous
+    -- amount of space. A default route from an excluded ASN would empty the table.
+    --
+    -- The DoD rules legitimately reach /8, since IANA designated whole /8s to DoD
+    -- organisations, so /8 is permitted and anything wider is refused outright.
+    SELECT min(masklen(cidr_block)) INTO v_widest FROM excluded_asn_prefixes;
+    IF v_widest IS NOT NULL AND v_widest < 8 THEN
+        RAISE EXCEPTION 'an ASN exclusion rule expands to a /% prefix, which would remove far more space than any rule should. Refusing to rebuild. Inspect: SELECT x.origin_asn, b.cidr_block FROM geo_exclusions x JOIN bgp_route_views b ON b.origin_asn = x.origin_asn WHERE x.active AND masklen(b.cidr_block) < 8;', v_widest;
+    END IF;
+    IF v_widest IS NOT NULL THEN
+        RAISE NOTICE 'widest ASN-excluded prefix is a /%, within the permitted limit of /8', v_widest;
+    END IF;
 
     RAISE NOTICE 'truncating the probe table';
     TRUNCATE ip2city_dbiplite_probe_tbl;

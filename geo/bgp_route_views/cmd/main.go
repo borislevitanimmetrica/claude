@@ -956,6 +956,27 @@ func prefixRange(cidr string) (string, string, error) {
 		return "", "", err
 	}
 	p = p.Masked()
+
+	// A default route is not a routable allocation and must never enter the table.
+	// Observed in production: AS174 announced 0.0.0.0/0 and it was stored, after
+	// which every containment query against bgp_route_views matched it. Two
+	// consequences, one cosmetic and one dangerous.
+	//
+	// Cosmetic: a lookup of which ASN covers a range returned 174 for every range
+	// in the database.
+	//
+	// Dangerous: rebuild_probe_tbl.sql materialises the prefixes of every
+	// ASN-excluded operator and then removes any range contained in them. Had an
+	// ASN announcing a default route ever been added to geo_exclusions, that single
+	// row would have excluded the entire address space, emptying the probe table
+	// with no error and no obvious cause.
+	//
+	// Rejected here rather than at either call site, because both the full RIB path
+	// and the updates path pass through this function, and both already treat an
+	// error as a reason to skip the prefix.
+	if p.Bits() == 0 {
+		return "", "", fmt.Errorf("refusing default route %s: not a routable allocation", cidr)
+	}
 	start := p.Addr()
 	hostBits := start.BitLen() - p.Bits()
 	startInt := new(big.Int).SetBytes(start.AsSlice())
