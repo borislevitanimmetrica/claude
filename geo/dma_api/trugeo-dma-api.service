@@ -1,0 +1,49 @@
+[Unit]
+Description=TruGeo DMA address lookup API and GUI
+Documentation=file:/var/trugeo/dma_api/query.sql
+After=network-online.target postgresql.service
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=cronuser
+Group=cronuser
+
+# No DATABASE_URL. The service connects over the Unix socket using peer
+# authentication, exactly as the rest of the pipeline does, so no credential
+# exists anywhere on disk. PGDATABASE comes from the same config the cron jobs
+# use.
+EnvironmentFile=/etc/trugeo.env
+
+# Bound to loopback deliberately. Enumerating a large DMA is an expensive
+# request, and there is no authentication here, so exposing it directly would let
+# anyone force millions of rows of work. Put a reverse proxy in front of it if it
+# needs to be reachable, and add authentication there.
+#
+# max-addresses is a safety ceiling, not a policy: a request above it is refused
+# with 413 and a message naming the actual size, before any bytes are streamed.
+# Raise it or pass max=N per request when a large DMA is genuinely wanted.
+ExecStart=/var/trugeo/dma_api/bin/dma_api -listen 127.0.0.1:8080 -max-addresses 60000000
+
+Restart=on-failure
+RestartSec=5s
+
+# A large enumeration legitimately runs for minutes, so no runtime limit.
+TimeoutStopSec=30s
+
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=true
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectControlGroups=true
+RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX
+RestrictNamespaces=true
+LockPersonality=true
+MemoryDenyWriteExecute=true
+SystemCallFilter=@system-service
+SystemCallErrorNumber=EPERM
+
+[Install]
+WantedBy=multi-user.target

@@ -67,6 +67,7 @@ check_routeviews_ip-api:check_routeviews_ip-api/cmd:check_routeviews_ip-api
 classify_ranges:classify_ranges/cmd:classify_ranges
 dbip-mmdb-import:dbip-mmdb-import/cmd:dbip-mmdb-import
 expand_cidrs:dma_export/expand_cidrs/cmd:dma_export/expand_cidrs
+dma_api:dma_api/cmd:dma_api
 "
 
 command -v go >/dev/null 2>&1 || fail "go is not on PATH"
@@ -151,6 +152,14 @@ sudo install -o root -g root -m 0755 "$_self_dir/deploy.sh" "$GEO_HOME/pipeline/
 # probe-table rebuild fails with a missing-file error.
 sudo install -o root -g root -m 0644 "$_self_dir/rebuild_probe_tbl.sql" "$GEO_HOME/pipeline/"
 sudo install -o root -g root -m 0644 "$_self_dir/patch_probe_tbl_range_fields.sql" "$GEO_HOME/pipeline/"
+
+# The DMA API ships its canonical query and its systemd unit beside the binary.
+# query.sql is the same SQL the service runs, so a psql result and an API result
+# cannot drift apart. The unit file is installed for reference, not enabled: it
+# has to be copied into /etc/systemd/system deliberately.
+say "installing dma_api support files"
+sudo install -o root -g root -m 0644 "$REPO_ROOT/geo/dma_api/query.sql" "$GEO_HOME/dma_api/"
+sudo install -o root -g root -m 0644 "$REPO_ROOT/geo/dma_api/trugeo-dma-api.service" "$GEO_HOME/dma_api/"
 sudo install -o root -g root -m 0755 "$_self_dir/scratch_test_rollover.sh" "$GEO_HOME/pipeline/"
 
 say "installing cron file to $CRON_TARGET"

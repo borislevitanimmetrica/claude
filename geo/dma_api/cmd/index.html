@@ -1,0 +1,299 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>TruGeo DMA address lookup</title>
+<style>
+body {
+  font-family: system-ui, sans-serif;
+  margin: 0;
+  padding: 2rem;
+  background: rgb(246, 247, 249);
+  color: rgb(24, 28, 33);
+  line-height: 1.5;
+}
+.wrap { max-width: 54rem; margin: 0 auto; }
+h1 { font-size: 1.35rem; margin: 0 0 0.25rem 0; }
+.sub { color: rgb(96, 104, 114); margin: 0 0 1.5rem 0; font-size: 0.9rem; }
+.card {
+  background: rgb(255, 255, 255);
+  border: 1px solid rgb(222, 226, 231);
+  border-radius: 6px;
+  padding: 1.25rem;
+  margin-bottom: 1.25rem;
+}
+label { display: block; font-weight: 600; margin-bottom: 0.4rem; font-size: 0.9rem; }
+select, input {
+  font: inherit;
+  padding: 0.5rem;
+  border: 1px solid rgb(198, 204, 212);
+  border-radius: 4px;
+  background: rgb(255, 255, 255);
+  min-width: 22rem;
+  max-width: 100%;
+}
+.row { display: flex; gap: 1rem; flex-wrap: wrap; align-items: flex-end; }
+button {
+  font: inherit;
+  padding: 0.5rem 1rem;
+  border: 1px solid rgb(60, 110, 200);
+  background: rgb(60, 110, 200);
+  color: rgb(255, 255, 255);
+  border-radius: 4px;
+  cursor: pointer;
+}
+button.secondary { background: rgb(255, 255, 255); color: rgb(40, 80, 160); }
+button:disabled { opacity: 0.5; cursor: not-allowed; }
+table { border-collapse: collapse; width: 100%; font-size: 0.9rem; }
+th, td { text-align: left; padding: 0.4rem 0.75rem 0.4rem 0; border-bottom: 1px solid rgb(235, 238, 241); }
+th { color: rgb(96, 104, 114); font-weight: 600; }
+td.num, th.num { text-align: right; font-variant-numeric: tabular-nums; }
+.warn {
+  background: rgb(255, 248, 225);
+  border: 1px solid rgb(240, 214, 130);
+  padding: 0.75rem 1rem;
+  border-radius: 4px;
+  font-size: 0.9rem;
+  margin-top: 1rem;
+}
+.err {
+  background: rgb(253, 236, 234);
+  border: 1px solid rgb(230, 160, 150);
+  padding: 0.75rem 1rem;
+  border-radius: 4px;
+  font-size: 0.9rem;
+  margin-top: 1rem;
+}
+.muted { color: rgb(96, 104, 114); font-size: 0.85rem; }
+.hidden { display: none; }
+code { background: rgb(240, 242, 245); padding: 0.1rem 0.3rem; border-radius: 3px; font-size: 0.85em; }
+</style>
+</head>
+<body>
+<div class="wrap">
+
+<h1>TruGeo DMA address lookup</h1>
+<p class="sub">Select a DMA to see how much address space it covers, then download the ranges or the full address list.</p>
+
+<div class="card">
+  <div class="row">
+    <div>
+      <label for="dma">DMA</label>
+      <select id="dma"><option value="">Loading DMA list...</option></select>
+    </div>
+    <div>
+      <label for="code">or enter a DMA code</label>
+      <input id="code" type="number" placeholder="for example 527" style="min-width: 12rem">
+    </div>
+    <button id="lookup">Look up</button>
+  </div>
+  <p class="muted" style="margin-bottom:0">Codes are used rather than names because DMA names vary in punctuation and suffix between sources, and a mismatched name returns nothing at all.</p>
+</div>
+
+<div id="errbox" class="err hidden"></div>
+
+<div id="result" class="card hidden">
+  <table>
+    <tbody id="stats"></tbody>
+  </table>
+
+  <div id="sizewarn" class="warn hidden"></div>
+
+  <div class="row" style="margin-top:1.25rem">
+    <button id="dlcidrs" class="secondary">Download ranges (CIDR)</button>
+    <button id="dladdrs">Download addresses</button>
+    <button id="dladdrsgz" class="secondary">Download addresses (gzip)</button>
+    <button id="showcities" class="secondary">Show cities</button>
+  </div>
+  <p class="muted" style="margin-bottom:0">Network and broadcast addresses are included. In a range wider than /24 they are ordinary usable addresses.</p>
+</div>
+
+<div id="citiesbox" class="card hidden">
+  <table>
+    <thead><tr><th>City</th><th>State</th><th class="num">Ranges</th></tr></thead>
+    <tbody id="cities"></tbody>
+  </table>
+  <p class="muted" id="citiesnote" style="margin-bottom:0"></p>
+</div>
+
+<div class="card">
+  <strong style="font-size:0.9rem">API</strong>
+  <table style="margin-top:0.5rem">
+    <tbody>
+      <tr><td><code>GET /api/v1/dmas</code></td><td>every DMA code and name</td></tr>
+      <tr><td><code>GET /api/v1/dma/{code}/summary</code></td><td>range and address counts</td></tr>
+      <tr><td><code>GET /api/v1/dma/{code}/cidrs</code></td><td>matched ranges, one per line</td></tr>
+      <tr><td><code>GET /api/v1/dma/{code}/addresses</code></td><td>every address, one per line, streamed</td></tr>
+      <tr><td><code>GET /api/v1/dma/{code}/cities</code></td><td>join diagnostic, ranges per city</td></tr>
+    </tbody>
+  </table>
+  <p class="muted" style="margin-bottom:0">Add <code>gzip=1</code> to compress, or <code>max=N</code> to refuse a result larger than N addresses.</p>
+</div>
+
+</div>
+<script>
+var fmt = new Intl.NumberFormat("en-US");
+
+function el(id) { return document.getElementById(id); }
+
+function human(bytes) {
+  var units = ["bytes", "KB", "MB", "GB", "TB"];
+  var i = 0;
+  var v = bytes;
+  while (v >= 1024 && i < units.length - 1) { v = v / 1024; i = i + 1; }
+  return (i === 0 ? v : v.toFixed(1)) + " " + units[i];
+}
+
+function showError(msg) {
+  var box = el("errbox");
+  box.textContent = msg;
+  box.classList.remove("hidden");
+}
+
+function clearError() { el("errbox").classList.add("hidden"); }
+
+function selectedCode() {
+  var typed = el("code").value.trim();
+  if (typed !== "") { return typed; }
+  return el("dma").value;
+}
+
+function loadDMAs() {
+  fetch("/api/v1/dmas").then(function (r) {
+    if (!r.ok) { throw new Error("HTTP " + r.status); }
+    return r.json();
+  }).then(function (list) {
+    var sel = el("dma");
+    sel.innerHTML = "";
+    if (!list || list.length === 0) {
+      sel.innerHTML = "<option value=''>No DMA codes found</option>";
+      showError("dma2city_tbl returned no rows with a non null dma_code. The API cannot resolve any DMA until dma_code is populated.");
+      return;
+    }
+    var blank = document.createElement("option");
+    blank.value = "";
+    blank.textContent = "Select a DMA (" + list.length + " available)";
+    sel.appendChild(blank);
+    list.forEach(function (d) {
+      var o = document.createElement("option");
+      o.value = d.dma_code;
+      o.textContent = d.dma + "  (" + d.dma_code + ")";
+      sel.appendChild(o);
+    });
+  }).catch(function (e) {
+    showError("Could not load the DMA list: " + e.message);
+  });
+}
+
+function lookup() {
+  clearError();
+  el("citiesbox").classList.add("hidden");
+  var code = selectedCode();
+  if (code === "") { showError("Select a DMA or enter a code."); return; }
+
+  el("lookup").disabled = true;
+  fetch("/api/v1/dma/" + encodeURIComponent(code) + "/summary").then(function (r) {
+    return r.json().then(function (body) {
+      if (!r.ok) { throw new Error(body.error || ("HTTP " + r.status)); }
+      return body;
+    });
+  }).then(function (s) {
+    render(s);
+  }).catch(function (e) {
+    el("result").classList.add("hidden");
+    showError("Lookup failed: " + e.message);
+  }).finally(function () {
+    el("lookup").disabled = false;
+  });
+}
+
+function render(s) {
+  var pct = s.ranges > 0 ? Math.round((s.measured_ranges / s.ranges) * 100) : 0;
+  var rows = [
+    ["DMA", (s.dma || "unknown") + " (" + s.dma_code + ")"],
+    ["Matched ranges", fmt.format(s.ranges)],
+    ["Individual addresses", fmt.format(s.addresses)],
+    ["Ranges probed by ip-api", fmt.format(s.measured_ranges) + " of " + fmt.format(s.ranges) + " (" + pct + " percent)"],
+    ["Widest prefix", s.widest_masklen > 0 ? "/" + s.widest_masklen : "none"],
+    ["Address list size, uncompressed", human(s.text_bytes_estimate)]
+  ];
+  var tb = el("stats");
+  tb.innerHTML = "";
+  rows.forEach(function (r) {
+    var tr = document.createElement("tr");
+    var th = document.createElement("th");
+    th.textContent = r[0];
+    var td = document.createElement("td");
+    td.className = "num";
+    td.textContent = r[1];
+    tr.appendChild(th);
+    tr.appendChild(td);
+    tb.appendChild(tr);
+  });
+
+  var warn = el("sizewarn");
+  warn.classList.add("hidden");
+  if (s.ranges === 0) {
+    warn.textContent = "No ranges matched this DMA. That is usually a city or state_code spelling difference between dma2city_tbl and the probe table rather than an absence of address space. Use Show cities to see which cities matched nothing.";
+    warn.classList.remove("hidden");
+  } else if (s.addresses > 20000000) {
+    warn.textContent = "This is a very large result: " + fmt.format(s.addresses) + " addresses, roughly " + human(s.text_bytes_estimate) + " uncompressed. Prefer the gzip download, or the CIDR list which carries the same information about 250 times smaller.";
+    warn.classList.remove("hidden");
+  } else if (pct < 50 && s.ranges > 0) {
+    warn.textContent = "Only " + pct + " percent of these ranges have been probed. The rest still carry the city inherited from db-ip, so their DMA assignment is unverified.";
+    warn.classList.remove("hidden");
+  }
+
+  el("result").classList.remove("hidden");
+}
+
+function download(path) {
+  var code = selectedCode();
+  if (code === "") { showError("Select a DMA or enter a code."); return; }
+  window.location = "/api/v1/dma/" + encodeURIComponent(code) + path;
+}
+
+function showCities() {
+  var code = selectedCode();
+  if (code === "") { return; }
+  fetch("/api/v1/dma/" + encodeURIComponent(code) + "/cities").then(function (r) {
+    return r.json();
+  }).then(function (list) {
+    var tb = el("cities");
+    tb.innerHTML = "";
+    var unmatched = 0;
+    list.forEach(function (c) {
+      if (c.ranges === 0) { unmatched = unmatched + 1; }
+      var tr = document.createElement("tr");
+      var a = document.createElement("td");
+      a.textContent = c.city;
+      var b = document.createElement("td");
+      b.textContent = c.state_code;
+      var n = document.createElement("td");
+      n.className = "num";
+      n.textContent = fmt.format(c.ranges);
+      tr.appendChild(a);
+      tr.appendChild(b);
+      tr.appendChild(n);
+      tb.appendChild(tr);
+    });
+    el("citiesnote").textContent = list.length + " cities in this DMA, " + unmatched + " matched no ranges at all.";
+    el("citiesbox").classList.remove("hidden");
+  }).catch(function (e) {
+    showError("Could not load cities: " + e.message);
+  });
+}
+
+el("lookup").addEventListener("click", lookup);
+el("dma").addEventListener("change", function () { el("code").value = ""; lookup(); });
+el("code").addEventListener("keydown", function (e) { if (e.key === "Enter") { lookup(); } });
+el("dlcidrs").addEventListener("click", function () { download("/cidrs"); });
+el("dladdrs").addEventListener("click", function () { download("/addresses?gzip=0"); });
+el("dladdrsgz").addEventListener("click", function () { download("/addresses?gzip=1"); });
+el("showcities").addEventListener("click", showCities);
+
+loadDMAs();
+</script>
+</body>
+</html>
