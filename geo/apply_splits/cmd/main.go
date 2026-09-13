@@ -57,10 +57,15 @@ type parent struct {
 	children int64
 	probes   int64
 
-	// probed is true when this range has an ip-api result, which is the only
-	// source of its registrant. A range with no probe has no known registrant.
-	probed bool
-	// operator is the registrant as ip-api reported it, isp preferred over org.
+	// registrantKnown is true when a registrant could be determined for this
+	// range from the configured source. With -registrant-source rdap that means a
+	// cached RIR allocation covers the range; with ip-api it means the range
+	// itself has been probed. A range with no known registrant cannot be tested
+	// against decomposition_exclusions.
+	registrantKnown bool
+	// operator is the registrant name. From rdap_registrant_tbl.registrant under
+	// the RDAP source, or from the ip-api isp preferred over org under the ip-api
+	// source.
 	operator string
 	// opExcluded is true when operator matches an active decomposition_exclusions
 	// pattern.
@@ -82,10 +87,30 @@ func main() {
 	operatorCheck := flag.Bool("operator-check", true,
 		"consult decomposition_exclusions and refuse to decompose a range whose registrant matches. "+
 			"Disabling this reverts to the older behaviour where datacentre space was decomposed and probed")
-	deferUnprobed := flag.Bool("defer-unprobed", true,
-		"skip a range that has never been probed, because its registrant is unknown. "+
+	registrantSource := flag.String("registrant-source", "rdap",
+		"where the registrant comes from: rdap reads rdap_registrant_tbl and works for any range whether probed or not; "+
+			"ip-api reads the isp and org of a probe of the range and therefore only works for probed ranges")
+	deferUnknown := flag.Bool("defer-unknown-registrant", true,
+		"skip a range whose registrant cannot be determined, since it cannot be tested against the exclusions. "+
 			"Disabling this decomposes before the registrant is known, which defeats the exclusion entirely")
+	deferUnprobed := flag.Bool("defer-unprobed", true,
+		"deprecated alias for -defer-unknown-registrant, retained so existing invocations keep working")
 	flag.Parse()
+
+	switch *registrantSource {
+	case "rdap", "ip-api":
+	default:
+		log.Fatalf("-registrant-source must be rdap or ip-api, not %q", *registrantSource)
+	}
+
+	// The deprecated alias wins only when it was given explicitly, so the new
+	// flag's default governs every invocation that does not mention either.
+	deferGate := *deferUnknown
+	flag.Visit(func(f *flag.Flag) {
+		if f.Name == "defer-unprobed" {
+			deferGate = *deferUnprobed
+		}
+	})
 
 	// An empty DATABASE_URL is NOT an error. pgx.Connect with an empty string
 	// resolves the connection from the standard libpq environment (PGHOST,
@@ -116,10 +141,11 @@ func main() {
 	}
 	log.Printf("loaded %d active prefix exclusions", len(excluded))
 
-	parents, err := loadParents(ctx, conn, *sourceTable, *operatorCheck)
+	parents, err := loadParents(ctx, conn, *sourceTable, *operatorCheck, *registrantSource)
 	if err != nil {
 		log.Fatalf("loading candidates: %v", err)
 	}
+	log.Printf("registrant source is %s", *registrantSource)
 	log.Printf("%d candidate ranges still present as db-ip rows", len(parents))
 
 	var work []parent
@@ -146,10 +172,11 @@ func main() {
 			operatorCounts[p.operator] += int(p.probes)
 			continue
 		}
-		if *deferUnprobed && !p.probed {
-			// No probe means no registrant, and decomposing now would bypass the
-			// exclusion entirely. The range is not lost: it becomes eligible once
-			// probed, on a later run.
+		if deferGate && !p.registrantKnown {
+			// No registrant means the exclusions cannot be tested, and decomposing
+			// now would bypass them entirely. The range is not lost: under the RDAP
+			// source it becomes eligible as soon as rdap_registrant absorbs an
+			// allocation covering it, and under the ip-api source once it is probed.
 			deferredUnprobed++
 			continue
 		}
@@ -163,8 +190,12 @@ func main() {
 
 	log.Printf("skipped: %d already /24 or narrower, %d excluded by prefix, %d over -max-probes",
 		skippedNarrow, skippedExcluded, skippedTooBig)
-	log.Printf("registrant: %d excluded by operator, %d deferred with no probe and therefore no known registrant",
+	log.Printf("registrant: %d excluded by operator, %d deferred because no registrant could be determined",
 		skippedOperator, deferredUnprobed)
+	if deferredUnprobed > 0 && *registrantSource == "rdap" {
+		log.Printf("  those %d have no covering allocation in rdap_registrant_tbl. Run rdap_registrant -fill to resolve them.",
+			deferredUnprobed)
+	}
 	if len(operatorCounts) > 0 {
 		log.Printf("operator exclusions avoided these /24 rows:")
 		for _, name := range sortedByValue(operatorCounts) {
@@ -297,17 +328,49 @@ func loadExcludedPrefixes(ctx context.Context, conn *pgx.Conn) ([]netip.Prefix, 
 
 // loadParents returns candidate ranges that are STILL present as db-ip rows, so
 // re-running after a partial pass does no double work.
-func loadParents(ctx context.Context, conn *pgx.Conn, table string, operatorCheck bool) ([]parent, error) {
+func loadParents(ctx context.Context, conn *pgx.Conn, table string, operatorCheck bool, source string) ([]parent, error) {
 	ident := pgx.Identifier{table}.Sanitize()
 
-	// The registrant comes from ip-api, recorded on the probe row for the same
-	// network, and the exclusion is matched on the operator NAME rather than on an
-	// ASN. An ASN rule oversweeps: it captures everything an operator announces
-	// regardless of what it has bought, sold or sub-allocated, and keeps capturing
-	// it after ownership changes. A name follows the range.
+	// The exclusion is matched on the operator NAME rather than on an ASN. An ASN
+	// rule oversweeps: it captures everything an operator announces regardless of
+	// what it has bought, sold or sub-allocated, and keeps capturing it after
+	// ownership changes. A name follows the range.
 	//
-	// Both isp and org are tested, because ip-api populates them inconsistently and
-	// a registrant can appear in either.
+	// WHERE THE NAME COMES FROM, and why the default changed to RDAP.
+	//
+	// RDAP returns RIR registration data keyed on the prefix, so a registrant is
+	// available for every range whether or not it has ever been probed. ip-api
+	// returns isp and org, which describe the operating network and exist only as a
+	// side effect of probing one address inside the range. Under the ip-api source
+	// an unprobed range therefore has no registrant and must be deferred, which
+	// with a multi-week probe backlog stalls decomposition indefinitely. RDAP has
+	// no such coupling and consumes a separate budget.
+	//
+	// Under RDAP the covering allocation is the most specific one that wholly
+	// contains the range, so an ARIN reassignment inside a larger allocation takes
+	// precedence over its parent.
+	registrantExpr := "coalesce(p.isp, p.org, '')"
+	knownExpr := "(p.ran_at IS NOT NULL)"
+	joinExpr := ""
+	if source == "rdap" {
+		var haveTable bool
+		if err := conn.QueryRow(ctx,
+			"SELECT to_regclass('public.rdap_registrant_tbl') IS NOT NULL").Scan(&haveTable); err != nil {
+			return nil, err
+		}
+		if !haveTable {
+			return nil, fmt.Errorf("rdap_registrant_tbl does not exist: run geo/rdap_registrant_tbl.sql and warm it " +
+				"with rdap_registrant -fill, or pass -registrant-source=ip-api to use the probe isp and org instead")
+		}
+		joinExpr = "LEFT JOIN LATERAL (" +
+			"SELECT r.registrant FROM rdap_registrant_tbl r " +
+			"WHERE r.start_ip <= host(network(c.network))::inet " +
+			"AND r.end_ip >= host(broadcast(c.network))::inet " +
+			"ORDER BY (r.end_ip - r.start_ip) LIMIT 1) rd ON true "
+		registrantExpr = "coalesce(rd.registrant, '')"
+		knownExpr = "(rd.registrant IS NOT NULL AND rd.registrant <> '')"
+	}
+
 	opExpr := "false"
 	if operatorCheck {
 		var haveTable bool
@@ -319,8 +382,11 @@ func loadParents(ctx context.Context, conn *pgx.Conn, table string, operatorChec
 			return nil, fmt.Errorf("decomposition_exclusions does not exist: run geo/decomposition_exclusions.sql, " +
 				"or pass -operator-check=false to decompose without consulting it")
 		}
+		// The pattern is tested against whichever registrant source is configured,
+		// so one exclusion table serves both without the patterns meaning different
+		// things depending on the flag.
 		opExpr = "EXISTS (SELECT 1 FROM decomposition_exclusions x WHERE x.active " +
-			"AND (p.isp ILIKE x.operator_pattern OR p.org ILIKE x.operator_pattern))"
+			"AND " + registrantExpr + " ILIKE x.operator_pattern)"
 	}
 
 	var hasChildren bool
@@ -351,10 +417,11 @@ func loadParents(ctx context.Context, conn *pgx.Conn, table string, operatorChec
 	// decomposition is IPv4-bound.
 	q := "SELECT c.network::text, masklen(c.network), " + childExpr + ", " +
 		"(2::numeric ^ greatest(0, 24 - masklen(c.network)))::bigint, " +
-		"(p.ran_at IS NOT NULL), coalesce(p.isp, p.org, ''), " + opExpr + " " +
+		knownExpr + ", " + registrantExpr + ", " + opExpr + " " +
 		"FROM " + ident + " c " +
 		"JOIN ip2city_dbiplite_tbl d ON d.network = c.network AND d.source = 'dbip' " +
 		"LEFT JOIN ip2city_dbiplite_probe_tbl p ON p.network = c.network " +
+		joinExpr +
 		"WHERE family(c.network) = 4 " +
 		"ORDER BY masklen(c.network), c.network"
 
@@ -367,7 +434,7 @@ func loadParents(ctx context.Context, conn *pgx.Conn, table string, operatorChec
 	for rows.Next() {
 		var p parent
 		if err := rows.Scan(&p.network, &p.masklen, &p.children, &p.probes,
-			&p.probed, &p.operator, &p.opExcluded); err != nil {
+			&p.registrantKnown, &p.operator, &p.opExcluded); err != nil {
 			return nil, err
 		}
 		out = append(out, p)

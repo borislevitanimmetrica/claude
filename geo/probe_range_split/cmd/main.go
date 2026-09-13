@@ -32,14 +32,43 @@
 // 3.0.0.0/8 and Lumen 4.0.0.0/8 report facility and headquarters locations. Pick
 // ranges belonging to cable, fibre or DSL providers.
 //
-// This tool is READ ONLY. It writes nothing to the database, so it cannot pollute
+// Without -repeat this tool is READ ONLY. It writes nothing to the database, so it cannot pollute
 // the probe table with /24 rows that the pipeline did not create. It does consume
 // ip-api budget, so it honours the same 45 calls per minute ceiling.
+//
+// # STABILITY MODE, AND WHY IT WAS ADDED
+//
+// Everything above measures whether a range is split ACROSS SPACE. It cannot see
+// the other failure, which is a range that changes answer ACROSS TIME.
+//
+// 172.56.54.0/24 was measured at /28 twice. The first run returned three Los
+// Angeles ZIPs. Later runs returned Dallas 75237 for all sixteen /28s, twice in
+// succession. Nothing in the pipeline noticed, and nothing could have: ran_at
+// records when a range was measured, but no second measurement is ever taken, so
+// an answer that stops being true stays in the output indefinitely.
+//
+// -repeat probes the SAME addresses repeatedly and stores every observation in
+// probe_stability_tbl, so drift becomes a measured quantity. The addresses are
+// fixed for the life of a cohort, which is the crux of the design: with a fresh
+// random address each round, a changed city could mean either that the block moved
+// or that two hosts inside it are in different places, and nothing afterwards
+// could separate those. A cohort label can be re-used to add rounds days apart
+// without keeping a process alive.
+//
+// A cohort is not evidence on its own. Run an identical schedule against a
+// wireline operator as a control: if wireline holds still while mobile churns the
+// cause is carrier behaviour, and if both move together the cause is the vendor
+// revising its data.
 //
 // Usage:
 //
 //	probe_range_split -range 76.90.64.0/20
 //	probe_range_split -range 68.100.0.0/16 -samples 24
+//	probe_range_split -asn 21928 -samples 40 -repeat 4 -interval 6h -cohort tmobile-as21928
+//	probe_range_split -asn 7922  -samples 40 -repeat 4 -interval 6h -cohort comcast-as7922
+//
+// Only stability mode writes to the database, and only ever to
+// probe_stability_tbl, which nothing in the targeting path reads.
 //
 // NOTE: contains no backslash escape sequences.
 package main
@@ -64,19 +93,27 @@ import (
 )
 
 type geoResult struct {
-	Status     string  `json:"status"`
-	Message    string  `json:"message"`
-	Country    string  `json:"country"`
-	Region     string  `json:"region"`
-	RegionName string  `json:"regionName"`
-	City       string  `json:"city"`
-	Zip        string  `json:"zip"`
-	Lat        float64 `json:"lat"`
-	Lon        float64 `json:"lon"`
-	ISP        string  `json:"isp"`
-	Org        string  `json:"org"`
-	As         string  `json:"as"`
-	Query      string  `json:"query"`
+	Status      string  `json:"status"`
+	Message     string  `json:"message"`
+	Country     string  `json:"country"`
+	CountryCode string  `json:"countryCode"`
+	Region      string  `json:"region"`
+	RegionName  string  `json:"regionName"`
+	City        string  `json:"city"`
+	Zip         string  `json:"zip"`
+	Lat         float64 `json:"lat"`
+	Lon         float64 `json:"lon"`
+	ISP         string  `json:"isp"`
+	Org         string  `json:"org"`
+	As          string  `json:"as"`
+	Query       string  `json:"query"`
+
+	// Mobile is ip-api's OWN judgement, and it is NOT part of ip-api's default
+	// field set, so it has to be requested explicitly. Nothing in this project
+	// captured it before: likely_mobile_cgnat is set from a keyword match on isp
+	// and org, which is a different judgement that happens to agree most of the
+	// time. Recording both is what makes the disagreement visible.
+	Mobile bool `json:"mobile"`
 }
 
 type sample struct {
@@ -84,6 +121,13 @@ type sample struct {
 	addr   netip.Addr
 	res    geoResult
 	err    error
+}
+
+// target is a sub-block paired with the address that will be probed inside it.
+// In a stability run the pairing is fixed for the life of the cohort.
+type target struct {
+	subnet netip.Prefix
+	addr   netip.Addr
 }
 
 func main() {
@@ -94,6 +138,11 @@ func main() {
 	rate := flag.Int("rate", 45, "maximum ip-api calls per rolling minute")
 	endpoint := flag.String("endpoint", "http://ip-api.com/json/", "ip-api endpoint prefix")
 	timeout := flag.Duration("http-timeout", 20*time.Second, "per call timeout")
+	repeat := flag.Int("repeat", 1,
+		"probe the SAME addresses this many times, measuring whether the answers drift. Above 1 this becomes a stability run and requires -cohort")
+	interval := flag.Duration("interval", time.Hour, "wait between rounds of a stability run")
+	cohort := flag.String("cohort", "",
+		"label for a stability run, for example tmobile-as21928. Re-using a label resumes that cohort with its original addresses, so rounds can be days apart across separate invocations")
 	flag.Parse()
 
 	if (*rangeFlag == "") == (*asnFlag == 0) {
@@ -107,6 +156,16 @@ func main() {
 	}
 	if *block < 1 || *block > 32 {
 		log.Fatal("-block must be between 1 and 32")
+	}
+	if *repeat < 1 {
+		log.Fatal("-repeat must be at least 1")
+	}
+	stability := *repeat > 1 || *cohort != ""
+	if stability && *cohort == "" {
+		log.Fatal("-repeat above 1 needs -cohort, because the observations are stored and compared by cohort label")
+	}
+	if stability && *interval <= 0 {
+		log.Fatal("-interval must be greater than zero for a stability run")
 	}
 
 	var chosen []netip.Prefix
@@ -158,31 +217,101 @@ func main() {
 		}
 		label = parent.String()
 	}
-	log.Printf("probing %d /%d blocks at %d calls per minute, roughly %ds", len(chosen), *block, *rate,
-		(len(chosen)*60)/(*rate)+1)
-
 	client := &http.Client{Timeout: *timeout}
-	results := make([]sample, 0, len(chosen))
 
+	if !stability {
+		// Single-shot behaviour, unchanged. A fresh random address per sub-block,
+		// one round, no database write of any kind.
+		targets := make([]target, 0, len(chosen))
+		for _, sn := range chosen {
+			targets = append(targets, target{subnet: sn, addr: randomAddrIn(sn)})
+		}
+		log.Printf("probing %d /%d blocks at %d calls per minute, roughly %ds", len(targets), *block, *rate,
+			(len(targets)*60)/(*rate)+1)
+		results := probeRound(client, *endpoint, *rate, targets)
+		report(label, results, total24, *asnFlag != 0, *block)
+		return
+	}
+
+	// ------------------------------------------------------------------
+	// Stability run.
+	//
+	// The addresses are fixed for the life of the cohort. That is the entire
+	// point: if each round re-randomised the address inside the block, a change
+	// in the answer could mean either that the block moved or that two hosts
+	// inside it are in different places, and nothing afterwards could tell those
+	// apart. Holding the address constant makes any change unambiguously drift.
+	//
+	// Re-using a cohort label reloads its original addresses and continues the
+	// round numbering, so rounds can be days apart across separate invocations
+	// rather than requiring one long-lived process.
+	// ------------------------------------------------------------------
+	conn, err := connect()
+	if err != nil {
+		log.Fatalf("stability runs need the database to store observations: %v", err)
+	}
+	defer conn.Close(context.Background())
+	if err := ensureStabilityTable(conn); err != nil {
+		log.Fatalf("%v", err)
+	}
+
+	targets, startRound, err := resumeCohort(conn, *cohort)
+	if err != nil {
+		log.Fatalf("reading cohort %q: %v", *cohort, err)
+	}
+	if len(targets) == 0 {
+		for _, sn := range chosen {
+			targets = append(targets, target{subnet: sn, addr: randomAddrIn(sn)})
+		}
+		log.Printf("cohort %q is new: %d addresses chosen and now fixed for its lifetime", *cohort, len(targets))
+	} else {
+		log.Printf("cohort %q resumed: %d addresses reloaded, next round is %d", *cohort, len(targets), startRound)
+	}
+
+	log.Printf("stability run: %d rounds of %d probes, %s apart, at %d calls per minute",
+		*repeat, len(targets), *interval, *rate)
+
+	for r := 0; r < *repeat; r++ {
+		round := startRound + r
+		log.Printf("--- round %d of cohort %q ---", round, *cohort)
+		results := probeRound(client, *endpoint, *rate, targets)
+		written, err := storeRound(conn, *cohort, round, results)
+		if err != nil {
+			log.Fatalf("storing round %d: %v", round, err)
+		}
+		log.Printf("round %d stored %d observations", round, written)
+		if r < *repeat-1 {
+			log.Printf("sleeping %s before the next round", *interval)
+			time.Sleep(*interval)
+		}
+	}
+
+	churnReport(conn, *cohort)
+}
+
+// probeRound probes every target once, honouring the per-minute ceiling, and
+// returns the results in target order.
+func probeRound(client *http.Client, endpoint string, rate int, targets []target) []sample {
+	results := make([]sample, 0, len(targets))
 	windowStart := time.Now()
 	inWindow := 0
-	for i, sn := range chosen {
-		addr := randomAddrIn(sn)
+	for i, t := range targets {
 		if inWindow == 0 {
 			windowStart = time.Now()
 		}
-		res, err := lookup(client, *endpoint, addr)
-		results = append(results, sample{subnet: sn, addr: addr, res: res, err: err})
+		res, err := lookup(client, endpoint, t.addr)
+		results = append(results, sample{subnet: t.subnet, addr: t.addr, res: res, err: err})
 
 		if err != nil {
-			log.Printf("[%d/%d] %s ip=%s ERROR %v", i+1, len(chosen), sn, addr, err)
+			log.Printf("[%d/%d] %s ip=%s ERROR %v", i+1, len(targets), t.subnet, t.addr, err)
 		} else {
-			log.Printf("[%d/%d] %s ip=%s status=%s city=%q region=%q zip=%q isp=%q",
-				i+1, len(chosen), sn, addr, res.Status, res.City, res.Region, res.Zip, res.ISP)
+			log.Printf("[%d/%d] %s ip=%s status=%s city=%q region=%q zip=%q isp=%q mobile=%v",
+				i+1, len(targets), t.subnet, t.addr, res.Status, res.City, res.Region, res.Zip,
+				res.ISP, res.Mobile)
 		}
 
 		inWindow++
-		if inWindow >= *rate && i < len(chosen)-1 {
+		if inWindow >= rate && i < len(targets)-1 {
 			if elapsed := time.Since(windowStart); elapsed < time.Minute {
 				wait := time.Minute - elapsed
 				log.Printf("rate limit reached, sleeping %s", wait.Round(time.Second))
@@ -191,8 +320,220 @@ func main() {
 			inWindow = 0
 		}
 	}
+	return results
+}
 
-	report(label, results, total24, *asnFlag != 0, *block)
+// connect opens the database using the same convention as the rest of the
+// pipeline: an empty DATABASE_URL falls back to the libpq environment, so peer
+// authentication over the Unix socket works with no credential on disk.
+func connect() (*pgx.Conn, error) {
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	return pgx.Connect(ctx, os.Getenv("DATABASE_URL"))
+}
+
+func ensureStabilityTable(conn *pgx.Conn) error {
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	var exists bool
+	if err := conn.QueryRow(ctx,
+		"SELECT to_regclass('public.probe_stability_tbl') IS NOT NULL").Scan(&exists); err != nil {
+		return err
+	}
+	if !exists {
+		return fmt.Errorf("probe_stability_tbl does not exist: run geo/probe_stability_tbl.sql first")
+	}
+	return nil
+}
+
+// resumeCohort reloads the fixed addresses of an existing cohort and reports the
+// round number to use next. An unknown cohort returns no targets and round 1.
+func resumeCohort(conn *pgx.Conn, cohort string) ([]target, int, error) {
+	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
+	defer cancel()
+
+	rows, err := conn.Query(ctx,
+		"SELECT DISTINCT network::text, host(probe_ip) FROM probe_stability_tbl "+
+			"WHERE cohort = $1 ORDER BY 1", cohort)
+	if err != nil {
+		return nil, 0, err
+	}
+	defer rows.Close()
+	var out []target
+	for rows.Next() {
+		var sn, ip string
+		if err := rows.Scan(&sn, &ip); err != nil {
+			return nil, 0, err
+		}
+		p, err1 := netip.ParsePrefix(sn)
+		a, err2 := netip.ParseAddr(ip)
+		if err1 != nil || err2 != nil {
+			continue
+		}
+		out = append(out, target{subnet: p, addr: a})
+	}
+	if err := rows.Err(); err != nil {
+		return nil, 0, err
+	}
+	if len(out) == 0 {
+		return nil, 1, nil
+	}
+
+	var maxRound int
+	if err := conn.QueryRow(ctx,
+		"SELECT coalesce(max(round), 0) FROM probe_stability_tbl WHERE cohort = $1",
+		cohort).Scan(&maxRound); err != nil {
+		return nil, 0, err
+	}
+	return out, maxRound + 1, nil
+}
+
+// storeRound writes one round of observations. Failed probes are stored too, with
+// err populated: a round that silently omitted its failures would make a cohort
+// look more stable than it is.
+func storeRound(conn *pgx.Conn, cohort string, round int, results []sample) (int, error) {
+	ctx, cancel := context.WithTimeout(context.Background(), 120*time.Second)
+	defer cancel()
+
+	const q = `
+INSERT INTO probe_stability_tbl
+  (cohort, network, probe_ip, round, observed_at, status, country, country_code,
+   city, state_code, zip, isp, org, as_text, mobile_ipapi, err)
+VALUES ($1, $2, $3, $4, now(), $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15)
+ON CONFLICT (cohort, probe_ip, round) DO NOTHING`
+
+	written := 0
+	for _, s := range results {
+		errText := interface{}(nil)
+		if s.err != nil {
+			errText = s.err.Error()
+		}
+		status := s.res.Status
+		if s.err != nil {
+			status = "error"
+		}
+		_, err := conn.Exec(ctx, q, cohort, s.subnet.String(), s.addr.String(), round,
+			nullIfEmpty(status), nullIfEmpty(s.res.Country), nullIfEmpty(s.res.CountryCode),
+			nullIfEmpty(s.res.City), nullIfEmpty(s.res.Region), nullIfEmpty(s.res.Zip),
+			nullIfEmpty(s.res.ISP), nullIfEmpty(s.res.Org), nullIfEmpty(s.res.As),
+			s.res.Mobile, errText)
+		if err != nil {
+			return written, err
+		}
+		written++
+	}
+	return written, nil
+}
+
+// churnReport prints what the cohort has measured so far. It is deliberately the
+// same arithmetic as sections 1 and 2 of probe_stability_tbl.sql, so a psql result
+// and this output cannot disagree.
+func churnReport(conn *pgx.Conn, cohort string) {
+	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
+	defer cancel()
+
+	var addresses, minRounds, maxRounds, cityChurned, zipChurned int
+	err := conn.QueryRow(ctx, `
+WITH per_addr AS (
+    SELECT probe_ip,
+           count(DISTINCT city || '|' || coalesce(state_code, '')) AS places,
+           count(DISTINCT zip) FILTER (WHERE zip IS NOT NULL AND zip <> '') AS zips,
+           count(*) AS seen
+    FROM probe_stability_tbl
+    WHERE cohort = $1 AND status = 'success'
+    GROUP BY probe_ip
+)
+SELECT count(*), coalesce(min(seen), 0), coalesce(max(seen), 0),
+       count(*) FILTER (WHERE places > 1), count(*) FILTER (WHERE zips > 1)
+FROM per_addr`, cohort).Scan(&addresses, &minRounds, &maxRounds, &cityChurned, &zipChurned)
+	if err != nil {
+		log.Printf("churn report failed: %v", err)
+		return
+	}
+
+	fmt.Println()
+	fmt.Println("=== stability of cohort " + cohort + " ===")
+	if addresses == 0 {
+		fmt.Println("no successful observations, so nothing can be concluded")
+		return
+	}
+	outf("addresses tracked:       %d", addresses)
+	outf("rounds per address:      %d to %d", minRounds, maxRounds)
+	outf("addresses whose CITY moved: %d of %d (%.1f%%)", cityChurned, addresses,
+		100*float64(cityChurned)/float64(addresses))
+	outf("addresses whose ZIP moved:  %d of %d (%.1f%%)", zipChurned, addresses,
+		100*float64(zipChurned)/float64(addresses))
+
+	if maxRounds < 2 {
+		fmt.Println()
+		fmt.Println("Only one round exists, so churn is not yet measurable. Re-run with the same -cohort")
+		fmt.Println("after the interval you care about. Drift cannot be inferred from a single observation.")
+		return
+	}
+
+	var fastestCity, fastestZip *time.Duration
+	var cityChanges, zipChanges int
+	var fc, fz *float64
+	err = conn.QueryRow(ctx, `
+WITH ordered AS (
+    SELECT probe_ip, observed_at, city, state_code, zip,
+           lag(city)        OVER w AS prev_city,
+           lag(state_code)  OVER w AS prev_state,
+           lag(zip)         OVER w AS prev_zip,
+           lag(observed_at) OVER w AS prev_at
+    FROM probe_stability_tbl
+    WHERE cohort = $1 AND status = 'success'
+    WINDOW w AS (PARTITION BY probe_ip ORDER BY round)
+)
+SELECT count(*) FILTER (WHERE city IS DISTINCT FROM prev_city OR state_code IS DISTINCT FROM prev_state),
+       extract(epoch FROM min(observed_at - prev_at) FILTER (WHERE city IS DISTINCT FROM prev_city OR state_code IS DISTINCT FROM prev_state)),
+       count(*) FILTER (WHERE zip IS DISTINCT FROM prev_zip),
+       extract(epoch FROM min(observed_at - prev_at) FILTER (WHERE zip IS DISTINCT FROM prev_zip))
+FROM ordered
+WHERE prev_at IS NOT NULL`, cohort).Scan(&cityChanges, &fc, &zipChanges, &fz)
+	if err != nil {
+		log.Printf("change-rate query failed: %v", err)
+		return
+	}
+	if fc != nil {
+		d := time.Duration(*fc) * time.Second
+		fastestCity = &d
+	}
+	if fz != nil {
+		d := time.Duration(*fz) * time.Second
+		fastestZip = &d
+	}
+
+	outf("city changes observed:   %d", cityChanges)
+	if fastestCity != nil {
+		outf("fastest city change:     %s", fastestCity.Round(time.Second))
+	}
+	outf("ZIP changes observed:    %d", zipChanges)
+	if fastestZip != nil {
+		outf("fastest ZIP change:      %s", fastestZip.Round(time.Second))
+	}
+
+	fmt.Println()
+	if cityChanges == 0 && zipChanges == 0 {
+		fmt.Println("VERDICT: STABLE over the interval observed. Note the interval: stability over an hour says")
+		fmt.Println("nothing about stability over a month, and this cohort can only speak for the span it covers.")
+	} else {
+		fmt.Println("VERDICT: DRIFTING. Answers for fixed addresses changed within this cohort, so a stored")
+		fmt.Println("geolocation for this operator has a shelf life. Compare the fastest change above against")
+		fmt.Println("the probe cycle time: if the cycle is slower than the drift, output carries stale rows")
+		fmt.Println("no matter how correct each measurement was when taken.")
+	}
+	fmt.Println()
+	fmt.Println("A cohort is only interpretable against a control. Run the same schedule on a wireline")
+	fmt.Println("operator: if wireline holds still while this churns, the cause is carrier behaviour, and if")
+	fmt.Println("both churn together the cause is the vendor revising its data.")
+}
+
+func nullIfEmpty(s string) interface{} {
+	if strings.TrimSpace(s) == "" {
+		return nil
+	}
+	return s
 }
 
 // subBlocksOf returns every prefix of length blockBits inside p. p must be at
@@ -224,7 +565,8 @@ func randomAddrIn(p netip.Prefix) netip.Addr {
 }
 
 func lookup(client *http.Client, endpoint string, addr netip.Addr) (geoResult, error) {
-	url := endpoint + addr.String() + "?fields=status,message,country,region,regionName,city,zip,lat,lon,isp,org,as,query"
+	url := endpoint + addr.String() +
+		"?fields=status,message,country,countryCode,region,regionName,city,zip,lat,lon,isp,org,as,mobile,query"
 	resp, err := client.Get(url)
 	if err != nil {
 		return geoResult{}, err
@@ -248,7 +590,10 @@ func report(label string, results []sample, total24 int, asnMode bool, blockBits
 	cities := map[string]int{}
 	zips := map[string]int{}
 	isps := map[string]int{}
+	countries := map[string]int{}
 	ok := 0
+	mobileCount := 0
+	noZip := 0
 	for _, s := range results {
 		if s.err != nil || s.res.Status != "success" {
 			continue
@@ -257,8 +602,14 @@ func report(label string, results []sample, total24 int, asnMode bool, blockBits
 		cities[s.res.City+", "+s.res.Region]++
 		if s.res.Zip != "" {
 			zips[s.res.Zip]++
+		} else {
+			noZip++
 		}
 		isps[s.res.ISP]++
+		countries[s.res.CountryCode+" "+s.res.Country]++
+		if s.res.Mobile {
+			mobileCount++
+		}
 	}
 
 	fmt.Println()
@@ -278,10 +629,23 @@ func report(label string, results []sample, total24 int, asnMode bool, blockBits
 	for _, k := range sortedKeys(zips) {
 		outf("  %-40s %d", k, zips[k])
 	}
+	if noZip > 0 {
+		outf("  %-40s %d", "(no ZIP returned)", noZip)
+	}
 	fmt.Println("ISPs returned:")
 	for _, k := range sortedKeys(isps) {
 		outf("  %-40s %d", k, isps[k])
 	}
+	if len(countries) > 1 {
+		// More than one country in one range or one ASN is worth seeing rather than
+		// averaging away: Puerto Rico in particular is a separate country to ip-api,
+		// not a US state, so a US-filtered pipeline drops it silently.
+		fmt.Println("countries returned:")
+		for _, k := range sortedKeys(countries) {
+			outf("  %-40s %d", k, countries[k])
+		}
+	}
+	outf("ip-api's own mobile flag true for %d of %d successful probes", mobileCount, ok)
 
 	fmt.Println()
 	if asnMode {

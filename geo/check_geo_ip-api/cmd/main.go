@@ -57,6 +57,14 @@ type geoResult struct {
 	Org         string  `json:"org"`
 	As          string  `json:"as"`
 	Query       string  `json:"query"`
+
+	// Mobile is ip-api's OWN judgement that the address belongs to a mobile
+	// network. It is NOT in ip-api's default field set, so it has to be requested
+	// explicitly, and until now this tool did not request it: likely_mobile_cgnat
+	// was set purely from a keyword match on isp and org. Both signals are used
+	// now, because they are different judgements and either one being right matters
+	// more than them agreeing.
+	Mobile bool `json:"mobile"`
 }
 
 // rangeRow is a sampled network range and its inclusive address bounds.
@@ -185,7 +193,7 @@ func main() {
 		} else {
 			log.Printf("[%d/%d] %s ip=%s status=%s city=%q region=%q country=%q isp=%q mobile=%v",
 				i+1, len(ranges), tgt.network, tgt.ip, g.Status, g.City, g.RegionName, g.Country, g.ISP,
-				g.Status == "success" && isMobileISP(g.ISP, g.Org))
+				g.Status == "success" && (isMobileISP(g.ISP, g.Org) || g.Mobile))
 		}
 
 		inWindow++
@@ -287,7 +295,12 @@ WHERE p.ran_at IS NULL`
 // lookupGeo performs one GET against the free ip-api.com endpoint. On HTTP 429
 // it honors the X-Ttl header (seconds until the limit resets) and retries once.
 func lookupGeo(client *http.Client, endpointPrefix string, ip netip.Addr) (geoResult, error) {
-	url := endpointPrefix + ip.String()
+	// The field list is ip-api's default set plus mobile. It has to be spelled out
+	// because mobile is not returned by default, and every other name here was
+	// already being consumed from the default response, so omitting any of them
+	// would silently empty a column.
+	url := endpointPrefix + ip.String() +
+		"?fields=status,message,country,countryCode,region,regionName,city,zip,lat,lon,timezone,isp,org,as,mobile,query"
 
 	for attempt := 0; attempt < 2; attempt++ {
 		req, err := http.NewRequest(http.MethodGet, url, nil)
@@ -312,6 +325,14 @@ func lookupGeo(client *http.Client, endpointPrefix string, ip netip.Addr) (geoRe
 			return geoResult{}, fmt.Errorf("ip-api HTTP %d: %s", resp.StatusCode, strings.TrimSpace(string(body)))
 		}
 
+		// X-Rl states how many calls remain in the current window and X-Ttl how many
+		// seconds until it resets. Reporting the headroom periodically characterises
+		// the real limit from calls the cycle is making anyway, which is strictly
+		// better than inferring it by provoking a refusal from the same source IP the
+		// pipeline depends on. Measured 2026-09-13: a single call returned X-Rl=44 and
+		// X-Ttl=60, so the 45 per minute figure is enforced and is per source IP.
+		reportHeadroom(resp.Header.Get("X-Rl"), resp.Header.Get("X-Ttl"))
+
 		var g geoResult
 		if err := json.Unmarshal(body, &g); err != nil {
 			return geoResult{}, fmt.Errorf("decoding ip-api json: %w (body=%q)", err, strings.TrimSpace(string(body)))
@@ -319,6 +340,33 @@ func lookupGeo(client *http.Client, endpointPrefix string, ip netip.Addr) (geoRe
 		return g, nil
 	}
 	return geoResult{}, errors.New("ip-api: still HTTP 429 after backoff")
+}
+
+// lowestHeadroom tracks the smallest X-Rl seen in this process, so a run reports
+// how close it came to the ceiling rather than only whether it hit it.
+var lowestHeadroom = -1
+
+// reportHeadroom logs the rate-limit headers when the remaining budget reaches a
+// new low. It is deliberately quiet otherwise: a line per call would bury the
+// per-range output that the operator actually reads.
+func reportHeadroom(xrl, xttl string) {
+	if xrl == "" {
+		return
+	}
+	n, err := strconv.Atoi(strings.TrimSpace(xrl))
+	if err != nil {
+		return
+	}
+	if lowestHeadroom >= 0 && n >= lowestHeadroom {
+		return
+	}
+	lowestHeadroom = n
+	if n <= 5 {
+		log.Printf("ip-api budget nearly spent: X-Rl=%d remaining, X-Ttl=%s seconds to reset. "+
+			"Another tool sharing this source IP would now be refused.", n, xttl)
+		return
+	}
+	log.Printf("ip-api budget low water mark: X-Rl=%d remaining, X-Ttl=%s seconds to reset", n, xttl)
 }
 
 func parseTTLSeconds(h string) int {
@@ -390,8 +438,15 @@ func isMobileISP(isp, org string) bool {
 // the reason is recorded in status/classification_note so the range can be
 // retried on a later run (it stays city IS NULL).
 //
-// likely_mobile_cgnat is set true when the resolved isp/org looks like a mobile
-// carrier (see isMobileISP). On INSERT (a range with no prior row) the mtr-only
+// likely_mobile_cgnat is set true when EITHER the resolved isp/org looks like a
+// mobile carrier by keyword (see isMobileISP) OR ip-api's own mobile field says so.
+// The two are different judgements and the union is used deliberately: this flag
+// gates ZIP-level output, where the cost of a false negative is publishing a ZIP
+// that no demographic cohort contains, while the cost of a false positive is only
+// that a range is offered at DMA level instead of ZIP level. The asymmetry favours
+// over-marking.
+//
+// On INSERT (a range with no prior row) the mtr-only
 // numeric columns are given zero-values to satisfy any NOT NULL constraints; on
 // UPDATE hop_count/attempts are left untouched so an existing mtr row's hop data
 // is not clobbered, while likely_mobile_cgnat IS refreshed from this lookup.
@@ -418,7 +473,16 @@ func writeGeo(ctx context.Context, conn *pgx.Conn, tgt geoTarget, g geoResult, c
 	if success {
 		latArg, lonArg = g.Lat, g.Lon
 	}
-	mobile := success && isMobileISP(g.ISP, g.Org)
+	// Union of the two signals. See the note above writeGeo for why over-marking is
+	// the correct bias for a flag that gates ZIP-level output.
+	byKeyword := isMobileISP(g.ISP, g.Org)
+	mobile := success && (byKeyword || g.Mobile)
+	if success && byKeyword != g.Mobile {
+		// A disagreement is worth seeing rather than resolving silently. It is the
+		// set that decides whether either signal can be trusted alone.
+		log.Printf("mobile signals disagree for %s: keyword=%v ip-api=%v isp=%q org=%q",
+			tgt.network, byKeyword, g.Mobile, g.ISP, g.Org)
+	}
 
 	// UPDATE, not INSERT. The row already exists: daily_pipeline.sh seeded it from
 	// the reconciled db-ip and RouteViews data with ran_at NULL. Probing replaces
