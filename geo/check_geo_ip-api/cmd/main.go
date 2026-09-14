@@ -28,6 +28,7 @@ import (
 	"io"
 	"log"
 	"math/big"
+	"net"
 	"net/http"
 	"net/netip"
 	"os"
@@ -309,6 +310,26 @@ func lookupGeo(client *http.Client, endpointPrefix string, ip netip.Addr) (geoRe
 		}
 		resp, err := client.Do(req)
 		if err != nil {
+			// A TIMEOUT IS HOW ip-api THROTTLES, so it must be treated as a rate
+			// signal rather than as a network fault.
+			//
+			// Measured 2026-09-14 against the live service across roughly 420 calls:
+			// NOT ONE returned 429. Exceeding the limit produces stalled connections
+			// instead. A burst of 29 calls was followed by 45 seconds of complete
+			// non-response, and paced runs at 90 and 180 calls per minute returned
+			// 14 and 18 percent stalls against 3 percent at 45 from a rested IP. A
+			// control against example.com and rdap.arin.net over the same period timed
+			// out zero times out of 60, so the stalls are ip-api specific.
+			//
+			// The 429 branch below therefore almost never fires in practice. Without
+			// this branch a throttled run records every stalled range as an error and
+			// keeps hammering at full rate, which deepens the throttling.
+			if attempt == 0 && isTimeout(err) {
+				wait := time.Duration(parseTTLSeconds("")+1) * time.Second
+				log.Printf("ip-api stalled (%v); this is how it throttles, backing off %s", err, wait)
+				time.Sleep(wait)
+				continue
+			}
 			return geoResult{}, err
 		}
 		body, _ := io.ReadAll(resp.Body)
@@ -367,6 +388,25 @@ func reportHeadroom(xrl, xttl string) {
 		return
 	}
 	log.Printf("ip-api budget low water mark: X-Rl=%d remaining, X-Ttl=%s seconds to reset", n, xttl)
+}
+
+// isTimeout reports whether an http error is a timeout or a severed connection,
+// which is what ip-api throttling looks like from the client side.
+func isTimeout(err error) bool {
+	if err == nil {
+		return false
+	}
+	var ne net.Error
+	if errors.As(err, &ne) && ne.Timeout() {
+		return true
+	}
+	if errors.Is(err, context.DeadlineExceeded) {
+		return true
+	}
+	s := err.Error()
+	return strings.Contains(s, "Client.Timeout") ||
+		strings.Contains(s, "timeout") ||
+		strings.Contains(s, "connection reset")
 }
 
 func parseTTLSeconds(h string) int {

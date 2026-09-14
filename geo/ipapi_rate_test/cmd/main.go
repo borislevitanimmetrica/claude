@@ -279,7 +279,7 @@ func report(outcomes []callOutcome, start time.Time, offered int, stopped string
 	outf("offered rate:           %d calls per minute", offered)
 	outf("HTTP 200:               %d", ok)
 	outf("HTTP 429:               %d", refused)
-	outf("transport errors:       %d", errored)
+	outf("stalls, no answer:      %d   (this is how ip-api throttles, not 429)", errored)
 	fmt.Println("status code tally:")
 	codes := make([]int, 0, len(byStatus))
 	for c := range byStatus {
@@ -300,11 +300,25 @@ func report(outcomes []callOutcome, start time.Time, offered int, stopped string
 
 	fmt.Println()
 	switch {
+	case errored > 0:
+		// STALLS, NOT 429, ARE THE THROTTLE SIGNAL. Measured against the live service
+		// on 2026-09-14 across roughly 420 calls, not one returned 429. Offering 90
+		// and 180 per minute produced 14 and 18 percent stalls and an effective rate
+		// of 28 per minute either way, against 3 percent stalls at 45 from a rested
+		// IP. A control against example.com and rdap.arin.net timed out zero times
+		// out of 60 in the same window, so the stalls belong to ip-api.
+		outf("VERDICT: THROTTLED BY STALLING. %d of %d calls never answered, at an offered %d per minute.",
+			errored, len(outcomes), offered)
+		fmt.Println("ip-api does not refuse with 429 when the limit is exceeded, it stops answering. Because a")
+		fmt.Println("stall consumes wall-clock time, offering a higher rate LOWERS delivered throughput rather")
+		outf("than raising it: effective here was %.1f per minute.", float64(ok)/elapsed.Minutes())
+		fmt.Println("There is no headroom to find by pushing. Pace at or below 45 and take the 45.")
 	case refused == 0 && sawXrl && minXrl > 0:
-		outf("VERDICT: %d calls at an offered %d per minute drew no refusal, and X-Rl never fell below %d.",
+		outf("VERDICT: %d calls at an offered %d per minute drew neither refusal nor stall, and X-Rl never fell below %d.",
 			len(outcomes), offered, minXrl)
-		fmt.Println("The effective ceiling is therefore at least the offered rate. Raise -rate and repeat to")
-		fmt.Println("find where X-Rl approaches zero, which locates the limit without ever being refused.")
+		fmt.Println("This is a compliant run. Note that X-Rl is NOT a single global counter: it is served by")
+		fmt.Println("several independent backends behind one address, so it moves non-monotonically and cannot")
+		fmt.Println("be read as one budget draining.")
 	case refused == 0:
 		outf("VERDICT: %d calls at an offered %d per minute drew no refusal.", len(outcomes), offered)
 		fmt.Println("Without the X-Rl header this cannot say how much headroom remained, only that the limit")
