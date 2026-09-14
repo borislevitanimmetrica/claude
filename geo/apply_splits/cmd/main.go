@@ -363,12 +363,24 @@ func loadParents(ctx context.Context, conn *pgx.Conn, table string, operatorChec
 				"with rdap_registrant -fill, or pass -registrant-source=ip-api to use the probe isp and org instead")
 		}
 		joinExpr = "LEFT JOIN LATERAL (" +
-			"SELECT r.registrant FROM rdap_registrant_tbl r " +
+			"SELECT r.registrant, true AS found FROM rdap_registrant_tbl r " +
 			"WHERE r.start_ip <= host(network(c.network))::inet " +
 			"AND r.end_ip >= host(broadcast(c.network))::inet " +
 			"ORDER BY (r.end_ip - r.start_ip) LIMIT 1) rd ON true "
 		registrantExpr = "coalesce(rd.registrant, '')"
-		knownExpr = "(rd.registrant IS NOT NULL AND rd.registrant <> '')"
+		// A CACHE ROW COUNTS AS KNOWN EVEN WHEN ITS REGISTRANT IS NULL, and the
+		// distinction matters.
+		//
+		// A missing row means the registry has not been asked, so the registrant is
+		// genuinely unknown and decomposing would bypass the exclusions.
+		//
+		// A row with a NULL registrant means the registry WAS asked and holds no
+		// assignment for the range: RIPE answers for 151.0.0.0/8 with
+		// RIPE-NCC-MANAGED-ADDRESS-BLOCK and no entities at all. That is positive
+		// evidence that the range carries no DoD registration, which is the only
+		// thing the exclusion list tests for. Treating it as unknown would defer such
+		// ranges permanently, since no later query can produce a better answer.
+		knownExpr = "coalesce(rd.found, false)"
 	}
 
 	opExpr := "false"

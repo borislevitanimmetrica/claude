@@ -238,10 +238,15 @@ LIMIT 50;
 -- row here except the DoD ones is work that will actually be done.
 -- ---------------------------------------------------------------------------
 
+-- 2 raised to an integer power returns double precision in PostgreSQL, and there
+-- is no round(double precision, integer). The base is therefore numeric, which
+-- keeps the sum numeric and lets round take a scale argument. Getting this wrong
+-- aborts the whole statement with "function round(double precision, integer) does
+-- not exist", which is how it was found.
 SELECT cov.registrant,
        count(*)                                                     AS wide_ranges,
-       sum(2 ^ (24 - masklen(d.network)))::bigint                     AS sub24_rows,
-       round(sum(2 ^ (24 - masklen(d.network))) / 64800.0, 2)          AS probe_days,
+       sum(2::numeric ^ (24 - masklen(d.network)))::bigint             AS sub24_rows,
+       round(sum(2::numeric ^ (24 - masklen(d.network))) / 64800.0, 2) AS probe_days,
        min(masklen(d.network))                                        AS widest,
        EXISTS (SELECT 1 FROM decomposition_exclusions x
                 WHERE x.active AND cov.registrant ILIKE x.operator_pattern)
