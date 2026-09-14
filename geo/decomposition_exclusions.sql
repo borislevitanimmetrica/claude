@@ -1,79 +1,76 @@
 -- decomposition_exclusions.sql
 -- Operators whose ranges must NOT be decomposed into narrower rows.
 --
--- WHY THIS IS A SEPARATE TABLE FROM geo_exclusions
+-- POLICY: DoD ONLY. NOTHING ELSE BELONGS IN THIS TABLE.
 --
--- The two do different things and carry different risk, and conflating them would
--- eventually cause someone to apply one as the other.
+-- This file is idempotent and self-enforcing. Re-running it deactivates every
+-- pattern that is not on the DoD list below, so the table always converges on
+-- policy no matter what has been inserted by hand in the meantime.
 --
---   geo_exclusions          removes a range from PROBING and from OUTPUT. A wrong
---                           entry is a false negative: the range disappears from
---                           targeting entirely and nobody notices.
+-- WHY ONLY DoD, AND WHY THE EARLIER AMAZON ENTRIES WERE REMOVED
+--
+-- The earlier seed excluded Amazon on the reasoning that cloud space has no
+-- consumer access product, so decomposing it spends probe budget on datacentre
+-- answers. That reasoning was wrong, and the RDAP run that populated
+-- rdap_registrant_tbl is what showed why.
+--
+-- RDAP returns the REGISTRANT of an allocation. It does not say, and cannot say,
+-- whether a given range inside that allocation serves infrastructure or serves
+-- end users. The 500-query run returned University of Michigan, Michigan State,
+-- Stanford, MIT, Grand Valley State, Merit Network, Utah Education Network and the
+-- Board of Regents of the University System of Georgia. Universities run student
+-- housing. Those are residential eyeballs sitting inside a registrant name that
+-- looks purely institutional.
+--
+-- The same argument applies to every corporate name in that run. People at work at
+-- Ford, Prudential, Boeing, Procter and Gamble or Eli Lilly consume media, and
+-- under the targeting rules for this project they are legitimate targets. A
+-- registrant name gives no way to separate an office desk from a server rack.
+--
+-- So the test for belonging here is not "does this organisation sell broadband".
+-- It is "can this space be ruled out as serving end users with certainty". Only
+-- DoD passes it, and DoD passes for a reason that has nothing to do with what the
+-- registrant does commercially: its space is not offered to the public at all, and
+-- reallocation out of it is close to unimaginable, which is the standing
+-- justification already used for the DoD prefixes in geo_exclusions.
+--
+-- WHAT THIS COSTS, STATED PLAINLY
+--
+-- Excluding only DoD means decomposition eventually generates roughly 3,368,502
+-- sub-/24 rows. At the measured free-tier ceiling of 45 ip-api calls a minute,
+-- which is 64,800 a day, that is about 52 days of probing for the new rows alone
+-- and about 84 days including the existing backlog. Exclusions are therefore NOT
+-- the lever that makes decomposition affordable. The paid batch endpoint is.
+-- Choosing correctness here and paying for throughput is the coherent position;
+-- choosing exclusions to save calls would trade real coverage for a discount.
+--
+-- HOW THIS TABLE DIFFERS FROM geo_exclusions
+--
+--   geo_exclusions            removes a range from PROBING and from OUTPUT. A
+--                             wrong entry is a false negative: the range
+--                             disappears from targeting and nobody notices.
 --
 --   decomposition_exclusions  removes a range from DECOMPOSITION only. The range
---                           stays in the probe table and stays targetable at its
---                           original width. A wrong entry costs granularity, never
---                           coverage.
---
--- That asymmetry is why this table can be populated far more freely than
--- geo_exclusions. It cannot produce a false negative.
+--                             stays in the probe table and stays targetable at its
+--                             original width. A wrong entry costs granularity,
+--                             never coverage.
 --
 -- WHY OPERATOR NAME AND NOT ASN
 --
 -- Matching on ASN oversweeps. An operator announces space it has bought, sold,
 -- sub-allocated or repurposed, and an ASN rule captures all of it indiscriminately
 -- and keeps capturing it after ownership changes. Matching the registrant name
--- returned for the specific range means additions, drops and transfers are handled
--- correctly as they happen, because the name follows the range rather than the
--- announcement.
+-- means additions, drops and transfers are handled correctly as they happen,
+-- because the name follows the range rather than the announcement.
 --
 -- WHERE THE NAME COMES FROM
 --
--- RDAP, via rdap_registrant_tbl. This REPLACES the earlier choice of ip-api, and
--- the reason is worth recording because the earlier assumption was that the two
--- sources carry the same field used at the same point in the workflow. They do
--- not.
---
---   RDAP    is RIR REGISTRATION data: the organisation an allocation is
---           registered to, plus reassignment records beneath it. It answers "who
---           holds this numberspace", which is exactly the exclusion question. It
---           is keyed on the PREFIX, so it is available for any range whether or
---           not that range has ever been probed.
---
---   ip-api  returns isp and org, which are derived commercial descriptions of who
---           appears to be OPERATING an address. They are populated
---           inconsistently, which is why the code had to coalesce isp then org,
---           and they exist only as a side effect of probing one address in the
---           range.
---
--- The workflow difference is what decided it. An ip-api registrant is unknown for
--- every unprobed range, so decomposition had to defer them, and with a probe
--- backlog measured in weeks that deferral is indefinite. RDAP has no such
--- coupling. It also draws on a separate budget, so resolving registrants does not
--- compete with geolocation for the 45 calls per minute the free ip-api tier
--- allows, a limit confirmed by measurement: a single call returns X-Rl 44 with
--- X-Ttl 60.
---
--- One RDAP answer describes the whole allocation containing the queried address,
--- so a single query resolves the registrant for every candidate range inside it.
--- That is what makes covering a candidate set of hundreds of thousands of ranges
--- affordable.
---
--- apply_splits -registrant-source ip-api restores the old behaviour, and the
--- patterns below work unchanged under either source.
---
--- WHAT MUST NEVER GO IN HERE
---
--- Any company that serves end customers, directly or indirectly, from part of its
--- holdings. Google is the explicit example: Google Fiber subscribers occupy space
--- inside Google numberspace, so a Google pattern would stop that space being
--- decomposed and would coarsen real residential targeting.
---
--- Backbone and transit operators are also excluded from this list, for the same
--- reason. Cogent, Lumen and their peers carry customer assignments inside their
--- announcements. 4.0.0.0/8 resolving to Monroe LA is Lumen headquarters showing
--- through as a registrant address, which is a measurement problem, not grounds for
--- refusing to decompose the space.
+-- RDAP, via rdap_registrant_tbl, which is RIR registration data keyed on the
+-- prefix and therefore available for any range whether or not it has been probed.
+-- ip-api's isp and org describe who appears to be OPERATING an address and exist
+-- only as a side effect of probing, so a registrant taken from them is unavailable
+-- for unprobed ranges. apply_splits -registrant-source ip-api still selects the
+-- older behaviour, and the patterns below work under either source.
 --
 -- Contains NO backslashes so it survives copy/paste.
 
@@ -88,125 +85,179 @@ CREATE TABLE IF NOT EXISTS decomposition_exclusions (
 );
 
 COMMENT ON TABLE decomposition_exclusions IS
-    'Operators whose ranges are not decomposed. Matched with ILIKE against the registrant, which by default comes from rdap_registrant_tbl and optionally from the ip-api isp and org of a probe. Does NOT remove anything from probing or output: see geo_exclusions for that.';
+    'DoD registrants whose ranges are not decomposed. Matched with ILIKE against the registrant from rdap_registrant_tbl, or from the ip-api isp and org under -registrant-source ip-api. Policy is DoD only: a registrant name cannot distinguish infrastructure space from space serving end users, so nothing else qualifies. Does NOT remove anything from probing or output: see geo_exclusions for that.';
 COMMENT ON COLUMN decomposition_exclusions.operator_pattern IS
-    'ILIKE pattern matched against the registrant name. Include percent wildcards explicitly. RDAP names differ from ip-api names, so a pattern may need both forms: ARIN returns Amazon Data Services Northern Virginia where ip-api returns Amazon.com.';
+    'ILIKE pattern matched against the registrant name. Include percent wildcards explicitly. A pattern with no wildcards matches the whole string exactly, which is required for short names such as DIA.';
 
 
 -- ---------------------------------------------------------------------------
--- SEED. Amazon only, being the case named explicitly.
+-- 1. SEED. DoD components, as their registrant names actually appear.
 --
--- Amazon qualifies because no part of its numberspace serves eyeball subscribers:
--- it has no consumer access product. Its ranges geolocate to facility locations,
--- so decomposing them into /24s and probing each one returns the same datacentre
--- answer thousands of times over.
+-- Every name here was OBSERVED in rdap_registrant_tbl during the 500-query run
+-- on 2026-09-14. None is speculative. Note that three of them would be missed by
+-- the obvious patterns: "Headquarters, USAISC" does not contain "army", "DIA"
+-- does not contain "defense", and "Air Force Systems Networking" does not contain
+-- "DoD".
+--
+-- DIA is matched EXACTLY, with no wildcards. A pattern of percent-dia-percent
+-- would also match India, Media, Nvidia, Acadia and Arcadia, which is precisely
+-- the oversweep this table exists to avoid.
 -- ---------------------------------------------------------------------------
 
 INSERT INTO decomposition_exclusions (operator_pattern, reason) VALUES
-    ('%amazon%',            'cloud and datacentre space, no consumer access product, ranges resolve to facility locations'),
-    ('%aws%',               'Amazon Web Services, as above'),
-    ('%amazon technologies%', 'Amazon registrant variant'),
-    ('%amazon data services%', 'Amazon registrant variant')
-ON CONFLICT (operator_pattern) DO NOTHING;
+    ('%dod network information center%',      'DoD, observed registrant name'),
+    ('%department of defense%',               'DoD, observed registrant name'),
+    ('%air force systems networking%',        'DoD, US Air Force, observed registrant name'),
+    ('%navy network information center%',     'DoD, US Navy, observed registrant name'),
+    ('%usaisc%',                              'DoD, US Army Information Systems Command, observed as Headquarters, USAISC'),
+    ('DIA',                                   'DoD, Defense Intelligence Agency. Matched exactly: a wildcard would hit India, Media, Nvidia')
+ON CONFLICT (operator_pattern) DO UPDATE
+    SET active = true,
+        reason = EXCLUDED.reason;
 
 
 -- ---------------------------------------------------------------------------
--- CANDIDATES, DELIBERATELY NOT APPLIED.
+-- 2. ENFORCE THE POLICY. Deactivate everything that is not DoD.
 --
--- Each of these is a datacentre or hosting operator with no consumer access
--- product as far as is known, which is the test for belonging here. None is
--- inserted, because none has been verified against this database, and the
--- standing rule in this project is never to exclude on a guess. Verify with
--- section 3 below, then uncomment individually.
---
--- INSERT INTO decomposition_exclusions (operator_pattern, reason) VALUES
---     ('%digitalocean%',   'hosting, no consumer access product'),
---     ('%linode%',         'hosting, no consumer access product'),
---     ('%hetzner%',        'hosting, no consumer access product'),
---     ('%ovh%',            'hosting, no consumer access product'),
---     ('%vultr%',          'hosting, no consumer access product'),
---     ('%equinix%',        'colocation'),
---     ('%digital realty%', 'colocation'),
---     ('%rackspace%',      'hosting')
--- ON CONFLICT (operator_pattern) DO NOTHING;
---
--- NOT CANDIDATES, and the reason matters more than the list:
---
---   Google, Alphabet        Google Fiber serves subscribers from Google space
---   Microsoft               excluded pending a decision; it has no consumer
---                           access product in the US, but it is large enough that
---                           a blanket name match is worth checking first
---   Cogent, Lumen, Level 3,
---   Zayo, Arelion, GTT      backbones carrying customer assignments
---   Comcast, Charter, Cox,
---   AT&T, Verizon, T-Mobile eyeball networks, the entire point of the exercise
+-- This is what removes the earlier Amazon patterns, and what will remove any
+-- future entry added on the reasoning that some company "does not serve
+-- consumers". Rows are deactivated rather than deleted so the history of what was
+-- once excluded, and when, remains readable.
 -- ---------------------------------------------------------------------------
+
+UPDATE decomposition_exclusions
+   SET active = false
+ WHERE active
+   AND operator_pattern NOT IN (
+        '%dod network information center%',
+        '%department of defense%',
+        '%air force systems networking%',
+        '%navy network information center%',
+        '%usaisc%',
+        'DIA'
+   );
+
+SELECT 'active exclusions after enforcement' AS section;
+
+SELECT operator_pattern, reason, active, added_at
+FROM decomposition_exclusions
+ORDER BY active DESC, operator_pattern;
 
 
 -- ---------------------------------------------------------------------------
--- 3. VERIFY BEFORE AND AFTER. What does a pattern actually match?
+-- 3. DISCOVER DoD SPACE THE PATTERNS DO NOT YET COVER.
 --
--- Run this before adding a pattern. It reports how many probed ranges the
--- pattern would stop decomposing, and how many of those are wider than a /24 and
--- therefore actually candidates for decomposition.
+-- The list in section 1 covers the names seen in one 500-query sample of a
+-- 371,289-range candidate set. More DoD registrant spellings certainly exist. This
+-- lists every distinct registrant in the cache alongside whether the current
+-- patterns match it, so new spellings can be found by reading rather than guessed.
 --
--- Substitute the pattern being considered.
+-- Read the unmatched rows for anything military. Add only what is genuinely DoD.
 -- ---------------------------------------------------------------------------
 
-SELECT count(*)                                                    AS probed_ranges_matched,
-       count(*) FILTER (WHERE masklen(network) < 24)                AS decomposition_candidates,
-       coalesce(sum(2 ^ (24 - masklen(network))) FILTER (WHERE masklen(network) < 24), 0)::bigint
-                                                                   AS sub24_rows_avoided,
-       min(masklen(network))                                        AS widest,
-       count(DISTINCT isp)                                          AS distinct_isp_strings
-FROM ip2city_dbiplite_probe_tbl
-WHERE ran_at IS NOT NULL
-  AND (isp ILIKE '%amazon%' OR org ILIKE '%amazon%');
+SELECT r.registrant,
+       count(*)                                        AS allocations,
+       sum((r.end_ip - r.start_ip) + 1)                 AS addresses,
+       EXISTS (SELECT 1 FROM decomposition_exclusions d
+                WHERE d.active AND r.registrant ILIKE d.operator_pattern)
+                                                       AS matched_by_a_pattern
+FROM rdap_registrant_tbl r
+WHERE r.registrant IS NOT NULL
+GROUP BY r.registrant
+ORDER BY matched_by_a_pattern, addresses DESC
+LIMIT 60;
 
 
 -- ---------------------------------------------------------------------------
--- 4. The operative check, as the decomposer will use it.
+-- 4. DoD SPACE THAT geo_exclusions DOES NOT COVER.
 --
--- A range is excluded from decomposition when its probed isp or org matches any
--- active pattern. A range that has NOT been probed has no registrant, so it
--- cannot be matched and must not be decomposed yet either: decomposing before the
--- registrant is known would defeat the rule entirely.
+-- decomposition_exclusions only stops a range being split. DoD space arguably
+-- belongs in geo_exclusions instead, which removes it from probing and from output
+-- altogether. The RDAP cache can now find DoD allocations whose prefixes were
+-- never seeded there: 148.16.0.0/12, 140.56.0.0/13, 157.216.0.0/13 and many /15s
+-- all resolved to DoD registrants while passing the prefix filter.
+--
+-- This is a REPORT, not an action. Adding to geo_exclusions removes coverage, so it
+-- is a deliberate decision to take on the evidence rather than a cleanup to
+-- automate.
 -- ---------------------------------------------------------------------------
 
-SELECT p.network,
-       masklen(p.network) AS len,
-       p.isp,
-       p.org,
-       CASE
-         WHEN p.ran_at IS NULL THEN 'defer, registrant unknown'
-         WHEN EXISTS (
-              SELECT 1 FROM decomposition_exclusions d
-               WHERE d.active
-                 AND (p.isp ILIKE d.operator_pattern OR p.org ILIKE d.operator_pattern)
-         ) THEN 'excluded from decomposition'
-         ELSE 'decompose'
-       END AS decision
-FROM ip2city_dbiplite_probe_tbl p
-WHERE masklen(p.network) < 24
-ORDER BY masklen(p.network), p.network
+SELECT r.registrant,
+       host(r.start_ip) || ' - ' || host(r.end_ip)      AS allocation,
+       (r.end_ip - r.start_ip) + 1                      AS addresses
+FROM rdap_registrant_tbl r
+WHERE EXISTS (SELECT 1 FROM decomposition_exclusions d
+               WHERE d.active AND r.registrant ILIKE d.operator_pattern)
+  AND NOT EXISTS (
+        SELECT 1 FROM geo_exclusions e
+         WHERE e.active AND e.prefix IS NOT NULL
+           AND host(r.start_ip)::inet >= host(network(e.prefix))::inet
+           AND host(r.end_ip)::inet   <= host(broadcast(e.prefix))::inet
+  )
+ORDER BY addresses DESC
 LIMIT 50;
 
 
 -- ---------------------------------------------------------------------------
--- 5. Which operators dominate the decomposition workload.
+-- 5. AUDIT THE OTHER DIRECTION. Is anything NON-DoD being excluded?
 --
--- This is how to find the patterns worth adding: the operators whose wide ranges
--- would generate the most /24 rows. Only probed ranges appear, since an unprobed
--- range has no registrant.
+-- The policy is that only DoD is excluded. geo_exclusions is the table that
+-- actually removes coverage, so it is the one worth auditing against that policy.
+-- This lists active prefix exclusions whose registrant, according to the cache,
+-- is not matched by any DoD pattern.
+--
+-- A row here is either a legitimate non-DoD exclusion with a reason worth
+-- re-reading, or a DoD spelling missing from section 1. Both are worth knowing.
 -- ---------------------------------------------------------------------------
 
-SELECT coalesce(isp, org, 'unknown')                          AS operator,
-       count(*)                                               AS wide_ranges,
-       sum(2 ^ (24 - masklen(network)))::bigint                AS sub24_rows_they_would_generate,
-       min(masklen(network))                                   AS widest
-FROM ip2city_dbiplite_probe_tbl
-WHERE masklen(network) < 24
-  AND ran_at IS NOT NULL
-GROUP BY 1
-ORDER BY sub24_rows_they_would_generate DESC
-LIMIT 30;
+SELECT e.prefix::text                                  AS excluded_prefix,
+       e.reason,
+       cov.registrant                                  AS rdap_registrant
+FROM geo_exclusions e
+JOIN LATERAL (
+    SELECT r.registrant
+    FROM rdap_registrant_tbl r
+    WHERE r.start_ip <= host(network(e.prefix))::inet
+      AND r.end_ip   >= host(broadcast(e.prefix))::inet
+    ORDER BY (r.end_ip - r.start_ip)
+    LIMIT 1
+) cov ON true
+WHERE e.active
+  AND e.prefix IS NOT NULL
+  AND NOT EXISTS (SELECT 1 FROM decomposition_exclusions d
+                   WHERE d.active AND cov.registrant ILIKE d.operator_pattern)
+ORDER BY e.prefix
+LIMIT 50;
+
+
+-- ---------------------------------------------------------------------------
+-- 6. WHAT THE POLICY COSTS. Decomposition workload by registrant.
+--
+-- Ranked by the sub-/24 rows each registrant would generate, with the probe days
+-- that implies at the measured 64,800 calls a day. Under the DoD-only policy every
+-- row here except the DoD ones is work that will actually be done.
+-- ---------------------------------------------------------------------------
+
+SELECT cov.registrant,
+       count(*)                                                     AS wide_ranges,
+       sum(2 ^ (24 - masklen(d.network)))::bigint                     AS sub24_rows,
+       round(sum(2 ^ (24 - masklen(d.network))) / 64800.0, 2)          AS probe_days,
+       min(masklen(d.network))                                        AS widest,
+       EXISTS (SELECT 1 FROM decomposition_exclusions x
+                WHERE x.active AND cov.registrant ILIKE x.operator_pattern)
+                                                                     AS excluded
+FROM ip2city_dbiplite_tbl d
+JOIN LATERAL (
+    SELECT r.registrant
+    FROM rdap_registrant_tbl r
+    WHERE r.start_ip <= host(network(d.network))::inet
+      AND r.end_ip   >= host(broadcast(d.network))::inet
+    ORDER BY (r.end_ip - r.start_ip)
+    LIMIT 1
+) cov ON true
+WHERE d.source = 'dbip'
+  AND family(d.network) = 4
+  AND masklen(d.network) < 24
+GROUP BY cov.registrant
+ORDER BY sub24_rows DESC
+LIMIT 40;
