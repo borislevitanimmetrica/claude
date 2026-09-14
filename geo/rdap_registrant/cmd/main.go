@@ -179,7 +179,7 @@ func main() {
 	if err != nil {
 		log.Fatalf("loading candidates: %v", err)
 	}
-	log.Printf("%d candidate ranges wider than a /24", len(targets))
+	log.Printf("%d candidate ranges wider than a /24, prefix-excluded space already removed", len(targets))
 
 	// Widest first. A wide candidate is more likely to sit inside, or to coincide
 	// with, a large allocation, so resolving it covers more of the remaining set
@@ -191,7 +191,7 @@ func main() {
 		return targets[i].Addr().Less(targets[j].Addr())
 	})
 
-	var alreadyCovered, queried, failed, rateLimited int
+	var alreadyCovered, queried, needed, failed, rateLimited int
 	var lastCall time.Time
 
 	for _, p := range targets {
@@ -200,10 +200,15 @@ func main() {
 			continue
 		}
 		if *dryRun {
-			// Not covered and not queried, so count it as work the cache cannot yet
-			// answer. Do NOT add it to covered: that would understate the remaining
-			// work for every later candidate inside the same allocation.
-			queried++
+			// Not covered, so count it as work the cache cannot yet answer. Do NOT add
+			// it to covered: nothing was fetched, so no allocation boundary is known.
+			//
+			// This makes the dry-run total an UPPER BOUND rather than a forecast. Each
+			// real query returns an allocation that typically covers many later
+			// candidates, so the actual number of queries will be far lower. The dry
+			// run cannot predict by how much, because the boundaries are exactly what
+			// it declined to fetch.
+			needed++
 			continue
 		}
 		if *limit > 0 && queried >= *limit {
@@ -240,13 +245,27 @@ func main() {
 			int64(end)-int64(start)+1)
 	}
 
+	if *dryRun {
+		log.Printf("dry run: %d already covered by cache, %d would need a query", alreadyCovered, needed)
+		log.Print("that second number is an UPPER BOUND, not a forecast: each real query returns an " +
+			"allocation that usually covers many later candidates, and a dry run cannot know the boundaries " +
+			"it declined to fetch")
+		log.Print("nothing was queried and nothing was written")
+		return
+	}
+
 	log.Printf("done: %d already covered by cache, %d queried, %d failed, %d rate limited",
 		alreadyCovered, queried, failed, rateLimited)
+	if queried > failed {
+		log.Printf("cache now holds %d allocations", len(covered))
+	}
 	if rateLimited > 0 {
 		log.Printf("NOTE %d responses were HTTP 429. The RIR limit is not documented in this project, so treat -rate as unverified and lower it.", rateLimited)
 	}
-	if *dryRun {
-		log.Print("dry run: nothing was queried and nothing was written")
+	if failed > 0 && failed == queried {
+		log.Print("EVERY query failed, so nothing was learned. Check the error text above before re-running: " +
+			"a permission error on rdap_registrant_tbl or its sequence means the grants in " +
+			"geo/rdap_registrant_tbl.sql have not been applied for this role.")
 	}
 }
 
@@ -501,14 +520,41 @@ func loadCovered(ctx context.Context, conn *pgx.Conn) ([]interval, error) {
 // deliberate: dbip_split_candidates only holds ranges with more specific BGP
 // children, which is a small fraction of the coarse ranges that actually need a
 // registrant decision.
+//
+// PREFIX-EXCLUDED RANGES ARE OMITTED, and the first run of this tool proved why.
+// apply_splits discards a range covered by an active geo_exclusions prefix BEFORE
+// it ever consults the registrant, so a registrant for such a range can never
+// change any decision. Ordering candidates widest-first then sent the opening
+// queries straight at 7.0.0.0/8, 21.0.0.0/8, 22.0.0.0/8, 29.0.0.0/8 and their
+// neighbours, which are DoD space and permanently excluded. Every one of those
+// calls was spent on an answer that could not be used. Filtering here keeps the
+// widest-first ordering, which is still correct for maximising coverage per query,
+// while pointing it at ranges that could actually be decomposed.
 func loadCandidates(ctx context.Context, conn *pgx.Conn, table string) ([]netip.Prefix, error) {
+	// The exclusion filter is applied in SQL rather than in Go so that a huge
+	// candidate set is never materialised only to be thrown away. It is written as
+	// NOT EXISTS against active prefix rules, which the gist index on
+	// geo_exclusions.prefix serves directly.
+	var haveExclusions bool
+	if err := conn.QueryRow(ctx,
+		"SELECT to_regclass('public.geo_exclusions') IS NOT NULL").Scan(&haveExclusions); err != nil {
+		return nil, err
+	}
+	notExcluded := ""
+	if haveExclusions {
+		notExcluded = "AND NOT EXISTS (SELECT 1 FROM geo_exclusions x " +
+			"WHERE x.active AND x.prefix IS NOT NULL AND %s <<= x.prefix) "
+	}
+
 	q := "SELECT DISTINCT network::text FROM ip2city_dbiplite_tbl " +
-		"WHERE source = 'dbip' AND family(network) = 4 AND masklen(network) < 24"
+		"WHERE source = 'dbip' AND family(network) = 4 AND masklen(network) < 24 " +
+		strings.Replace(notExcluded, "%s", "network", 1)
 	if table != "" {
 		ident := pgx.Identifier{table}.Sanitize()
 		q = "SELECT DISTINCT c.network::text FROM " + ident + " c " +
 			"JOIN ip2city_dbiplite_tbl d ON d.network = c.network AND d.source = 'dbip' " +
-			"WHERE family(c.network) = 4 AND masklen(c.network) < 24"
+			"WHERE family(c.network) = 4 AND masklen(c.network) < 24 " +
+			strings.Replace(notExcluded, "%s", "c.network", 1)
 	}
 	rows, err := conn.Query(ctx, q)
 	if err != nil {

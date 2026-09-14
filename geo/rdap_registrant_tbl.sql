@@ -89,6 +89,33 @@ COMMENT ON TABLE rdap_registrant_tbl IS
 
 
 -- ---------------------------------------------------------------------------
+-- GRANTS.
+--
+-- This file has to be run by the table owner, but the pipeline runs as cronuser,
+-- which then needs to write here. Without these grants rdap_registrant fails on
+-- every single row with "permission denied for sequence
+-- rdap_registrant_tbl_id_seq", which is how this omission was found: the table
+-- grant alone is not enough, because a bigserial column needs USAGE on its
+-- sequence as well.
+--
+-- The role is looked up rather than assumed, so this file still runs on a database
+-- where cronuser does not exist.
+-- ---------------------------------------------------------------------------
+
+DO $$
+BEGIN
+    IF EXISTS (SELECT 1 FROM pg_roles WHERE rolname = 'cronuser') THEN
+        GRANT SELECT, INSERT, UPDATE, DELETE ON rdap_registrant_tbl TO cronuser;
+        GRANT USAGE, SELECT ON SEQUENCE rdap_registrant_tbl_id_seq TO cronuser;
+        RAISE NOTICE 'granted rdap_registrant_tbl and its sequence to cronuser';
+    ELSE
+        RAISE NOTICE 'role cronuser does not exist, so no grants were made';
+    END IF;
+END
+$$;
+
+
+-- ---------------------------------------------------------------------------
 -- 1. THE OPERATIVE LOOKUP, as apply_splits performs it.
 --
 -- Most specific covering allocation wins, measured by span, so a reassignment
