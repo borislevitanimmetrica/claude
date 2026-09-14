@@ -343,10 +343,27 @@ func queryRDAP(client *http.Client, base string, addr netip.Addr) (record, error
 // only as the network name, so those are used in turn rather than returning
 // nothing. The role actually used is recorded alongside the name so a weaker
 // source is visible rather than silently equivalent.
+// SEVERAL ENTITIES CAN CARRY THE REGISTRANT ROLE, and taking the first one is
+// wrong. Measured against live RIPE for 51.180.0.0 - 51.181.255.255, three do:
+//
+//	MNT-ADSI          fn "MNT-ADSI"          a maintainer object
+//	ORG-ARI3-RIPE     fn "A100 ROW Inc"      the actual organisation
+//	RIPE-NCC-HM-MNT   fn "RIPE-NCC-HM-MNT"   RIPE's hostmaster maintainer
+//
+// Document order put the maintainer first, so the cache recorded "MNT-ADSI" as the
+// registrant of 26 allocations, along with APPLE-MNT, MICROSOFT-MAINT, ORCL-MNT and
+// OPENDNS-MNT from the same fault. A maintainer is an access-control object, not a
+// holder, and its name does not match the ARIN-style names any pattern is written
+// against.
+//
+// The discriminator that generalises is that a maintainer's formatted name equals
+// its handle, because it has no separate human name, whereas a real organisation
+// has fn "A100 ROW Inc" against handle "ORG-ARI3-RIPE". Handle shape is used as a
+// second signal.
 func registrantOf(n rdapIPNetwork) (string, string) {
 	preference := []string{"registrant", "administrative", "technical", "abuse"}
 	for _, want := range preference {
-		if name := findEntityByRole(n.Entities, want); name != "" {
+		if name := bestEntityForRole(n.Entities, want); name != "" {
 			return name, want
 		}
 	}
@@ -354,29 +371,112 @@ func registrantOf(n rdapIPNetwork) (string, string) {
 	if name := findAnyEntityName(n.Entities); name != "" {
 		return name, "unlabelled entity"
 	}
+	// A record with no entities whose name is an administrative placeholder is NOT
+	// a registrant answer. RIPE returns the whole of 151.0.0.0/8 as
+	// RIPE-NCC-MANAGED-ADDRESS-BLOCK with no entities at all, and recording that as
+	// a registrant spanning 16.7 million addresses is worse than recording nothing:
+	// it suppresses every future query inside the block and hands a placeholder to
+	// anything that reads the registrant.
+	if isPlaceholderName(n.Name) {
+		return "", "placeholder:" + n.Name
+	}
 	if n.Name != "" {
 		return n.Name, "network name"
 	}
 	return "", "none"
 }
 
-func findEntityByRole(entities []rdapEntity, role string) string {
-	for _, e := range entities {
-		for _, r := range e.Roles {
-			if strings.EqualFold(r, role) {
-				if fn := vcardFN(e.VcardArray); fn != "" {
-					return fn
+// bestEntityForRole returns the most organisation-like name among all entities
+// carrying the role, searching nested entities too.
+func bestEntityForRole(entities []rdapEntity, role string) string {
+	type cand struct {
+		name  string
+		score int
+	}
+	var found []cand
+
+	var walk func([]rdapEntity)
+	walk = func(list []rdapEntity) {
+		for _, e := range list {
+			for _, r := range e.Roles {
+				if !strings.EqualFold(r, role) {
+					continue
 				}
-				if e.Handle != "" {
-					return e.Handle
+				fn := vcardFN(e.VcardArray)
+				name := fn
+				if name == "" {
+					name = e.Handle
 				}
+				if name == "" {
+					continue
+				}
+				score := 0
+				if isMaintainerHandle(e.Handle) || isMaintainerHandle(fn) {
+					// An access-control object, never the holder.
+					score -= 10
+				}
+				if strings.HasPrefix(strings.ToUpper(e.Handle), "ORG-") {
+					score += 3
+				}
+				if fn != "" && !strings.EqualFold(fn, e.Handle) {
+					// A human name distinct from the handle is the strongest signal
+					// that this entity is a real organisation.
+					score += 2
+				}
+				found = append(found, cand{name: name, score: score})
+				break
 			}
-		}
-		if name := findEntityByRole(e.Entities, role); name != "" {
-			return name
+			walk(e.Entities)
 		}
 	}
-	return ""
+	walk(entities)
+
+	best := ""
+	bestScore := 0
+	for i, c := range found {
+		if i == 0 || c.score > bestScore {
+			best, bestScore = c.name, c.score
+		}
+	}
+	// Every candidate was a maintainer, so there is no holder to report.
+	if bestScore <= -10 {
+		return ""
+	}
+	return best
+}
+
+// isMaintainerHandle recognises RIPE and APNIC maintainer objects, which carry the
+// registrant role but are access-control records rather than holders.
+func isMaintainerHandle(h string) bool {
+	u := strings.ToUpper(strings.TrimSpace(h))
+	if u == "" {
+		return false
+	}
+	return strings.HasPrefix(u, "MNT-") ||
+		strings.HasSuffix(u, "-MNT") ||
+		strings.HasSuffix(u, "-MAINT")
+}
+
+// isPlaceholderName recognises administrative filler in the network name field. A
+// record carrying one of these is a statement that the registry has no assignment
+// recorded for the range, not a statement about who holds it.
+func isPlaceholderName(name string) bool {
+	u := strings.ToUpper(strings.TrimSpace(name))
+	if u == "" {
+		return false
+	}
+	for _, frag := range []string{
+		"MANAGED-ADDRESS-BLOCK",
+		"NON-RIPE-NCC",
+		"AVAILABLE",
+		"IANA-BLK",
+		"RESERVED",
+	} {
+		if strings.Contains(u, frag) {
+			return true
+		}
+	}
+	return false
 }
 
 func findAnyEntityName(entities []rdapEntity) string {
@@ -463,11 +563,20 @@ ON CONFLICT (start_ip, end_ip) DO UPDATE SET
   http_status     = EXCLUDED.http_status,
   note            = EXCLUDED.note,
   fetched_at      = now()`
+	// The note carries the object class and, when the answer was administrative
+	// filler rather than a holder, says so explicitly. A row with a NULL registrant
+	// and a placeholder note is a POSITIVE finding: the registry was asked and has
+	// no assignment recorded for the range. That is different from having no row at
+	// all, which means nothing has been asked yet.
+	note := r.net.ObjectClassName
+	if strings.HasPrefix(r.role, "placeholder:") {
+		note = r.role
+	}
 	_, err := conn.Exec(ctx, q,
 		u32ToAddr(start).String(), u32ToAddr(end).String(),
 		nullIfEmpty(r.registrant), nullIfEmpty(r.role), nullIfEmpty(r.net.Handle),
 		nullIfEmpty(r.net.Name), nullIfEmpty(r.rir),
-		queried.String(), r.httpStatus, nullIfEmpty(r.net.ObjectClassName))
+		queried.String(), r.httpStatus, nullIfEmpty(note))
 	return err
 }
 
