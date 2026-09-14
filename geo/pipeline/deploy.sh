@@ -69,6 +69,8 @@ dbip-mmdb-import:dbip-mmdb-import/cmd:dbip-mmdb-import
 expand_cidrs:dma_export/expand_cidrs/cmd:dma_export/expand_cidrs
 dma_api:dma_api/cmd:dma_api
 probe_range_split:probe_range_split/cmd:probe_range_split
+rdap_registrant:rdap_registrant/cmd:rdap_registrant
+ipapi_rate_test:ipapi_rate_test/cmd:ipapi_rate_test
 "
 
 command -v go >/dev/null 2>&1 || fail "go is not on PATH"

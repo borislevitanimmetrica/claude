@@ -29,9 +29,38 @@
 --
 -- WHERE THE NAME COMES FROM
 --
--- ip-api, not RDAP. The isp and org fields of a probe of the range itself. Those
--- values are already stored on every probed row of ip2city_dbiplite_probe_tbl, so
--- for a range that has been probed the check costs nothing.
+-- RDAP, via rdap_registrant_tbl. This REPLACES the earlier choice of ip-api, and
+-- the reason is worth recording because the earlier assumption was that the two
+-- sources carry the same field used at the same point in the workflow. They do
+-- not.
+--
+--   RDAP    is RIR REGISTRATION data: the organisation an allocation is
+--           registered to, plus reassignment records beneath it. It answers "who
+--           holds this numberspace", which is exactly the exclusion question. It
+--           is keyed on the PREFIX, so it is available for any range whether or
+--           not that range has ever been probed.
+--
+--   ip-api  returns isp and org, which are derived commercial descriptions of who
+--           appears to be OPERATING an address. They are populated
+--           inconsistently, which is why the code had to coalesce isp then org,
+--           and they exist only as a side effect of probing one address in the
+--           range.
+--
+-- The workflow difference is what decided it. An ip-api registrant is unknown for
+-- every unprobed range, so decomposition had to defer them, and with a probe
+-- backlog measured in weeks that deferral is indefinite. RDAP has no such
+-- coupling. It also draws on a separate budget, so resolving registrants does not
+-- compete with geolocation for the 45 calls per minute the free ip-api tier
+-- allows, a limit confirmed by measurement: a single call returns X-Rl 44 with
+-- X-Ttl 60.
+--
+-- One RDAP answer describes the whole allocation containing the queried address,
+-- so a single query resolves the registrant for every candidate range inside it.
+-- That is what makes covering a candidate set of hundreds of thousands of ranges
+-- affordable.
+--
+-- apply_splits -registrant-source ip-api restores the old behaviour, and the
+-- patterns below work unchanged under either source.
 --
 -- WHAT MUST NEVER GO IN HERE
 --
@@ -59,9 +88,9 @@ CREATE TABLE IF NOT EXISTS decomposition_exclusions (
 );
 
 COMMENT ON TABLE decomposition_exclusions IS
-    'Operators whose ranges are not decomposed. Matched with ILIKE against the ip-api isp and org of a probe of the range. Does NOT remove anything from probing or output: see geo_exclusions for that.';
+    'Operators whose ranges are not decomposed. Matched with ILIKE against the registrant, which by default comes from rdap_registrant_tbl and optionally from the ip-api isp and org of a probe. Does NOT remove anything from probing or output: see geo_exclusions for that.';
 COMMENT ON COLUMN decomposition_exclusions.operator_pattern IS
-    'ILIKE pattern matched against ip-api isp and org. Include percent wildcards explicitly.';
+    'ILIKE pattern matched against the registrant name. Include percent wildcards explicitly. RDAP names differ from ip-api names, so a pattern may need both forms: ARIN returns Amazon Data Services Northern Virginia where ip-api returns Amazon.com.';
 
 
 -- ---------------------------------------------------------------------------
