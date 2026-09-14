@@ -74,6 +74,28 @@ COMMENT ON TABLE probe_stability_tbl IS
 
 
 -- ---------------------------------------------------------------------------
+-- GRANTS.
+--
+-- Same requirement as rdap_registrant_tbl: this file is run by the owner, the
+-- pipeline writes as cronuser, and a bigserial column needs USAGE on its sequence
+-- in addition to the table grant. Omitting the sequence grant fails on every row
+-- rather than at connection time, which makes it look like a tool bug.
+-- ---------------------------------------------------------------------------
+
+DO $$
+BEGIN
+    IF EXISTS (SELECT 1 FROM pg_roles WHERE rolname = 'cronuser') THEN
+        GRANT SELECT, INSERT, UPDATE, DELETE ON probe_stability_tbl TO cronuser;
+        GRANT USAGE, SELECT ON SEQUENCE probe_stability_tbl_id_seq TO cronuser;
+        RAISE NOTICE 'granted probe_stability_tbl and its sequence to cronuser';
+    ELSE
+        RAISE NOTICE 'role cronuser does not exist, so no grants were made';
+    END IF;
+END
+$$;
+
+
+-- ---------------------------------------------------------------------------
 -- 1. CHURN PER COHORT. The headline number.
 --
 -- An address counts as churned when it returned more than one distinct
