@@ -67,6 +67,15 @@ elif [ -n "$_arg" ]; then
   fi
 fi
 
+PAUSE_FILE="${PAUSE_FILE:-$LOG_DIR/probe.paused}"
+
+if [ -e "$PAUSE_FILE" ]; then
+  log "PAUSED by $PAUSE_FILE, so no ip-api calls will be made this run"
+  log "the backlog is untouched and the cycle gate is unaffected"
+  log "resume with: sudo rm $PAUSE_FILE"
+  exit 0
+fi
+
 report_db_mode
 require_database
 
