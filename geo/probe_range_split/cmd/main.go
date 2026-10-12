@@ -143,6 +143,12 @@ func main() {
 	interval := flag.Duration("interval", time.Hour, "wait between rounds of a stability run")
 	cohort := flag.String("cohort", "",
 		"label for a stability run, for example tmobile-as21928. Re-using a label resumes that cohort with its original addresses, so rounds can be days apart across separate invocations")
+	exhaustive := flag.Bool("exhaustive", false,
+		"probe EVERY address in -range rather than a sample, and report the finest prefix length at which ZIP becomes uniform. A /20 is 4096 calls, about 91 minutes at 45 per minute")
+	outFile := flag.String("out", "",
+		"append one line per probed address so a long exhaustive run survives interruption. Required with -exhaustive")
+	resume := flag.Bool("resume", false,
+		"skip addresses already present in -out, so an interrupted exhaustive run continues instead of restarting")
 	flag.Parse()
 
 	if (*rangeFlag == "") == (*asnFlag == 0) {
@@ -219,6 +225,36 @@ func main() {
 	}
 	client := &http.Client{Timeout: *timeout}
 
+	if *exhaustive {
+		// EXHAUSTIVE MODE. Every address, not a sample.
+		//
+		// This exists because sampling one address per /24 answered a different
+		// question than the one being asked. Measured on 2026-09-15, 76.90.65.0/24
+		// returned 92544 for .0 through .127 and 92543 for .128 through .255: a clean
+		// /25 split, 128 addresses each. A single sample per /24 cannot see that, and
+		// two samples would report it as noise.
+		if *rangeFlag == "" {
+			log.Fatal("-exhaustive needs -range")
+		}
+		if *outFile == "" {
+			log.Fatal("-exhaustive needs -out: a run of thousands of calls must survive interruption")
+		}
+		parent, err := netip.ParsePrefix(*rangeFlag)
+		if err != nil {
+			log.Fatalf("bad -range: %v", err)
+		}
+		parent = parent.Masked()
+		if !parent.Addr().Is4() {
+			log.Fatal("only IPv4 can be enumerated this way")
+		}
+		if parent.Bits() < 16 {
+			log.Fatalf("%s is %d addresses, which at %d calls per minute is %d hours. Refusing: narrow the range.",
+				parent, 1<<uint(32-parent.Bits()), *rate, (1<<uint(32-parent.Bits()))/(*rate*60))
+		}
+		runExhaustive(client, *endpoint, *rate, parent, *block, *outFile, *resume)
+		return
+	}
+
 	if !stability {
 		// Single-shot behaviour, unchanged. A fresh random address per sub-block,
 		// one round, no database write of any kind.
@@ -287,6 +323,220 @@ func main() {
 	}
 
 	churnReport(conn, *cohort)
+}
+
+// runExhaustive probes every address in parent, appending each result to outPath
+// as it goes, then reports the finest prefix length at which ZIP is uniform.
+func runExhaustive(client *http.Client, endpoint string, rate int, parent netip.Prefix,
+	blockBits int, outPath string, resume bool) {
+
+	total := 1 << uint(32-parent.Bits())
+	base := addrBase(parent)
+
+	// Results already on disk, so an interrupted run continues rather than
+	// spending the whole budget again.
+	seen := map[uint32]string{}
+	if resume {
+		loaded, err := loadExhaustive(outPath)
+		if err != nil {
+			log.Printf("could not read %s for resume, starting fresh: %v", outPath, err)
+		} else {
+			seen = loaded
+			log.Printf("resuming: %d addresses already in %s", len(seen), outPath)
+		}
+	}
+
+	f, err := os.OpenFile(outPath, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0644)
+	if err != nil {
+		log.Fatalf("cannot open -out %s: %v", outPath, err)
+	}
+	defer f.Close()
+
+	left := total - len(seen)
+	log.Printf("%s is %d addresses, %d still to probe, roughly %d minutes at %d per minute",
+		parent, total, left, left/rate+1, rate)
+
+	windowStart := time.Now()
+	inWindow := 0
+	done := 0
+	for i := 0; i < total; i++ {
+		v := base + uint32(i)
+		if _, ok := seen[v]; ok {
+			continue
+		}
+		addr := u32ToAddr(v)
+		if inWindow == 0 {
+			windowStart = time.Now()
+		}
+		res, err := lookup(client, endpoint, addr)
+		zip := res.Zip
+		status := res.Status
+		if err != nil {
+			status = "error"
+			zip = ""
+		}
+		// Written immediately, so nothing is lost if the run is interrupted.
+		if _, werr := fmt.Fprintf(f, "%s|%s|%s|%s|%s%s", addr, status, zip, res.City, res.Region, string([]byte{10})); werr != nil {
+			log.Fatalf("writing %s: %v", outPath, werr)
+		}
+		seen[v] = zip
+		done++
+
+		if done%256 == 0 {
+			log.Printf("  %d of %d probed, latest %s zip=%q", done, left, addr, zip)
+		}
+
+		inWindow++
+		if inWindow >= rate {
+			if elapsed := time.Since(windowStart); elapsed < time.Minute {
+				time.Sleep(time.Minute - elapsed)
+			}
+			inWindow = 0
+		}
+	}
+
+	exhaustiveReport(parent, seen, blockBits)
+}
+
+func loadExhaustive(path string) (map[uint32]string, error) {
+	out := map[uint32]string{}
+	b, err := os.ReadFile(path)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return out, nil
+		}
+		return nil, err
+	}
+	for _, line := range strings.Split(string(b), string([]byte{10})) {
+		if strings.TrimSpace(line) == "" {
+			continue
+		}
+		parts := strings.Split(line, "|")
+		if len(parts) < 3 {
+			continue
+		}
+		a, err := netip.ParseAddr(parts[0])
+		if err != nil || !a.Is4() {
+			continue
+		}
+		out[addrToU32(a)] = parts[2]
+	}
+	return out, nil
+}
+
+// exhaustiveReport answers the operative question: at what prefix length does ZIP
+// stop varying inside the block.
+//
+// It walks from the parent width down to /32 and reports the FIRST width at which
+// every aligned sub-block holds exactly one ZIP. That width is the granularity
+// decomposition would have to reach for a single ZIP per row to be truthful.
+func exhaustiveReport(parent netip.Prefix, zipByAddr map[uint32]string, blockBits int) {
+	base := addrBase(parent)
+	total := 1 << uint(32-parent.Bits())
+
+	overall := map[string]int{}
+	for i := 0; i < total; i++ {
+		z := zipByAddr[base+uint32(i)]
+		if z == "" {
+			z = "(none)"
+		}
+		overall[z]++
+	}
+
+	fmt.Println()
+	fmt.Println("=== exhaustive result for " + parent.String() + " ===")
+	outf("addresses probed: %d of %d", len(zipByAddr), total)
+	fmt.Println("ZIPs across the whole range:")
+	for _, k := range sortedKeys(overall) {
+		outf("  %-10s %d", k, overall[k])
+	}
+
+	if len(overall) == 1 {
+		fmt.Println()
+		fmt.Println("UNIFORM at the parent width, so no decomposition is needed for ZIP on this evidence.")
+		fmt.Println("Note the date: this range was 3-ZIP two days earlier, so uniformity is a snapshot.")
+		return
+	}
+
+	// The finest width needed for uniformity.
+	fmt.Println()
+	fmt.Println("uniformity by prefix length:")
+	uniformAt := -1
+	for m := parent.Bits(); m <= 32; m++ {
+		subCount := 1 << uint(m-parent.Bits())
+		subSize := 1 << uint(32-m)
+		mixed := 0
+		for s := 0; s < subCount; s++ {
+			seenZ := map[string]bool{}
+			for k := 0; k < subSize; k++ {
+				z := zipByAddr[base+uint32(s*subSize+k)]
+				if z == "" {
+					z = "(none)"
+				}
+				seenZ[z] = true
+			}
+			if len(seenZ) > 1 {
+				mixed++
+			}
+		}
+		outf("  /%-2d  %5d sub-blocks, %5d of them ZIP-mixed", m, subCount, mixed)
+		if mixed == 0 && uniformAt < 0 {
+			uniformAt = m
+		}
+	}
+
+	fmt.Println()
+	if uniformAt < 0 {
+		fmt.Println("VERDICT: no aligned prefix length makes ZIP uniform, so the ZIPs do not follow")
+		fmt.Println("subnet boundaries at all for this range. A single ZIP per range is then not")
+		fmt.Println("achievable by decomposition at any width.")
+	} else {
+		outf("VERDICT: ZIP becomes uniform at /%d, and NOT at /%d.", uniformAt, uniformAt-1)
+		outf("Decomposing to /24 would therefore leave ZIP-mixed rows here, because %d is finer than 24.", uniformAt)
+		fmt.Println("Those ranges need one row per ZIP rather than one ZIP per row, which is what")
+		fmt.Println("range2zip_tbl keyed (network, zip) is for.")
+	}
+
+	// Where the boundaries actually fall, which is the evidence for the verdict.
+	fmt.Println()
+	fmt.Println("contiguous ZIP runs:")
+	prev := ""
+	start := 0
+	for i := 0; i < total; i++ {
+		z := zipByAddr[base+uint32(i)]
+		if z == "" {
+			z = "(none)"
+		}
+		if z != prev {
+			if prev != "" {
+				outf("  %s - %s  %s", u32ToAddr(base+uint32(start)), u32ToAddr(base+uint32(i-1)), prev)
+			}
+			prev = z
+			start = i
+		}
+	}
+	if prev != "" {
+		outf("  %s - %s  %s", u32ToAddr(base+uint32(start)), u32ToAddr(base+uint32(total-1)), prev)
+	}
+
+	fmt.Println()
+	fmt.Println("This tool wrote nothing to the database.")
+}
+
+func addrBase(p netip.Prefix) uint32 {
+	b := p.Addr().As4()
+	return binary.BigEndian.Uint32(b[:])
+}
+
+func addrToU32(a netip.Addr) uint32 {
+	b := a.As4()
+	return binary.BigEndian.Uint32(b[:])
+}
+
+func u32ToAddr(v uint32) netip.Addr {
+	var b [4]byte
+	binary.BigEndian.PutUint32(b[:], v)
+	return netip.AddrFrom4(b)
 }
 
 // probeRound probes every target once, honouring the per-minute ceiling, and
