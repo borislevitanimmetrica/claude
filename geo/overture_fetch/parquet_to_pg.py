@@ -1,0 +1,361 @@
+#!/usr/bin/env python3
+"""
+Load Overture GeoParquet output (from overture_fetch.py) into PostgreSQL.
+
+Two steps, run in this order:
+
+  1. schema : inspect the parquet file(s) and WRITE two SQL files
+                <prefix>_schema.sql    -> CREATE TABLE (run BEFORE loading)
+                <prefix>_postload.sql  -> type conversion, PK, GiST index (run AFTER loading)
+  2. load   : stream the parquet rows into the table over the PostgreSQL
+              binary COPY protocol (DuckDB's postgres extension). No CSV,
+              no intermediate files, nothing needed on the DB server.
+
+Why a staging table? Overture columns are nested (names, addresses, websites,
+sources ... are STRUCT/LIST types) and geometry is WKB. The staging table holds
+them as text / bytea so the binary load is simple and robust; postload.sql
+converts them in one pass to jsonb and PostGIS geometry(...,4326).
+
+Connection: psql uses its own compiled-in defaults (e.g. a distro socket
+directory), which DuckDB's bundled libpq does not share. So the `load` step
+asks psql itself how it connects (database, user, port, TCP host or socket
+directory) and builds the DSN from that, so it uses the same connection as
+your psql. Precedence:
+    1. --dsn "dbname=gis host=localhost user=boris"   (explicit, wins)
+    2. connection details reported by `psql`          (default)
+A PGHOST environment variable overrides the host reported by psql.
+Passwords are never put in the DSN; libpq reads PGPASSWORD / ~/.pgpass.
+
+Setup:
+    pip install duckdb
+    (server side: PostGIS installed, unless you use --no-postgis)
+
+Workflow:
+    python3 parquet_to_pg.py schema --input /home/boris/geo/overture_fetch/out/usa_places.parquet --table ovt_places_usa
+    psql -v ON_ERROR_STOP=1 -f ovt_places_usa_schema.sql
+    python3 parquet_to_pg.py load   --input /home/boris/geo/overture_fetch/out/usa_places.parquet --table ovt_places_usa
+    psql -v ON_ERROR_STOP=1 -f ovt_places_usa_postload.sql
+"""
+
+import argparse
+import os
+import re
+import subprocess
+import sys
+import time
+from pathlib import Path
+
+import duckdb
+
+IDENT = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
+
+SCALAR_MAP = {
+    "VARCHAR": "text",
+    "BIGINT": "bigint",
+    "INTEGER": "integer",
+    "SMALLINT": "smallint",
+    "TINYINT": "smallint",
+    "UBIGINT": "numeric(20,0)",
+    "UINTEGER": "bigint",
+    "USMALLINT": "integer",
+    "UTINYINT": "smallint",
+    "HUGEINT": "numeric(38,0)",
+    "DOUBLE": "double precision",
+    "FLOAT": "real",
+    "BOOLEAN": "boolean",
+    "DATE": "date",
+    "TIME": "time",
+    "TIMESTAMP": "timestamp",
+    "TIMESTAMP WITH TIME ZONE": "timestamptz",
+    "UUID": "uuid",
+}
+
+
+# Extra columns appended to the generated table. They do not exist in the
+# parquet files, so `load` leaves them NULL (INSERT names only parquet columns).
+EXTRA_COLUMNS = [
+    ("ip_address", "inet"),
+    ("ip_last_carrier_node", "inet"),
+    ("ip_address_range", "inet"),
+    ("ip_last_carrier_node_range", "inet"),
+    ("url_location", "text"),
+    ("onpremises", "boolean"),
+    ("url_location_zip", "text"),
+    ("lookup_status", "text"),
+    ("registrant_1", "text"),
+    ("registrant_1_zip", "text"),
+    ("registrant_2", "text"),
+    ("registrant_2_zip", "text"),
+    ("overture_zip", "text"),
+    ("overture_zip_source", "text"),
+]
+
+
+def q(ident: str) -> str:
+    return '"' + ident.replace('"', '""') + '"'
+
+
+def lit(text: str) -> str:
+    return "'" + text.replace("'", "''") + "'"
+
+
+def check_ident(label: str, value: str):
+    if not IDENT.match(value):
+        sys.exit(f"{label} '{value}' must match [A-Za-z_][A-Za-z0-9_]*")
+
+
+def parquet_files(inp: str):
+    p = Path(inp)
+    if p.is_dir():
+        files = sorted(str(f) for f in p.glob("*.parquet"))
+        if not files:
+            sys.exit(f"No .parquet files in {p}")
+        return files
+    if p.is_file():
+        return [str(p)]
+    sys.exit(f"Input not found: {inp}")
+
+
+def connect(need_spatial: bool):
+    con = duckdb.connect()
+    try:
+        con.execute("INSTALL spatial; LOAD spatial;")
+    except duckdb.Error as exc:
+        if need_spatial:
+            sys.exit(f"Could not load DuckDB spatial extension: {exc}")
+    return con
+
+
+def describe(con, first_file: str, exclude):
+    rows = con.execute(f"DESCRIBE SELECT * FROM read_parquet({lit(first_file)})").fetchall()
+    return [(name, ctype) for name, ctype, *_ in rows if name not in exclude]
+
+
+def psql_dsn() -> str:
+    """Build a libpq DSN from the connection that `psql` itself uses.
+
+    DuckDB's postgres extension bundles its own libpq, so it does not inherit
+    psql's compiled-in defaults (such as /var/run/postgresql on Debian/Ubuntu).
+    Asking psql what it connected to avoids guessing.
+    """
+    sql = ("select current_database(), current_user, current_setting('port'), "
+           "coalesce(host(inet_server_addr()), ''), "
+           "current_setting('unix_socket_directories')")
+    try:
+        out = subprocess.run(["psql", "-X", "-qtA", "-F", "|", "-c", sql],
+                             capture_output=True, text=True, check=True).stdout.strip()
+    except (OSError, subprocess.CalledProcessError) as exc:
+        detail = getattr(exc, "stderr", "") or exc
+        sys.exit(f"Could not get connection details from psql: {detail}")
+    db, user, port, tcp_host, sock_dirs = out.split("|", 4)
+    host = os.environ.get("PGHOST") or tcp_host or sock_dirs.split(",")[0].strip()
+    parts = {"dbname": db, "user": user, "port": port, "host": host}
+    return " ".join(f"{k}={lit(v)}" for k, v in parts.items())
+
+
+def classify(name: str, duck_type: str, postgis: bool):
+    """Return (kind, staging_pg_type, final_pg_type, duckdb_select_expr)."""
+    t = duck_type.upper()
+    col = q(name)
+
+    if name == "geometry" and t in ("GEOMETRY", "BLOB"):
+        expr = f"ST_AsWKB({col})::BLOB" if t == "GEOMETRY" else col
+        final = "geometry(Geometry,4326)" if postgis else "bytea"
+        return "geom", "bytea", final, expr
+
+    if t.startswith(("STRUCT", "MAP", "UNION")) or t.endswith("]"):
+        return "json", "text", "jsonb", f"to_json({col})::VARCHAR"
+
+    if t == "BLOB":
+        return "scalar", "bytea", "bytea", col
+
+    m = re.match(r"DECIMAL\((\d+),\s*(\d+)\)", t)
+    if m:
+        pg = f"numeric({m.group(1)},{m.group(2)})"
+        return "scalar", pg, pg, col
+
+    pg = SCALAR_MAP.get(t)
+    if pg:
+        return "scalar", pg, pg, col
+
+    return "scalar", "text", "text", f"{col}::VARCHAR"  # unknown type: stringify
+
+
+def common_setup(args):
+    check_ident("--table", args.table)
+    check_ident("--pg-schema", args.pg_schema)
+    exclude = {c.strip() for c in args.exclude.split(",") if c.strip()}
+    files = parquet_files(args.input)
+    return files, exclude
+
+
+# --------------------------------------------------------------------------
+# schema
+# --------------------------------------------------------------------------
+def cmd_schema(args):
+    files, exclude = common_setup(args)
+    con = connect(need_spatial=False)
+    cols = describe(con, files[0], exclude)
+    postgis = not args.no_postgis
+    target = f"{q(args.pg_schema)}.{q(args.table)}"
+
+    kinds = [(n, t, *classify(n, t, postgis)) for n, t in cols]
+
+    # ---- 1. schema file -------------------------------------------------
+    lines = [
+        f"-- Generated by parquet_to_pg.py from {args.input}",
+        f"-- {len(files)} parquet file(s); schema read from {Path(files[0]).name}",
+        "",
+    ]
+    if postgis:
+        lines += ["CREATE EXTENSION IF NOT EXISTS postgis;", ""]
+    lines.append(f"CREATE SCHEMA IF NOT EXISTS {q(args.pg_schema)};")
+    if args.drop_existing:
+        lines.append(f"DROP TABLE IF EXISTS {target};")
+    lines.append("-- UNLOGGED for fast loading; postload.sql switches it to LOGGED.")
+    lines.append(f"CREATE UNLOGGED TABLE {target} (")
+    clash = {n for n, _ in EXTRA_COLUMNS} & {n for n, *_ in kinds}
+    if clash:
+        sys.exit(f"EXTRA_COLUMNS clash with parquet columns: {sorted(clash)}")
+    defs = []  # (column definition, trailing comment)
+    for name, duck_t, kind, stage_t, final_t, _ in kinds:
+        note = duck_t if len(duck_t) < 60 else duck_t[:57] + "..."
+        defs.append((f"{q(name)} {stage_t}", note))
+    for name, pg_t in EXTRA_COLUMNS:
+        defs.append((f"{q(name)} {pg_t}", "extra column (not in parquet)"))
+    body = []
+    for i, (coldef, note) in enumerate(defs):
+        comma = "," if i < len(defs) - 1 else ""
+        body.append(f"    {coldef}{comma}  -- {note}")
+    lines += body
+    lines.append(");")
+    lines.append("")
+    lines.append("-- staging types: nested columns are text, geometry is WKB bytea.")
+    lines.append("-- postload.sql converts them to jsonb / geometry.")
+    schema_sql = "\n".join(lines) + "\n"
+
+    # ---- 2. post-load file ---------------------------------------------
+    alters = []
+    for name, _, kind, stage_t, final_t, _ in kinds:
+        if kind == "json":
+            alters.append(f"    ALTER COLUMN {q(name)} TYPE jsonb USING {q(name)}::jsonb")
+        elif kind == "geom" and postgis:
+            alters.append(
+                f"    ALTER COLUMN {q(name)} TYPE geometry(Geometry,4326) "
+                f"USING ST_SetSRID(ST_GeomFromWKB({q(name)}),4326)")
+    post = ["-- Run AFTER loading. Generated by parquet_to_pg.py.", "\\timing on", ""]
+    if alters:
+        post.append(f"ALTER TABLE {target}")
+        post.append(",\n".join(alters) + ";")
+        post.append("")
+    names = {n for n, *_ in kinds}
+    if "id" in names:
+        post.append(f"ALTER TABLE {target} ADD PRIMARY KEY (\"id\");")
+    if "geometry" in names and postgis:
+        post.append(f"CREATE INDEX {args.table}_geometry_gix ON {target} USING gist (\"geometry\");")
+    post += [
+        f"ALTER TABLE {target} SET LOGGED;",
+        f"ANALYZE {target};",
+        "",
+        f"SELECT count(*) AS rows FROM {target};",
+    ]
+    post_sql = "\n".join(post) + "\n"
+
+    prefix = args.out_prefix or args.table
+    schema_path = Path(f"{prefix}_schema.sql")
+    post_path = Path(f"{prefix}_postload.sql")
+    schema_path.write_text(schema_sql)
+    post_path.write_text(post_sql)
+
+    print(f"Wrote {schema_path} ({len(kinds)} parquet + {len(EXTRA_COLUMNS)} extra columns)")
+    print(f"Wrote {post_path}")
+    print("\nNext:")
+    print(f"  psql -v ON_ERROR_STOP=1 -f {schema_path}")
+    print(f"  python3 {Path(sys.argv[0]).name} load --input {args.input} --table {args.table}")
+    print(f"  psql -v ON_ERROR_STOP=1 -f {post_path}")
+
+
+# --------------------------------------------------------------------------
+# load
+# --------------------------------------------------------------------------
+def cmd_load(args):
+    files, exclude = common_setup(args)
+    con = connect(need_spatial=True)
+    con.execute("INSTALL postgres; LOAD postgres;")
+    if args.threads:
+        con.execute(f"SET threads={int(args.threads)};")
+
+    cols = describe(con, files[0], exclude)
+    postgis = not args.no_postgis
+    classified = [classify(n, t, postgis) for n, t in cols]
+    col_list = ", ".join(q(n) for n, _ in cols)
+    select_list = ", ".join(f"{expr} AS {q(n)}" for (n, _), (_, _, _, expr) in zip(cols, classified))
+
+    # Use --dsn if given; otherwise ask psql how it connects, so DuckDB's
+    # bundled libpq uses the same database/user/port/host/socket as psql.
+    dsn = args.dsn or psql_dsn()
+    try:
+        con.execute(f"ATTACH {lit(dsn)} AS pg (TYPE postgres)")
+    except duckdb.Error as exc:
+        sys.exit(f"Could not connect to PostgreSQL with DSN [{dsn}]: {exc}")
+
+    target = f"pg.{q(args.pg_schema)}.{q(args.table)}"
+
+    try:
+        existing = con.execute(f"SELECT count(*) FROM {target}").fetchone()[0]
+    except duckdb.Error as exc:
+        sys.exit(f"Table {args.pg_schema}.{args.table} not reachable ({exc}).\n"
+                 f"Run the schema step and the schema.sql file first.")
+
+    if existing:
+        if not args.truncate:
+            sys.exit(f"{args.pg_schema}.{args.table} already has {existing:,} rows. "
+                     f"Use --truncate to reload from scratch.")
+        con.execute(f"CALL postgres_execute('pg', {lit(f'TRUNCATE TABLE {q(args.pg_schema)}.{q(args.table)}')})")
+
+    print(f"Loading {len(files)} file(s) into {args.pg_schema}.{args.table}")
+    t0, total = time.time(), 0
+    for i, f in enumerate(files, 1):
+        t1 = time.time()
+        n = con.execute(
+            f"INSERT INTO {target} ({col_list}) "
+            f"SELECT {select_list} FROM read_parquet({lit(f)})"
+        ).fetchone()[0]
+        total += n
+        print(f"  [{i}/{len(files)}] {Path(f).name}: {n:,} rows in {time.time() - t1:,.0f}s "
+              f"(total {total:,}, {time.time() - t0:,.0f}s elapsed)", flush=True)
+
+    print(f"\nDone: {total:,} rows. Now run the postload.sql file.")
+
+
+def main():
+    parent = argparse.ArgumentParser(add_help=False)
+    parent.add_argument("--input", required=True, help="Parquet file or directory of .parquet files")
+    parent.add_argument("--table", required=True, help="Target PostgreSQL table name")
+    parent.add_argument("--pg-schema", default="public", help="Target PostgreSQL schema (default public)")
+    parent.add_argument("--exclude", default="theme,type",
+                        help="Comma-separated columns to skip (default: theme,type -- hive partition columns)")
+    parent.add_argument("--no-postgis", action="store_true",
+                        help="Keep geometry as WKB bytea instead of PostGIS geometry")
+
+    ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
+    sub = ap.add_subparsers(dest="cmd", required=True)
+
+    s = sub.add_parser("schema", parents=[parent], help="Write schema.sql and postload.sql")
+    s.add_argument("--out-prefix", help="Prefix for generated .sql files (default: table name)")
+    s.add_argument("--drop-existing", action="store_true", help="Include DROP TABLE IF EXISTS")
+    s.set_defaults(func=cmd_schema)
+
+    l = sub.add_parser("load", parents=[parent], help="Bulk load parquet into the table")
+    l.add_argument("--dsn",
+                   help="libpq connection string (default: connection details reported by psql)")
+    l.add_argument("--truncate", action="store_true", help="Empty the table before loading")
+    l.add_argument("--threads", type=int, default=16, help="DuckDB threads (default 16)")
+    l.set_defaults(func=cmd_load)
+
+    args = ap.parse_args()
+    args.func(args)
+
+
+if __name__ == "__main__":
+    main()
