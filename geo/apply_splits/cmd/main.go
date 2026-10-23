@@ -1,5 +1,39 @@
-// Command apply_splits decomposes each split db-ip range into its aligned /24
-// subnets, inserts them as source='routeviews' rows, and deletes the parent.
+// Command apply_splits decomposes each split db-ip range into its aligned
+// subnets at the -unit prefix length, inserts them as source='routeviews' rows,
+// and deletes the parent.
+//
+// THE UNIT IS /25, AND THAT IS A MEASURED CHOICE, NOT A DEFAULT.
+//
+// Measured 2026-10-12 by probing eight addresses per /24 on /27 midpoints across
+// 96 /24s drawn from 24 live parents spanning Comcast, AT&T, Charter, Verizon,
+// CenturyLink, Suddenlink, Consolidated and PCCW:
+//
+//	uniform at /24                89   92.7 percent
+//	needs /25, clean within half   3    3.1 percent
+//	mixed within a /25             4    4.2 percent
+//
+// All four of the last group were in one parent, 45.19.184.0/21, and all four were
+// vendor error rather than geography: ip-api scattered 39205 Jackson Mississippi
+// through Baton Rouge ranges, 141 miles and two states apart, in blocks of eight
+// addresses, while every address in both ZIP groups published the same reverse DNS
+// signature lightspeed.btrgla.sbcglobal.net, which is AT&T's own token for Baton
+// Rouge LA. Excluding that parent, /25 resolves 100 percent of real cases.
+//
+// The three real /25 splits each broke exactly at .128, and in every one the two
+// ZIPs were ADJACENT with the city IDENTICAL: 77054 against 77081 both Houston,
+// 60005 against 60004 both Arlington Heights, twice. A fourth, found by exhaustive
+// enumeration of all 256 addresses, was 76.90.65.0/24 Charter, 92544 for .0-.127
+// and 92543 for .128-.255.
+//
+// Nothing finer than /25 is warranted: the only evidence for it was the vendor
+// error above. See geo/zip_granularity_findings.md.
+//
+// COST. /25 doubles the decomposed estate against /24, from roughly 3.37 million
+// rows to 6.74 million, and doubles probe time with it: at the measured free-tier
+// ceiling of 45 ip-api calls a minute, which is 64,800 a day, that is about 104
+// days for the new rows against 52. That is affordable only with the paid batch
+// endpoint, and it is the reason -unit exists rather than the constant being
+// edited: /24 remains selectable without touching code.
 //
 // Why /24 decomposition rather than inserting the BGP child prefixes directly:
 // BGP children do NOT tile their parent. Measured 2026-09-01 on live data, only
@@ -39,6 +73,7 @@ import (
 	"net/netip"
 	"os"
 	"sort"
+	"strconv"
 	"time"
 
 	"github.com/jackc/pgx/v5"
@@ -95,7 +130,15 @@ func main() {
 			"Disabling this decomposes before the registrant is known, which defeats the exclusion entirely")
 	deferUnprobed := flag.Bool("defer-unprobed", true,
 		"deprecated alias for -defer-unknown-registrant, retained so existing invocations keep working")
+	unit := flag.Int("unit", 25,
+		"prefix length to decompose into. Measured 2026-10-12 on 96 /24s: 92.7 percent were ZIP-uniform at /24, "+
+			"three needed /25, and the three that appeared to need finer were vendor error contradicted by the "+
+			"operator's own DNS. /25 therefore resolves every real case and nothing finer is warranted")
 	flag.Parse()
+
+	if *unit < 8 || *unit > 32 {
+		log.Fatalf("-unit must be between 8 and 32, not %d", *unit)
+	}
 
 	switch *registrantSource {
 	case "rdap", "ip-api":
@@ -141,7 +184,8 @@ func main() {
 	}
 	log.Printf("loaded %d active prefix exclusions", len(excluded))
 
-	parents, err := loadParents(ctx, conn, *sourceTable, *operatorCheck, *registrantSource)
+	log.Printf("decomposition unit is /%d", *unit)
+	parents, err := loadParents(ctx, conn, *sourceTable, *operatorCheck, *registrantSource, *unit)
 	if err != nil {
 		log.Fatalf("loading candidates: %v", err)
 	}
@@ -155,8 +199,8 @@ func main() {
 	var totalProbes int64
 
 	for _, p := range parents {
-		if p.masklen >= 24 {
-			// Already at or below /24: nothing to decompose.
+		if p.masklen >= *unit {
+			// Already at or below the decomposition unit: nothing to decompose.
 			skippedNarrow++
 			continue
 		}
@@ -188,8 +232,8 @@ func main() {
 		totalProbes += p.probes
 	}
 
-	log.Printf("skipped: %d already /24 or narrower, %d excluded by prefix, %d over -max-probes",
-		skippedNarrow, skippedExcluded, skippedTooBig)
+	log.Printf("skipped: %d already /%d or narrower, %d excluded by prefix, %d over -max-probes",
+		skippedNarrow, *unit, skippedExcluded, skippedTooBig)
 	log.Printf("registrant: %d excluded by operator, %d deferred because no registrant could be determined",
 		skippedOperator, deferredUnprobed)
 	if deferredUnprobed > 0 && *registrantSource == "rdap" {
@@ -197,12 +241,12 @@ func main() {
 			deferredUnprobed)
 	}
 	if len(operatorCounts) > 0 {
-		log.Printf("operator exclusions avoided these /24 rows:")
+		log.Printf("operator exclusions avoided these /%d rows:", *unit)
 		for _, name := range sortedByValue(operatorCounts) {
 			log.Printf("  %-44s %d", name, operatorCounts[name])
 		}
 	}
-	log.Printf("to decompose: %d parents into %d /24 rows", len(work), totalProbes)
+	log.Printf("to decompose: %d parents into %d /%d rows", len(work), totalProbes, *unit)
 
 	if *limit > 0 && len(work) > *limit {
 		work = work[:*limit]
@@ -211,7 +255,7 @@ func main() {
 			t += p.probes
 		}
 		totalProbes = t
-		log.Printf("limited to %d parents (%d /24 rows)", len(work), totalProbes)
+		log.Printf("limited to %d parents (%d /%d rows)", len(work), totalProbes, *unit)
 	}
 
 	if len(work) == 0 {
@@ -220,7 +264,7 @@ func main() {
 	}
 
 	fmt.Println()
-	fmt.Println(fmt.Sprintf("/24 rows to insert: %d", totalProbes))
+	fmt.Println(fmt.Sprintf("/%d rows to insert: %d", *unit, totalProbes))
 	fmt.Println(fmt.Sprintf("ip-api probe time at 45/min once inserted: %.1f days",
 		float64(totalProbes)/64800.0))
 
@@ -232,8 +276,8 @@ func main() {
 			if shown >= 20 {
 				break
 			}
-			fmt.Println(fmt.Sprintf("  %-20s /%d -> %d /24 rows (%d bgp children)",
-				p.network, p.masklen, p.probes, p.children))
+			fmt.Println(fmt.Sprintf("  %-20s /%d -> %d /%d rows (%d bgp children)",
+				p.network, p.masklen, p.probes, *unit, p.children))
 			shown++
 		}
 		return
@@ -244,7 +288,7 @@ func main() {
 	t0 := time.Now()
 
 	for i, p := range work {
-		ins, del, err := decompose(ctx, conn, p, *inherit)
+		ins, del, err := decompose(ctx, conn, p, *inherit, *unit)
 		if err != nil {
 			log.Printf("decomposing %s failed, skipping: %v", p.network, err)
 			continue
@@ -254,8 +298,8 @@ func main() {
 		deleted += del
 
 		if (i+1)%200 == 0 || i+1 == len(work) {
-			log.Printf("progress: %d/%d parents, %d /24 rows inserted (%s elapsed)",
-				i+1, len(work), doneRows, time.Since(t0).Round(time.Second))
+			log.Printf("progress: %d/%d parents, %d /%d rows inserted (%s elapsed)",
+				i+1, len(work), doneRows, *unit, time.Since(t0).Round(time.Second))
 		}
 	}
 
@@ -263,7 +307,7 @@ func main() {
 	fmt.Println("=== apply_splits complete ===")
 	fmt.Println(fmt.Sprintf("parents decomposed: %d", doneParents))
 	fmt.Println(fmt.Sprintf("parents deleted:    %d", deleted))
-	fmt.Println(fmt.Sprintf("/24 rows inserted:  %d", doneRows))
+	fmt.Println(fmt.Sprintf("/%d rows inserted:  %d", *unit, doneRows))
 	fmt.Println(fmt.Sprintf("elapsed:            %s", time.Since(t0).Round(time.Second)))
 	fmt.Println("Next: check_geo_ip-api will probe these rows (city IS NULL in the traceroute table).")
 }
@@ -328,7 +372,7 @@ func loadExcludedPrefixes(ctx context.Context, conn *pgx.Conn) ([]netip.Prefix, 
 
 // loadParents returns candidate ranges that are STILL present as db-ip rows, so
 // re-running after a partial pass does no double work.
-func loadParents(ctx context.Context, conn *pgx.Conn, table string, operatorCheck bool, source string) ([]parent, error) {
+func loadParents(ctx context.Context, conn *pgx.Conn, table string, operatorCheck bool, source string, unit int) ([]parent, error) {
 	ident := pgx.Identifier{table}.Sanitize()
 
 	// The exclusion is matched on the operator NAME rather than on an ASN. An ASN
@@ -428,7 +472,7 @@ func loadParents(ctx context.Context, conn *pgx.Conn, table string, operatorChec
 	// accepts IPv6 prefixes, and coveredBy is family-correct. Only the
 	// decomposition is IPv4-bound.
 	q := "SELECT c.network::text, masklen(c.network), " + childExpr + ", " +
-		"(2::numeric ^ greatest(0, 24 - masklen(c.network)))::bigint, " +
+		"(2::numeric ^ greatest(0, " + strconv.Itoa(unit) + " - masklen(c.network)))::bigint, " +
 		knownExpr + ", " + registrantExpr + ", " + opExpr + " " +
 		"FROM " + ident + " c " +
 		"JOIN ip2city_dbiplite_tbl d ON d.network = c.network AND d.source = 'dbip' " +
@@ -493,7 +537,7 @@ func coveredBy(network string, excluded []netip.Prefix) bool {
 // decompose expands one parent into aligned /24 rows and deletes the parent,
 // atomically. The /24 addresses are generated as parent_base + i*256, which for
 // a CIDR-aligned parent enumerates exactly its constituent /24s in order.
-func decompose(ctx context.Context, conn *pgx.Conn, p parent, inherit bool) (int64, int64, error) {
+func decompose(ctx context.Context, conn *pgx.Conn, p parent, inherit bool, unit int) (int64, int64, error) {
 	tx, err := conn.Begin(ctx)
 	if err != nil {
 		return 0, 0, err
@@ -502,11 +546,16 @@ func decompose(ctx context.Context, conn *pgx.Conn, p parent, inherit bool) (int
 
 	// city_names and subdivisions_names are NOT NULL, so they always receive a
 	// value: the parent's when inheriting, otherwise an empty object/array.
+	// The address step is 2^(32-unit): 256 for a /24, 128 for a /25. Getting this
+	// wrong would either overlap the children or leave gaps, so it is derived from
+	// the unit rather than written as a literal.
+	step := 1 << uint(32-unit)
 	insertSQL := "WITH p AS (SELECT * FROM ip2city_dbiplite_tbl " +
 		"WHERE network = $1::cidr AND source = 'dbip'), " +
-		"kids AS (SELECT set_masklen((host(p.network)::inet + (g.i * 256))::inet, 24)::cidr AS net, p.* " +
+		"kids AS (SELECT set_masklen((host(p.network)::inet + (g.i * " + strconv.Itoa(step) + "))::inet, " +
+		strconv.Itoa(unit) + ")::cidr AS net, p.* " +
 		"FROM p CROSS JOIN generate_series(0, " +
-		"(2::numeric ^ (24 - masklen(p.network)))::bigint - 1) AS g(i)) " +
+		"(2::numeric ^ (" + strconv.Itoa(unit) + " - masklen(p.network)))::bigint - 1) AS g(i)) " +
 		"INSERT INTO ip2city_dbiplite_tbl (" + insertColumns + ") " +
 		"SELECT k.net, k.continent_code, k.continent_geoname_id, k.continent_names, " +
 		"k.country_geoname_id, k.country_iso_code, k.country_is_in_eu, k.country_names, " +
@@ -519,7 +568,7 @@ func decompose(ctx context.Context, conn *pgx.Conn, p parent, inherit bool) (int
 
 	res, err := tx.Exec(ctx, insertSQL, p.network)
 	if err != nil {
-		return 0, 0, fmt.Errorf("insert /24 rows: %w", err)
+		return 0, 0, fmt.Errorf("insert /%d rows: %w", unit, err)
 	}
 	inserted := res.RowsAffected()
 

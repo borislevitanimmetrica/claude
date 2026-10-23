@@ -23,10 +23,13 @@ Subcommands:
   overture-zip establish each place's ZIP (overture_zip, with overture_zip_source): the Overture
            postcode, else a ZIP in the address text, else the one ZIP of the same locality
            and region; --dry-run counts rows with a website but no postcode
-  onpremises   set onpremises, reading ISPs from the ISP table (matched ignoring case):
-           NULL if the place has no Overture ZIP; otherwise true if every registrant is an
-           ISP, or a NON-ISP registrant's ZIP equals / is adjacent to the Overture ZIP;
-           else false; --dry-run only counts, per deciding rule
+  onpremises   set onpremises, reading ISPs from the ISP table and CDN/cloud/web-host names
+           from the provider table (both matched ignoring case): NULL if the place has no
+           Overture ZIP; false if ANY registrant is a provider, since a provider's edge
+           router never routes retail subscribers and the anchor is therefore unusable;
+           otherwise true if every registrant is an ISP, or a NON-ISP registrant's ZIP
+           equals / is adjacent to the Overture ZIP; else false; --dry-run only counts,
+           per deciding rule. Supersedes `mark`, which was not durable across reruns
   report   list distinct url_location values with row counts (CSV file + stdout);
            --by-name groups by registrant name instead
   mark     set onpremises = false for rows whose url_location (or, with
@@ -904,10 +907,25 @@ def cmd_onpremises(args):
     The place's ZIP is the overture_zip column (see the overture-zip step).
       0. no registrant data                                                          -> NULL
       1. no Overture ZIP (we do not know where the landmark is)                      -> NULL
-      2. every registrant is an ISP (one ISP, or two)                                -> true
-      3. a NON-ISP registrant's ZIP equals the Overture ZIP                          -> true
-      4. a NON-ISP registrant's ZIP is adjacent to the Overture ZIP (zip_adjacency)  -> true
-      5. otherwise (including non-ISP registrants without a ZIP, e.g. non-US)        -> false"""
+      2. ANY registrant is a CDN, cloud or web host (--provider-table)               -> false
+      3. every registrant is an ISP (one ISP, or two)                                -> true
+      4. a NON-ISP registrant's ZIP equals the Overture ZIP                          -> true
+      5. a NON-ISP registrant's ZIP is adjacent to the Overture ZIP (zip_adjacency)  -> true
+      6. otherwise (including non-ISP registrants without a ZIP, e.g. non-US)        -> false
+
+    Rule 2 runs BEFORE the ZIP tests and that ordering is the point. The landmark method
+    works by shared routing: a landmark's static address and nearby retail customers'
+    dynamic addresses reach the network through the same carrier node, and matching on that
+    node transfers the ZIP. For a CDN-fronted or cloud-hosted site the adjacent node is the
+    provider's edge router, which routes content and never subscribers, so retail routing
+    can never converge through it. The anchor is unusable regardless of whether its ZIP is
+    right. Placed after the ZIP tests instead, any landmark near a provider's registered
+    office would pass: Akamai in Cambridge 02142 against MIT's 02139, Cloudflare and Fastly
+    in San Francisco, Amazon in Herndon.
+
+    Rule 2 also replaces the `mark` subcommand, which was not durable: `mark` issued a plain
+    UPDATE and this step then recomputed the column with no exemption, flipping marked rows
+    back on the next run."""
     ctx = Ctx(args)
     missing = [c for c in REG_COLUMNS if c not in ctx.cols]
     if missing:
@@ -934,11 +952,35 @@ def cmd_onpremises(args):
     def norm(col):          # 5-character text ZIP, restoring leading zeros lost in numeric columns
         return f"left(lpad(btrim({q(zcols[col])}::text), 5, '0'), 5)"
 
+    # The provider table is optional, so an installation that has not created it keeps the
+    # previous behaviour rather than failing. A missing table makes the provider test a
+    # constant false, which is reported below so it cannot pass unnoticed.
+    check_ident("--provider-table", args.provider_table)
+    prov_tbl = f"{q(args.pg_schema)}.{q(args.provider_table)}"
+    have_prov = query_csv(f"SELECT to_regclass({lit(prov_tbl)}) IS NOT NULL")[0][0] == "t"
+    if have_prov:
+        n_prov = int(query_csv(f"SELECT count(*) FROM {prov_tbl}")[0][0])
+        print(f"{n_prov:,} provider names in {args.pg_schema}.{args.provider_table} "
+              f"(CDN, cloud and web hosts; matched ignoring case)", flush=True)
+        if not n_prov:
+            print(f"WARNING: {prov_tbl} is empty, so no registrant counts as a provider.",
+                  file=sys.stderr)
+    else:
+        print(f"WARNING: provider table {args.pg_schema}.{args.provider_table} not found, so rule 2 "
+              f"is skipped and CDN-hosted landmarks can still pass the ZIP tests. "
+              f"Create it with geo/overture_fetch/provider_names.sql.", file=sys.stderr)
+
     isps_t = f"{q(args.pg_schema)}.{q(args.table + '_tmp_isps')}"
+    provs_t = f"{q(args.pg_schema)}.{q(args.table + '_tmp_provs')}"
     adj_t = f"{q(args.pg_schema)}.{q(args.table + '_tmp_adj')}"
     ovz = "t.overture_zip"
     isp1 = f"coalesce(lower(btrim(t.registrant_1)) IN (SELECT name FROM {isps_t}), false)"
     isp2 = f"coalesce(lower(btrim(t.registrant_2)) IN (SELECT name FROM {isps_t}), false)"
+    if have_prov:
+        prov_any = (f"(coalesce(lower(btrim(t.registrant_1)) IN (SELECT name FROM {provs_t}), false)"
+                    f" OR coalesce(lower(btrim(t.registrant_2)) IN (SELECT name FROM {provs_t}), false))")
+    else:
+        prov_any = "false"
     z1 = f"(CASE WHEN {isp1} THEN NULL ELSE t.registrant_1_zip END)"    # an ISP's ZIP never counts
     z2 = f"(CASE WHEN {isp2} THEN NULL ELSE t.registrant_2_zip END)"
     all_isp = f"({isp1} AND (t.registrant_2 IS NULL OR {isp2}))"
@@ -946,6 +988,7 @@ def cmd_onpremises(args):
     case = f"""CASE
   WHEN t.registrant_1 IS NULL THEN NULL
   WHEN {ovz} IS NULL THEN NULL
+  WHEN {prov_any} THEN false
   WHEN {all_isp} THEN true
   WHEN {ovz} IN ({z1}, {z2}) THEN true
   WHEN {adj_test} THEN true
@@ -953,12 +996,13 @@ def cmd_onpremises(args):
     rule = f"""CASE
   WHEN t.registrant_1 IS NULL THEN '0 no registrant data: NULL'
   WHEN {ovz} IS NULL THEN '1 no Overture ZIP: NULL'
-  WHEN {all_isp} AND t.registrant_2 IS NULL THEN '2a single ISP registrant: true'
-  WHEN {all_isp} THEN '2b two ISP registrants: true'
-  WHEN {ovz} IN ({z1}, {z2}) THEN '3 non-ISP registrant ZIP matches: true'
-  WHEN {adj_test} THEN '4 non-ISP registrant ZIP adjacent: true'
-  WHEN {z1} IS NULL AND {z2} IS NULL THEN '5a no non-ISP registrant ZIP: false'
-  ELSE '5b ZIPs differ and are not adjacent: false' END"""
+  WHEN {prov_any} THEN '2 CDN, cloud or web host registrant: false'
+  WHEN {all_isp} AND t.registrant_2 IS NULL THEN '3a single ISP registrant: true'
+  WHEN {all_isp} THEN '3b two ISP registrants: true'
+  WHEN {ovz} IN ({z1}, {z2}) THEN '4 non-ISP registrant ZIP matches: true'
+  WHEN {adj_test} THEN '5 non-ISP registrant ZIP adjacent: true'
+  WHEN {z1} IS NULL AND {z2} IS NULL THEN '6a no non-ISP registrant ZIP: false'
+  ELSE '6b ZIPs differ and are not adjacent: false' END"""
     mix = f"""CASE
   WHEN t.registrant_1 IS NULL THEN 'no registrant data'
   WHEN t.registrant_2 IS NULL AND {isp1} THEN 'single ISP'
@@ -966,10 +1010,16 @@ def cmd_onpremises(args):
   WHEN {isp1} AND {isp2} THEN 'two ISPs'
   WHEN {isp1} OR {isp2} THEN 'ISP + other registrant'
   ELSE 'two non-ISP registrants' END"""
+    prov_build = ""
+    if have_prov:
+        prov_build = (f"CREATE UNLOGGED TABLE {provs_t} AS "
+                      f"SELECT DISTINCT lower(btrim(name)) AS name FROM {prov_tbl};\n"
+                      f"CREATE INDEX ON {provs_t} (name);\nANALYZE {provs_t};")
     run_script(f"""
-DROP TABLE IF EXISTS {isps_t}, {adj_t};
+DROP TABLE IF EXISTS {isps_t}, {provs_t}, {adj_t};
 CREATE UNLOGGED TABLE {isps_t} AS SELECT DISTINCT lower(btrim(name)) AS name FROM {isp_tbl};
 CREATE INDEX ON {isps_t} (name);
+{prov_build}
 CREATE UNLOGGED TABLE {adj_t} (a text, b text, PRIMARY KEY (a, b));
 INSERT INTO {adj_t} SELECT a, b FROM (
     SELECT {norm('zip_a')} AS a, {norm('zip_b')} AS b FROM {zt}
@@ -994,7 +1044,7 @@ WITH u AS (UPDATE {ctx.target} t SET onpremises = {case}
 SELECT count(*) AS rows_changed FROM u;""")
         print(f"{changed:,} rows changed")
     finally:
-        run_sql(f"DROP TABLE IF EXISTS {isps_t}, {adj_t}")
+        run_sql(f"DROP TABLE IF EXISTS {isps_t}, {provs_t}, {adj_t}")
     run_script(f"ANALYZE {ctx.target};")
     print("onpremises among rows with lookup_status = 'true' (NULL = cannot be evaluated):")
     for val, n in query_csv(f"""SELECT coalesce(onpremises::text, 'NULL'), count(*) FROM {ctx.target}
@@ -1233,6 +1283,11 @@ def main():
     s.add_argument("--isp-table", default="isp_names",
                    help="Table of ISP registrant names, column name (default isp_names; see load-isps)")
     s.add_argument("--zip-table", default="zip_adjacency", help="Adjacent ZIP pairs, columns zip_a and zip_b")
+    s.add_argument("--provider-table", default="provider_names",
+                   help="Table of CDN, cloud and web-host registrant names, column name "
+                        "(default provider_names; create with provider_names.sql). Any registrant "
+                        "matching makes onpremises false BEFORE the ZIP tests, because a provider's "
+                        "edge router never routes retail subscribers")
     s.add_argument("--dry-run", action="store_true", help="Only show how many rows would get each value")
     s.set_defaults(func=cmd_onpremises)
 
