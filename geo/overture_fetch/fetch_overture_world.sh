@@ -1,0 +1,1 @@
+python3 overture_fetch.py --theme places --type place --region world -o out/world_places.parquet
