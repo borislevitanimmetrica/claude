@@ -58,9 +58,14 @@ fail() {
 # geo/ and is where "go build" runs. install_subpath is relative to GEO_HOME
 # and mirrors the layout the pipeline scripts expect, which is
 # GEO_HOME/<subpath>/bin/<name> as used by require_exec.
+# last_carrier_node builds from geo/main.go, which is package main at the geo
+# root rather than under a cmd/ directory, so its build_dir is "." and the
+# package argument stays the default ".". It was previously not deployed at all
+# and had to be run out of a working copy.
 TOOLS="
 apply_splits:apply_splits/cmd:apply_splits
 bgp_route_views:bgp_route_views/cmd:bgp_route_views
+last_carrier_node:.:last_carrier_node
 check_geo_ip-api:check_geo_ip-api:check_geo_ip-api
 check_range_splits:check_range_splits/cmd:check_range_splits
 check_routeviews_ip-api:check_routeviews_ip-api/cmd:check_routeviews_ip-api
