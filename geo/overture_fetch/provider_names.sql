@@ -96,6 +96,50 @@ ON CONFLICT DO NOTHING;
 
 
 -- ---------------------------------------------------------------------------
+-- SECOND BATCH, from the review of the deepest 60 non-ISP on-premises
+-- registrants. Each is a host, a CDN or a website platform. Universities,
+-- hospitals, health systems and city and state governments in that same report
+-- are landmarks and are deliberately absent.
+--
+-- Three were researched rather than classified by name, and they did not all go
+-- the same way:
+--
+--   CarsForSale.com        A dealer website platform, not a car dealer. South
+--                          Dakota court filings describe it supplying "website
+--                          hosting ... and custom dealership websites" to 22,000
+--                          auto dealers. Its 131 places are DEALERSHIPS whose
+--                          sites it hosts, which is the direct answer to why a
+--                          single registrant shows hundreds of places.
+--   Brownrice Internet     Its own site calls it "a vps hosting, webcam
+--                          streaming, and data center company based in Taos, NM",
+--                          selling dedicated servers and colocation. A host.
+--   Synergy Networks       NOT included. See the note below: it sells
+--                          business-class broadband as well as hosting, so it
+--                          plausibly belongs in isp_names instead.
+--
+-- HDC/HW Enterprise, LLC (60606, 116 places) is NOT included because it was not
+-- researched. Do not add it on the strength of the name alone.
+-- ---------------------------------------------------------------------------
+
+INSERT INTO public.provider_names (name) VALUES
+    ('Liquid Web, L.L.C'),
+    ('InMotion Hosting, Inc.'),
+    ('Springs Hosting'),
+    ('Namecheap, Inc.'),
+    ('Rackspace Hosting'),
+    ('HostGator.com LLC'),
+    ('New Dream Network, LLC'),
+    ('Automattic, Inc'),
+    ('OVH US LLC'),
+    ('Incapsula Inc'),
+    ('Brownrice Internet, Inc.'),
+    ('Unified Layer'),
+    ('Newfold Digital, Inc.'),
+    ('CarsForSale.com')
+ON CONFLICT DO NOTHING;
+
+
+-- ---------------------------------------------------------------------------
 -- 1. WHAT THE SEED MATCHES, before changing anything.
 --
 -- Run this first. It reports how many currently-true rows each provider accounts
@@ -141,6 +185,67 @@ LIMIT 60;
 
 
 -- ---------------------------------------------------------------------------
+-- 3. THE SELF-BUILDING DETECTOR. Ranking by place count alone cannot separate a
+-- host from a landmark, because both produce large counts for different reasons.
+--
+-- A health system legitimately owns hundreds of Overture places: clinics,
+-- departments, physician offices and laboratories are each a separate place, and
+-- all of their websites point at the system's own server, so one address yields
+-- one registrant and hundreds of rows. CarsForSale.com also yields hundreds, but
+-- because it HOSTS hundreds of other companies' sites.
+--
+-- GEOGRAPHIC SPREAD separates them. A hospital's own places cluster around its
+-- own ZIP. A host's clients are scattered nationally. Counting distinct 3-digit
+-- ZIP prefixes and distinct states measures exactly that, and sorting by it
+-- surfaces hosts without needing to recognise their names.
+--
+-- Read the top of this list: high spread with a high place count is a host.
+-- ---------------------------------------------------------------------------
+
+SELECT t.registrant_1                                            AS registrant,
+       count(*)                                                  AS places,
+       count(DISTINCT t.overture_zip)                            AS distinct_zips,
+       count(DISTINCT left(t.overture_zip, 3))                   AS zip3_regions,
+       count(DISTINCT t.ip_address)                              AS distinct_ips,
+       count(*) FILTER (WHERE t.registrant_2 IS NOT NULL)        AS rows_with_second_registrant
+FROM ovt_places_usa t
+WHERE t.onpremises = true
+  AND lower(btrim(t.registrant_1)) NOT IN (SELECT lower(btrim(name)) FROM isp_names)
+  AND lower(btrim(t.registrant_1)) NOT IN (SELECT lower(btrim(name)) FROM public.provider_names)
+GROUP BY 1
+HAVING count(*) >= 25
+ORDER BY count(DISTINCT left(t.overture_zip, 3)) DESC, count(*) DESC
+LIMIT 60;
+
+
+-- ---------------------------------------------------------------------------
+-- 4. WHICH REGISTRANT ACTUALLY DECIDED THE ROW.
+--
+-- Section 2 groups by registrant_1, but the ZIP tests consider registrant_2 as
+-- well, so a row can be true because the SECOND registrant's ZIP matched while the
+-- first is a host. Any interpretation of section 2 that ignores this is unsound,
+-- which is why this query exists rather than an assumption.
+--
+-- Substitute the registrant being examined.
+-- ---------------------------------------------------------------------------
+
+SELECT t.registrant_1,
+       t.registrant_1_zip,
+       t.registrant_2,
+       t.registrant_2_zip,
+       count(*)                                                  AS places,
+       count(DISTINCT t.overture_zip)                            AS distinct_place_zips,
+       min(t.overture_zip)                                       AS zip_lo,
+       max(t.overture_zip)                                       AS zip_hi
+FROM ovt_places_usa t
+WHERE t.onpremises = true
+  AND t.registrant_1 = 'CarsForSale.com'
+GROUP BY 1, 2, 3, 4
+ORDER BY 5 DESC
+LIMIT 20;
+
+
+-- ---------------------------------------------------------------------------
 -- 3. SOUTHWEST CYBERPORT BELONGS IN isp_names, NOT HERE.
 --
 -- Confirmed from the operator's own site: a New Mexico ISP since 1994, selling DSL
@@ -153,7 +258,28 @@ LIMIT 60;
 -- Uncomment to apply.
 -- ---------------------------------------------------------------------------
 
--- INSERT INTO public.isp_names (name) VALUES ('Southwest Cyberport, Inc.')
+INSERT INTO public.isp_names (name) VALUES ('Southwest Cyberport, Inc.')
+ON CONFLICT DO NOTHING;
+
+
+-- ---------------------------------------------------------------------------
+-- SYNERGY NETWORKS IS THE GENUINELY AMBIGUOUS ONE, and it is left for a decision.
+--
+-- Fort Myers FL, 33901, 151 places. It is both: its own listings describe "one of
+-- Florida's fastest-growing Internet Service Providers" selling "Broadband
+-- Internet access" and "business class internet", AND "web hosting, web design"
+-- with "data center and hosting solutions".
+--
+-- That makes it the same shape as Southwest Cyberport, which was resolved in
+-- favour of isp_names. The argument for doing the same here is that a node selling
+-- business-class access in Fort Myers routes retail business customers, which is
+-- exactly what the method wants. The argument against is that the hosted sites sit
+-- in its data centre rather than at the landmark.
+--
+-- Recommended: isp_names, on the Southwest Cyberport precedent. Not applied.
+-- ---------------------------------------------------------------------------
+
+-- INSERT INTO public.isp_names (name) VALUES ('Synergy Networks')
 -- ON CONFLICT DO NOTHING;
 
 
