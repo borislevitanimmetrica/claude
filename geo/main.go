@@ -21,10 +21,35 @@ import (
 	"github.com/jackc/pgx/v5"
 )
 
+// The two target sources. "ranges" is the original behaviour and the default,
+// so every existing invocation keeps working unchanged.
+const (
+	sourceRanges    = "ranges"
+	sourceLandmarks = "landmarks"
+)
+
+// identRe bounds the table names that arrive from flags. They are interpolated
+// into SQL because a table name cannot be a bind parameter, so the only safe
+// course is to refuse anything that is not a plain identifier.
+var identRe = regexp.MustCompile(`^[a-z_][a-z0-9_]*$`)
+
+func checkIdent(name string) error {
+	if !identRe.MatchString(name) {
+		return fmt.Errorf("%q is not a plain lower-case identifier", name)
+	}
+	return nil
+}
+
+// target is one unit of work. For the default range source, start/end bound a
+// prefix and the address actually traced is drawn at random inside it. For the
+// landmark source the address is not a sample but THE datum, so start==end and
+// exact is set: see runRange, which must then retry the same address rather
+// than rerolling a new one.
 type target struct {
 	network string
 	start   netip.Addr
 	end     netip.Addr
+	exact   bool
 }
 
 type result struct {
@@ -163,18 +188,32 @@ func (r classificationRules) matchCustomerMarker(hostname string) bool {
 }
 
 func main() {
-	sampleSize := flag.Int("n", 200, "number of ranges to sample")
+	sampleSize := flag.Int("n", 200, "how many targets to take this run: ranges with -source ranges, distinct landmark addresses with -source landmarks")
 	concurrency := flag.Int("concurrency", 5, "concurrent mtr runs")
 	maxHops := flag.Int("max-hops", 15, "mtr max hops (-m)")
 	cycles := flag.Int("cycles", 5, "mtr report cycles per hop (-c)")
 	interval := flag.Float64("interval", 1.0, "seconds between mtr probe cycles (-i)")
 	useUDP := flag.Bool("udp", false, "use UDP probes instead of mtr's default ICMP")
 	country := flag.String("country", "", "restrict to this country_iso_code (e.g. US); empty = no filter")
-	maxAttempts := flag.Int("max-attempts", 3, "retry with a new random address from the same range while status is incomplete, up to this many tries")
+	maxAttempts := flag.Int("max-attempts", 3, "retries while the status is not terminal, up to this many tries; with -source ranges each try takes a new random address in the range, with -source landmarks each try re-traces the same landmark address")
 	backtrackHops := flag.Int("backtrack-hops", 5, "how many responding hops back from the trace's far end to search for a usable carrier hostname")
 	rdapScriptFlag := flag.String("rdap-script", "./rdap-lookup.sh", "path to rdap-lookup.sh; run on the sampled IP as an ownership/location fallback when status is excluded-internal (empty string disables the fallback)")
 	ipv4Only := flag.Bool("ipv4-only", false, "sample only IPv4 ranges even when IPv6 connectivity is available (skips the IPv6 connectivity probe)")
+	source := flag.String("source", sourceRanges, "where targets come from: \"ranges\" traces a random address inside each ip2city_dbiplite_tbl prefix and writes ip2city_dbiplite_traceroute_tbl keyed on network (the original behaviour); \"landmarks\" traces each distinct on-premises landmark address from -landmark-table exactly and writes -trace-table keyed on that address")
+	landmarkTable := flag.String("landmark-table", "ovt_places_usa", "landmark table read by -source landmarks; needs columns ip_address inet and onpremises boolean")
+	traceTable := flag.String("trace-table", "ovt_places_usa_ip_trace", "destination table for -source landmarks, keyed on ip; create with geo/overture_fetch/create_table_ovt_places_usa_ip_trace.sql")
+	pauseFile := flag.String("pause-file", "", "if this path exists, stop feeding new traces and wait for it to be removed; in-flight traces finish (empty string disables the check)")
 	flag.Parse()
+
+	if *source != sourceRanges && *source != sourceLandmarks {
+		log.Fatalf("-source must be %q or %q, got %q", sourceRanges, sourceLandmarks, *source)
+	}
+	if err := checkIdent(*landmarkTable); err != nil {
+		log.Fatalf("-landmark-table: %v", err)
+	}
+	if err := checkIdent(*traceTable); err != nil {
+		log.Fatalf("-trace-table: %v", err)
+	}
 
 	if _, err := exec.LookPath("mtr"); err != nil {
 		log.Fatalf("mtr binary not found on PATH: %v", err)
@@ -233,7 +272,26 @@ func main() {
 		log.Printf("IPv6 connectivity probe: available=%v", ipv6OK)
 	}
 
-	targets, err := sampleTargets(ctx, conn, *sampleSize, *country, ipv6OK)
+	// The two sources differ in what they select, what identity they write
+	// against, and whether a retry rerolls the address. Everything between
+	// here and the write is shared, so the classification of a landmark hop
+	// and of a probe-range hop is by construction the same code: a divergence
+	// there would silently make the two sides unmatchable.
+	var targets []target
+	var write func(context.Context, *pgx.Conn, result) error
+	var unit string
+
+	switch *source {
+	case sourceRanges:
+		targets, err = sampleTargets(ctx, conn, *sampleSize, *country, ipv6OK)
+		write = writeResult
+		unit = "ranges"
+	case sourceLandmarks:
+		targets, err = sampleLandmarks(ctx, conn, *sampleSize, *landmarkTable, *traceTable, ipv6OK)
+		tt := *traceTable
+		write = func(c context.Context, cn *pgx.Conn, r result) error { return writeTrace(c, cn, tt, r) }
+		unit = "landmark addresses"
+	}
 	if err != nil {
 		log.Fatalf("sampling targets: %v", err)
 	}
@@ -241,11 +299,12 @@ func main() {
 	if *useUDP {
 		method = "mtr-udp"
 	}
-	log.Printf("sampled %d ranges (country filter: %q, ipv6 included: %v, method: %s, cycles: %d, max-attempts: %d)",
-		len(targets), *country, ipv6OK, method, *cycles, *maxAttempts)
+	log.Printf("source=%s: selected %d %s (country filter: %q, ipv6 included: %v, method: %s, cycles: %d, max-attempts: %d)",
+		*source, len(targets), unit, *country, ipv6OK, method, *cycles, *maxAttempts)
 
 	if len(targets) == 0 {
-		log.Fatal("no eligible ranges found")
+		log.Printf("no eligible %s found; nothing to do", unit)
+		return
 	}
 
 	jobs := make(chan target)
@@ -262,8 +321,15 @@ func main() {
 		}()
 	}
 
+	// The pause check sits in the feeder, not in the workers, so pausing stops
+	// NEW traces and lets in-flight ones finish and be written. A worker-side
+	// check would instead strand partial work. A full landmark pass is tens of
+	// hours of ICMP, so being able to stand it down without losing the
+	// completed portion is the difference between an interruption and a
+	// restart. Mirrors probe_batch.sh's PAUSE_FILE.
 	go func() {
 		for _, t := range targets {
+			waitWhilePaused(*pauseFile)
 			jobs <- t
 		}
 		close(jobs)
@@ -276,7 +342,7 @@ func main() {
 
 	written := 0
 	for r := range results {
-		if err := writeResult(ctx, conn, r); err != nil {
+		if err := write(ctx, conn, r); err != nil {
 			log.Printf("write failed for %s: %v", r.network, err)
 			continue
 		}
@@ -349,6 +415,89 @@ AND NOT (t.network <<= '100.64.0.0/10'::cidr)`
 		out = append(out, target{network: netText, start: start, end: end})
 	}
 	return out, rows.Err()
+}
+
+// sampleLandmarks selects distinct on-premises landmark addresses that have no
+// trace yet.
+//
+// DISTINCT is load-bearing and not just an optimisation. Many Overture places
+// share one resolved address — a health system's clinics all point at the same
+// server — and tracing that address once per place would multiply tens of hours
+// of ICMP by a factor of roughly ten for identical results. The trace is a
+// property of the ADDRESS, so it is stored per address in the trace table and
+// fanned back out to places by join, exactly as ovt_places_usa_ip_rdap does for
+// RDAP results.
+//
+// onpremises = true is the whole filter on quality: it already encodes the ISP
+// rule, the CDN/cloud/web-host provider exclusion and the registrant-ZIP
+// adjacency test. A provider-hosted address is deliberately absent, because the
+// node adjacent to it is the provider's edge router and can never converge with
+// retail routing.
+//
+// The NOT EXISTS against the trace table makes the pass resumable, which a
+// multi-day run requires. ORDER BY random() is kept rather than any stable
+// order so that a partial pass is a representative sample of the whole country
+// instead of an alphabetical or address-ordered prefix of it; interrupted after
+// 10%, the result is still usable for measuring the fan-out distribution.
+func sampleLandmarks(ctx context.Context, conn *pgx.Conn, n int, landmarkTable, traceTable string, includeIPv6 bool) ([]target, error) {
+	// The DISTINCT has to be wrapped before ORDER BY random(), because
+	// PostgreSQL rejects "SELECT DISTINCT ... ORDER BY random()" outright:
+	// every ORDER BY expression must appear in the select list of a DISTINCT
+	// query, and random() cannot (SQLSTATE 42P10). Deduplicating in an inner
+	// query and shuffling the result outside is the standard shape.
+	inner := fmt.Sprintf(`
+SELECT DISTINCT p.ip_address
+FROM %s p
+WHERE p.onpremises = true
+  AND p.ip_address IS NOT NULL
+  AND NOT (p.ip_address <<= '100.64.0.0/10'::cidr)
+  AND NOT EXISTS (SELECT 1 FROM %s t WHERE t.ip = p.ip_address)`, landmarkTable, traceTable)
+
+	if !includeIPv6 {
+		inner += " AND family(p.ip_address) = 4"
+	}
+	query := fmt.Sprintf("SELECT d.ip_address FROM (%s) d ORDER BY random() LIMIT $1", inner)
+
+	rows, err := conn.Query(ctx, query, n)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	var out []target
+	for rows.Next() {
+		var ip netip.Addr
+		if err := rows.Scan(&ip); err != nil {
+			return nil, err
+		}
+		// network carries the address only so the progress log and error
+		// messages have an identity to print; the trace table is keyed on
+		// sampled_ip, which for an exact target is this same address.
+		out = append(out, target{network: ip.String(), start: ip, end: ip, exact: true})
+	}
+	return out, rows.Err()
+}
+
+// waitWhilePaused blocks while the pause file exists, logging once per
+// transition so a paused run is visible in the log without flooding it.
+func waitWhilePaused(path string) {
+	if path == "" {
+		return
+	}
+	announced := false
+	for {
+		if _, err := os.Stat(path); err != nil {
+			if announced {
+				log.Printf("pause file %s removed, resuming", path)
+			}
+			return
+		}
+		if !announced {
+			log.Printf("pause file %s present, holding off new traces (remove it to resume)", path)
+			announced = true
+		}
+		time.Sleep(15 * time.Second)
+	}
 }
 
 // flexFloat accepts either a JSON number or a numeric string for
@@ -615,11 +764,26 @@ func runRange(t target, maxHops, cycles int, interval float64, useUDP bool, meth
 	totalAttempts := 0
 
 	for i := 0; i < maxAttempts; i++ {
-		sampled, err := randomAddrInRangeExcluding(t.start, t.end, tried)
-		if err != nil {
-			break
+		// An exact target retries the SAME address. Rerolling would defeat the
+		// purpose: the landmark's own address is the measurement, and a
+		// neighbouring address in the same prefix is a different host that may
+		// sit behind different equipment. Retrying still has value, because a
+		// single trace can lose the decisive hop to transient ICMP rate
+		// limiting. Note that the sampling path cannot be reused here even
+		// though start==end would return that one address: it records the
+		// address in `tried` and would then fail the second attempt with
+		// "range exhausted", silently capping an exact target at one try.
+		var sampled netip.Addr
+		if t.exact {
+			sampled = t.start
+		} else {
+			var err error
+			sampled, err = randomAddrInRangeExcluding(t.start, t.end, tried)
+			if err != nil {
+				break
+			}
+			tried[sampled] = true
 		}
-		tried[sampled] = true
 		totalAttempts++
 
 		r := runOne(t.network, sampled, maxHops, cycles, interval, useUDP, method, backtrackHops, rules)
@@ -776,6 +940,39 @@ ON CONFLICT (network) DO UPDATE SET
     ran_at                              = now()
 `, r.network, r.sampledIP, r.lastHopIP, r.lastHopName, nullIfZero(r.lastHopNumber), r.hopCount, r.status,
 		r.probeMethod, r.likelyMobileCGN, r.classificationNote, r.attempts, r.rdapLookup)
+	return err
+}
+
+// writeTrace stores a landmark trace keyed on the traced ADDRESS.
+//
+// It cannot share ip2city_dbiplite_traceroute_tbl, which is keyed ON CONFLICT
+// (network) with one row per prefix. Landmarks are addresses, and many
+// landmarks commonly sit in one prefix, so writing them to a network-keyed
+// table would have each landmark overwrite the previous one's carrier node and
+// leave a single arbitrary survivor per prefix. That failure would not be
+// visible as an error; it would just quietly discard most of the pass.
+func writeTrace(ctx context.Context, conn *pgx.Conn, table string, r result) error {
+	if !r.sampledIP.IsValid() {
+		return fmt.Errorf("no address was traced for %s (status %q), nothing to key on", r.network, r.status)
+	}
+	_, err := conn.Exec(ctx, fmt.Sprintf(`
+INSERT INTO %s
+    (ip, last_hop_ip, last_hop_hostname, last_hop_number, hop_count, status,
+     probe_method, likely_mobile_cgnat, classification_note, attempts, traced_at)
+VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, now())
+ON CONFLICT (ip) DO UPDATE SET
+    last_hop_ip         = EXCLUDED.last_hop_ip,
+    last_hop_hostname   = EXCLUDED.last_hop_hostname,
+    last_hop_number     = EXCLUDED.last_hop_number,
+    hop_count           = EXCLUDED.hop_count,
+    status              = EXCLUDED.status,
+    probe_method        = EXCLUDED.probe_method,
+    likely_mobile_cgnat = EXCLUDED.likely_mobile_cgnat,
+    classification_note = EXCLUDED.classification_note,
+    attempts            = EXCLUDED.attempts,
+    traced_at           = now()
+`, table), r.sampledIP, r.lastHopIP, r.lastHopName, nullIfZero(r.lastHopNumber), r.hopCount, r.status,
+		r.probeMethod, r.likelyMobileCGN, r.classificationNote, r.attempts)
 	return err
 }
 
