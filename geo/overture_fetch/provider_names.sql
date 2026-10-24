@@ -56,8 +56,10 @@
 -- DSL in partnership with CenturyLink, its own LightSpeed fiber, SWCP DIRECT fixed
 -- wireless, and dedicated connections to apartment and office complexes. It routes
 -- retail residential and business customers, so its carrier node is exactly what
--- the method wants. It belongs in isp_names, where it is currently MISSING from
--- the 1,100 names. See the final section.
+-- the method wants. It belongs in isp_names, where it was MISSING from the 1,100
+-- names, and section 5 adds it. But see the caveat at the end of section 6: it
+-- also sells hosting, which by the rule the Synergy case established may make
+-- isp_names membership too strong. That is an open question, not a correction.
 --
 -- Contains NO backslashes so it survives copy/paste.
 
@@ -136,6 +138,46 @@ INSERT INTO public.provider_names (name) VALUES
     ('Unified Layer'),
     ('Newfold Digital, Inc.'),
     ('CarsForSale.com')
+ON CONFLICT DO NOTHING;
+
+
+-- ---------------------------------------------------------------------------
+-- THIRD BATCH, from the spread detector in section 3 rather than from the
+-- place-count ranking. Every one was surfaced by high distinct-zip3 spread, which
+-- is the signature of a host: its clients are scattered nationally while a
+-- genuine landmark's own places cluster around its own ZIP.
+--
+-- Reviewed and approved wholesale on the ground that retail traffic is improbable
+-- to transit nodes near any of their facilities, which is the exclusion test
+-- stated at the top of this file.
+--
+--   Vultr Holdings, LLC     221 places, 12 zip3 regions. Cloud compute.
+--   Linode                  103 places. Cloud compute, now Akamai-owned, and a
+--                           distinct registrant string from the Akamai entry.
+--   Vercel, Inc             101 places. Front-end application hosting.
+--   Expedient                75 places. Data centres and managed cloud.
+--   Web.com Group, Inc.      70 places. Website builder and host.
+--   CivicPlus, LLC           69 places. Hosted websites for municipalities, which
+--                           is why its places look like city halls.
+--   Tier.Net Technologies     50 places. Hosting and colocation.
+--   OVH Hosting, Inc.        39 places, 8 zip3 regions. A DISTINCT registrant
+--                           string from 'OVH US LLC' already seeded above. Both
+--                           are needed because the match is on the exact name.
+--   Otava, LLC               35 places. Managed cloud and colocation.
+--   DFW Datacenter           26 places. Colocation, as the name states.
+-- ---------------------------------------------------------------------------
+
+INSERT INTO public.provider_names (name) VALUES
+    ('Vultr Holdings, LLC'),
+    ('Linode'),
+    ('Vercel, Inc'),
+    ('Expedient'),
+    ('Web.com Group, Inc.'),
+    ('CivicPlus, LLC'),
+    ('Tier.Net Technologies LLC'),
+    ('OVH Hosting, Inc.'),
+    ('Otava, LLC'),
+    ('DFW Datacenter')
 ON CONFLICT DO NOTHING;
 
 
@@ -246,7 +288,7 @@ LIMIT 20;
 
 
 -- ---------------------------------------------------------------------------
--- 3. SOUTHWEST CYBERPORT BELONGS IN isp_names, NOT HERE.
+-- 5. SOUTHWEST CYBERPORT BELONGS IN isp_names, NOT HERE.
 --
 -- Confirmed from the operator's own site: a New Mexico ISP since 1994, selling DSL
 -- through CenturyLink, its own LightSpeed fiber, fixed wireless, and building
@@ -263,24 +305,210 @@ ON CONFLICT DO NOTHING;
 
 
 -- ---------------------------------------------------------------------------
--- SYNERGY NETWORKS IS THE GENUINELY AMBIGUOUS ONE, and it is left for a decision.
+-- 6. SYNERGY NETWORKS: RESOLVED. IT BELONGS IN NEITHER LIST, and the earlier
+-- recommendation in this file that it be added to isp_names was WRONG. It is
+-- recorded here because the reasoning that overturned it is reusable.
 --
--- Fort Myers FL, 33901, 151 places. It is both: its own listings describe "one of
--- Florida's fastest-growing Internet Service Providers" selling "Broadband
--- Internet access" and "business class internet", AND "web hosting, web design"
--- with "data center and hosting solutions".
+-- Fort Myers FL, 33901. It is genuinely both businesses: its listings describe
+-- "one of Florida's fastest-growing Internet Service Providers" selling
+-- "business class internet", AND "web hosting, web design" with "data center and
+-- hosting solutions".
 --
--- That makes it the same shape as Southwest Cyberport, which was resolved in
--- favour of isp_names. The argument for doing the same here is that a node selling
--- business-class access in Fort Myers routes retail business customers, which is
--- exactly what the method wants. The argument against is that the hosted sites sit
--- in its data centre rather than at the landmark.
+-- FIRST QUESTION ASKED: do the two units register under different names, so that
+-- the ISP role could set true and the hosting role false? Answer: NO. All of
+-- Synergy's own space sits under ONE ARIN org handle, SYNN, fn exactly
+-- 'Synergy Networks', at 2075 West First Street, Ft. Myers FL 33901. That single
+-- org holds 12 networks, and both roles are inside it:
 --
--- Recommended: isp_names, on the Southwest Cyberport precedent. Not applied.
+--     UU-63-75-167    63.75.167.0/24      contains 63.75.167.99, which serves
+--                                         the HOSTED customer site snwebdm.com
+--     SYNN-2075       65.87.192.0/22      2,048 addresses, named after their own
+--                                         street number
+--     plus 63.107.x, 63.109.x, 63.118.x, 63.126.x, 65.193.x, 65.202.x,
+--     208.220.93.x, all legacy UUNET and MCI reassignments
+--
+-- RDAP on the hosting address returns registrant 'Synergy Networks', identical to
+-- everything else. The NETNAME distinguishes the roles but the REGISTRANT does
+-- not, and this pipeline keys on registrant_1 and registrant_2. A name-based split
+-- is therefore impossible.
+--
+-- WORSE THAN AMBIGUOUS: the name is also used by Synergy's own CUSTOMERS. An ARIN
+-- entity search for 'Synergy Networks*' returns eight orgs, and only SYNN is
+-- Synergy's own:
+--
+--     C02229240, C02235678   Naples Beach Hotel & Golf Club, 851 Gulfshore Blvd N,
+--                            Naples FL 34102
+--     C02209929              'Synergy Networks - Brown and Brown', 3820 Colonial
+--                            Blvd, Fort Myers 33966, the insurance broker
+--     C01840002              2612 Edison Avenue, Ft Myers, a /29
+--     SYNERG-53              2057 West First St, note 2057 not 2075, holding
+--                            64.200.0.0/21 and /22 under Time Warner netnames
+--     SYNERG-62              2075 West First Street, zero networks
+--     C00921769              'Synergy Networks, Inc' in KANSAS CITY MO, an
+--                            unrelated company on SBC space, and a distinct string
+--
+-- Three of those are downstream business customers SWIPed with the ISP's name in
+-- the customer record. They are the most valuable landmarks available: real
+-- premises, known ZIP, reached through Synergy's access network. They are
+-- indistinguishable by name from the hosting block.
+--
+-- WHY NEITHER LIST IS THE RIGHT ANSWER. Synergy is absent from isp_names, so it is
+-- adjudicated as a non-ISP registrant and rules 4 and 5 decide each place on its
+-- own Overture ZIP against 33901. That is a PER-PLACE split, which is strictly
+-- better than the per-company split originally sought. The measurement confirms it
+-- separates cleanly:
+--
+--     onpremises = true    151 places, ALL in zip3 339, spread over eight ZIPs:
+--                          33904 (45), 33907 (36), 33990 (20), 33901 (17),
+--                          33919 (15), 33916 (9), 33903 (6), 33917 (3).
+--                          Every one is Lee County FL.
+--     onpremises = false   about 550 places across more than 60 zip3 regions,
+--                          including 021 Boston, 100 New York, 112 Brooklyn,
+--                          191 Philadelphia, 531 Milwaukee, 640 and 641 Kansas
+--                          City, 750 Dallas, 900 and 902 Los Angeles, alongside
+--                          147 that are in zip3 339 but more than one ZIP from
+--                          33901.
+--
+-- The true set is the access network. The false set is the hosting business. The
+-- ZIP rule drew the line by itself, with no name distinction.
+--
+-- ADDING IT TO isp_names WOULD BREAK THIS. Rule 3a makes a single ISP registrant a
+-- hard true regardless of ZIP, so all ~550 nationally scattered hosted sites would
+-- flip to true. Adding it to provider_names would discard 151 good Fort Myers
+-- anchors. Doing nothing is correct.
+--
+-- THE GENERAL RULE THIS ESTABLISHES, which corrects the Southwest Cyberport
+-- precedent rather than following it: a name belongs in isp_names only if it
+-- routes retail AND does not host third parties, because membership is an
+-- unconditional true that bypasses the ZIP test. A mixed ISP-and-host should be
+-- left in NEITHER list so the ZIP test can adjudicate per place.
+--
+-- THIS PUTS SOUTHWEST CYBERPORT IN QUESTION, and the question is raised rather
+-- than acted on, because adding it to isp_names was an explicit instruction and is
+-- already applied live. swcp.com sells web hosting alongside its DSL, fiber and
+-- fixed wireless, so by the rule above it is the same shape as Synergy and would
+-- be better left out of isp_names. Its membership there now makes rule 3a a hard
+-- true for every landmark behind it, including any site it merely hosts. The test
+-- is the same measurement run for Synergy: if Southwest Cyberport's places cluster
+-- in New Mexico it is harmless, and if they scatter nationally it is not. Awaiting
+-- a decision, see section 5.
+--
+-- RESIDUAL ERROR, accepted. A Fort Myers business whose site Synergy hosts passes
+-- the ZIP test while its adjacent node is Synergy's hosting edge, not its
+-- subscriber edge. For an operator this small those are plausibly the same
+-- aggregation, and even when they are not, the address is physically at 2075 West
+-- First Street in 33901 while the business is in 33901 or a neighbour. The error
+-- is bounded at one ZIP, inside the tolerance rule 5 already grants.
 -- ---------------------------------------------------------------------------
 
--- INSERT INTO public.isp_names (name) VALUES ('Synergy Networks')
--- ON CONFLICT DO NOTHING;
+-- DELIBERATELY NOT INSERTED ANYWHERE. Do not "fix" this by adding the name.
+
+
+-- ---------------------------------------------------------------------------
+-- 7. VERIFY THE ADJACENCY THAT CARRIED THE SYNERGY TRUE SET.
+--
+-- Only 17 of the 151 are in 33901 itself, so 134 passed on rule 5 as adjacent.
+-- Three of the eight ZIPs are Cape Coral, across the Caloosahatchee from downtown
+-- Fort Myers, and 33990 is mid-Cape rather than on the river. ZIP polygons often
+-- extend across water, so adjacency is plausible, but 20 places rest on it and it
+-- was asserted rather than checked. This query checks it.
+--
+-- Expect a row for each of the eight. A MISSING row means the place passed on
+-- registrant_2's ZIP instead, which section 4 will show.
+-- ---------------------------------------------------------------------------
+
+-- zip_adjacency holds pairs in columns zip_a and zip_b, stored one way round only,
+-- so the test must be symmetric. It is padded to five characters exactly as the
+-- onpremises step does, because a numeric column loses leading zeros.
+
+WITH adj AS (
+    SELECT left(lpad(btrim(zip_a::text), 5, '0'), 5) AS a,
+           left(lpad(btrim(zip_b::text), 5, '0'), 5) AS b FROM zip_adjacency
+    UNION
+    SELECT left(lpad(btrim(zip_b::text), 5, '0'), 5),
+           left(lpad(btrim(zip_a::text), 5, '0'), 5) FROM zip_adjacency)
+SELECT p.zip                                            AS place_zip,
+       p.places,
+       (p.zip = '33901')                                AS is_registrant_zip,
+       EXISTS (SELECT 1 FROM adj WHERE adj.a = p.zip AND adj.b = '33901')
+                                                        AS adjacent_to_33901,
+       CASE WHEN p.zip = '33901' THEN 'rule 4, exact'
+            WHEN EXISTS (SELECT 1 FROM adj WHERE adj.a = p.zip AND adj.b = '33901')
+                 THEN 'rule 5, adjacent'
+            ELSE 'NEITHER: passed on registrant_2, or a defect' END AS explains_the_true
+FROM (VALUES ('33904', 45), ('33907', 36), ('33990', 20), ('33901', 17),
+             ('33919', 15), ('33916',  9), ('33903',  6), ('33917',  3))
+     AS p(zip, places)
+ORDER BY 2 DESC;
+
+
+-- ---------------------------------------------------------------------------
+-- 8. TWO RDAP ADDRESS DEFECTS FOUND DURING THE SYNERGY LOOKUP, both of which
+-- bear on the 367,334-row bucket '6a no non-ISP registrant ZIP: false'.
+--
+--   EMPTY ZIP FIELD, RECOVERABLE. SYNERG-62's address is
+--   '2075 West First Street, , FL, ,'. Street and state are present, the ZIP is
+--   blank. It is recoverable here: the sibling SYNN record at the same street
+--   gives 33901. Some share of the 367k is likely this shape, which argues for
+--   parsing the RDAP address text rather than only reading the ZIP field.
+--
+--   WRONG ZIP PRESENT, WORSE THAN ABSENT. C01840002 claims
+--   '2612 Edison Avenue, Ft Myers, FL, 32204'. 32204 is JACKSONVILLE, about 300
+--   miles away. A wrong-but-present ZIP is more damaging than a missing one
+--   because it passes rules 4 and 5 against the wrong place rather than failing
+--   safe. A street-and-city versus ZIP consistency check would catch it.
+--
+-- A THIRD CATEGORY, which is correctly false and must not be "recovered": ARIN is
+-- the registry for Canada and much of the Caribbean as well as the United States.
+-- A Canadian registrant's postal code is 'M5V 3A8', which cannot match the
+-- five-digit heuristic in zip_from_address and could never equal a US Overture ZIP
+-- anyway. Those rows belong in 6a permanently.
+--
+-- There is no registrant address COLUMN. The raw record is kept in url_location as
+-- 'Registrant Entity : A | Geographic Address: ... | ...', and registrant_1_zip is
+-- parsed out of it by zip_from_address, which takes a ZIP immediately after a
+-- two-letter state code, else a ZIP at the end of the address. So the question
+-- "is the ZIP recoverable" is a question about url_location, and this query
+-- decomposes the bucket into the three cases before any parser work is attempted.
+-- ---------------------------------------------------------------------------
+
+SELECT count(*)                                                      AS rows_in_6a,
+       count(DISTINCT t.registrant_1)                                AS distinct_registrants,
+       count(*) FILTER (WHERE t.url_location LIKE '%Geographic Address%')
+                                                                     AS have_address_text,
+       count(*) FILTER (WHERE t.url_location ~ '[A-Z][0-9][A-Z][ ]?[0-9][A-Z][0-9]')
+                                                                     AS looks_canadian,
+       count(*) FILTER (WHERE t.url_location ~ '[0-9]{5}')
+                                                                     AS has_five_digits_somewhere,
+       count(*) FILTER (WHERE t.url_location LIKE '%Geographic Address%'
+                          AND t.url_location !~ '[A-Z][0-9][A-Z][ ]?[0-9][A-Z][0-9]'
+                          AND t.url_location ~ '[0-9]{5}')           AS candidate_recoverable
+FROM ovt_places_usa t
+WHERE t.lookup_status = 'true'
+  AND t.onpremises IS NOT TRUE
+  AND t.registrant_1 IS NOT NULL
+  AND t.registrant_1_zip IS NULL
+  AND t.registrant_2_zip IS NULL;
+
+
+-- The registrants that would repay a parser fix, largest first. A handful of names
+-- covering most of the bucket means a targeted fix is worthwhile; a long flat tail
+-- means it is not. Read the address text to see WHY the heuristic missed.
+
+SELECT t.registrant_1                                   AS registrant,
+       count(*)                                         AS rows_in_6a,
+       min(t.url_location)                              AS one_example_record
+FROM ovt_places_usa t
+WHERE t.lookup_status = 'true'
+  AND t.onpremises IS NOT TRUE
+  AND t.registrant_1 IS NOT NULL
+  AND t.registrant_1_zip IS NULL
+  AND t.registrant_2_zip IS NULL
+  AND t.url_location LIKE '%Geographic Address%'
+  AND t.url_location ~ '[0-9]{5}'
+GROUP BY 1
+ORDER BY 2 DESC
+LIMIT 40;
 
 
 DO $$
