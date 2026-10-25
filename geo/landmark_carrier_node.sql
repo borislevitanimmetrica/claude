@@ -153,6 +153,89 @@ ORDER BY 2 DESC;
 
 
 -- ---------------------------------------------------------------------------
+-- 1b. THE THREE DEFECTS FOUND ON THE FIRST 2,000-ADDRESS PASS. Measure them
+-- before and after the fixes, because each one silently wastes traces rather
+-- than raising an error, and a wasted trace in a multi-hour pass is expensive.
+--
+--   SELF-TRACE. last_hop_ip equals the address traced, so the recorded
+--   "carrier node" is the landmark's own web server. Unusable: a probe range's
+--   node can never match it. A landmark answers ICMP, so the trace completes
+--   and the final responding hop IS the destination, which matched no
+--   exclusion and no customer marker and was accepted. Range targets hid this
+--   because a random address in a range almost never answers. Fixed in
+--   classifyHops step 0, which discards any hop whose address is the address
+--   being traced. After the fix this count must be ZERO. Rows traced before
+--   the fix need re-tracing: delete them, which the statement below does not
+--   do by itself.
+--
+--   PROVIDER-HOSTED. The address belongs to a CDN, cloud or web host, so rule
+--   2 makes the landmark false and it should never have been traced. Cause is
+--   not the tool: it is that `onpremises` has only ever been run with
+--   --dry-run, so the stored column predates the provider table. Run
+--   `ovt_resolve_hosts.py onpremises` for real BEFORE a long pass.
+--
+--   BACKBONE NODE. The accepted node is a transit core, which cannot anchor a
+--   ZIP. The fan-out guard rejects these anyway so they are not a correctness
+--   risk, only wasted traces. Not fixed by adding domain exclusions, because
+--   Cogent and Zayo hostnames are ambiguous: the ccr, agr and er forms are
+--   core routers, while a hostname carrying a b-prefixed building number or an
+--   IDIA- circuit identifier is customer edge. Awaiting a decision.
+-- ---------------------------------------------------------------------------
+
+SELECT count(*)                                                       AS traced,
+       count(*) FILTER (WHERE t.last_hop_ip = t.ip)                   AS self_trace,
+       round(100.0 * count(*) FILTER (WHERE t.last_hop_ip = t.ip)
+             / nullif(count(*), 0), 1)                                AS self_trace_pct,
+       count(*) FILTER (WHERE lower(btrim(p.registrant_1)) IN (SELECT lower(btrim(name)) FROM provider_names)
+                           OR lower(btrim(p.registrant_2)) IN (SELECT lower(btrim(name)) FROM provider_names))
+                                                                      AS provider_hosted,
+       count(*) FILTER (WHERE t.last_hop_hostname ~ '(cogentco|zayo|lumen[.]tech|he[.]net|twelve99[.]net)')
+                                                                      AS backbone_node,
+       count(*) FILTER (WHERE t.status = 'reached'
+                          AND t.last_hop_ip IS DISTINCT FROM t.ip
+                          AND t.last_hop_hostname !~ '(cogentco|zayo|lumen[.]tech|he[.]net|twelve99[.]net)')
+                                                                      AS usable_now
+FROM public.ovt_places_usa_ip_trace t
+LEFT JOIN LATERAL (
+    SELECT registrant_1, registrant_2 FROM ovt_places_usa
+    WHERE ip_address = t.ip LIMIT 1) p ON true;
+
+
+-- The self-traced rows must be re-traced once the fix is deployed, because the
+-- useful hop was never recorded. Deleting them makes sampleLandmarks pick them
+-- up again, since it resumes on NOT EXISTS against this table. Deliberately
+-- left commented: it discards measured work, and it should be run knowingly,
+-- after confirming the count above and that the deployed binary carries the
+-- fix (go version -m on the installed binary should report the merge commit).
+
+-- DELETE FROM public.ovt_places_usa_ip_trace WHERE last_hop_ip = ip;
+
+
+-- Which carrier operators the usable nodes actually belong to, by the domain of
+-- the node's reverse DNS. Read this to see whose hostnames carry a town name
+-- and are therefore worth anything: Comcast's rur/ssag/soag forms encode one
+-- (westroxbury, woburn, lynn, maynard, peabody), while a transit core does not.
+
+-- The last two labels of the hostname are extracted with reverse and
+-- split_part rather than regexp_replace with a backreference, because a
+-- backreference needs a backslash and this file must contain none so that it
+-- survives copy and paste.
+
+SELECT reverse(split_part(reverse(t.last_hop_hostname), '.', 2)) || '.'
+       || reverse(split_part(reverse(t.last_hop_hostname), '.', 1))  AS node_domain,
+       count(*)                                                       AS nodes,
+       count(DISTINCT t.last_hop_ip)                                  AS distinct_node_ips,
+       min(t.last_hop_hostname)                                       AS example
+FROM public.ovt_places_usa_ip_trace t
+WHERE t.status = 'reached'
+  AND t.last_hop_hostname IS NOT NULL
+  AND t.last_hop_ip IS DISTINCT FROM t.ip
+GROUP BY 1
+ORDER BY 2 DESC
+LIMIT 40;
+
+
+-- ---------------------------------------------------------------------------
 -- 2. FILL ip_address_range AND ip_last_carrier_node_range WITHOUT PROBING.
 --
 -- These two inet columns on ovt_places_usa have existed unpopulated since the

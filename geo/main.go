@@ -33,6 +33,10 @@ const (
 // course is to refuse anything that is not a plain identifier.
 var identRe = regexp.MustCompile(`^[a-z_][a-z0-9_]*$`)
 
+// zipPrefixRe bounds -zip-prefix, which is interpolated into a LIKE pattern.
+// Digits only, so there is no way to smuggle a wildcard or a quote.
+var zipPrefixRe = regexp.MustCompile(`^[0-9]{1,5}$`)
+
 func checkIdent(name string) error {
 	if !identRe.MatchString(name) {
 		return fmt.Errorf("%q is not a plain lower-case identifier", name)
@@ -203,7 +207,17 @@ func main() {
 	landmarkTable := flag.String("landmark-table", "ovt_places_usa", "landmark table read by -source landmarks; needs columns ip_address inet and onpremises boolean")
 	traceTable := flag.String("trace-table", "ovt_places_usa_ip_trace", "destination table for -source landmarks, keyed on ip; create with geo/overture_fetch/create_table_ovt_places_usa_ip_trace.sql")
 	pauseFile := flag.String("pause-file", "", "if this path exists, stop feeding new traces and wait for it to be removed; in-flight traces finish (empty string disables the check)")
+	zipPrefix := flag.String("zip-prefix", "", "with -source landmarks, trace only landmarks whose Overture ZIP starts with this, e.g. 021 for the Boston area or 0 for all of New England; empty = no restriction. Use it to measure yield and throughput on one region before committing to a national pass")
 	flag.Parse()
+
+	if *zipPrefix != "" {
+		if *source != sourceLandmarks {
+			log.Fatalf("-zip-prefix only applies to -source landmarks")
+		}
+		if !zipPrefixRe.MatchString(*zipPrefix) {
+			log.Fatalf("-zip-prefix must be 1 to 5 digits, got %q", *zipPrefix)
+		}
+	}
 
 	if *source != sourceRanges && *source != sourceLandmarks {
 		log.Fatalf("-source must be %q or %q, got %q", sourceRanges, sourceLandmarks, *source)
@@ -287,7 +301,7 @@ func main() {
 		write = writeResult
 		unit = "ranges"
 	case sourceLandmarks:
-		targets, err = sampleLandmarks(ctx, conn, *sampleSize, *landmarkTable, *traceTable, ipv6OK)
+		targets, err = sampleLandmarks(ctx, conn, *sampleSize, *landmarkTable, *traceTable, *zipPrefix, ipv6OK)
 		tt := *traceTable
 		write = func(c context.Context, cn *pgx.Conn, r result) error { return writeTrace(c, cn, tt, r) }
 		unit = "landmark addresses"
@@ -439,7 +453,11 @@ AND NOT (t.network <<= '100.64.0.0/10'::cidr)`
 // order so that a partial pass is a representative sample of the whole country
 // instead of an alphabetical or address-ordered prefix of it; interrupted after
 // 10%, the result is still usable for measuring the fan-out distribution.
-func sampleLandmarks(ctx context.Context, conn *pgx.Conn, n int, landmarkTable, traceTable string, includeIPv6 bool) ([]target, error) {
+// zipPrefix restricts the pass to one region so yield and throughput can be
+// measured before committing to a national run. It filters on the landmark's
+// Overture ZIP, not on the carrier node's location, because the Overture ZIP is
+// the thing being transferred and so it is the thing whose coverage matters.
+func sampleLandmarks(ctx context.Context, conn *pgx.Conn, n int, landmarkTable, traceTable, zipPrefix string, includeIPv6 bool) ([]target, error) {
 	// The DISTINCT has to be wrapped before ORDER BY random(), because
 	// PostgreSQL rejects "SELECT DISTINCT ... ORDER BY random()" outright:
 	// every ORDER BY expression must appear in the select list of a DISTINCT
@@ -455,6 +473,14 @@ WHERE p.onpremises = true
 
 	if !includeIPv6 {
 		inner += " AND family(p.ip_address) = 4"
+	}
+	if zipPrefix != "" {
+		// zipPrefix is digits only, checked in main, so interpolating it into a
+		// LIKE pattern cannot inject anything. left() rather than LIKE on the
+		// raw column so a ZIP stored with a leading space or as numeric text
+		// still matches, consistent with the padding the onpremises step uses.
+		inner += fmt.Sprintf(" AND left(lpad(btrim(p.overture_zip::text), 5, '0'), %d) = '%s'",
+			len(zipPrefix), zipPrefix)
 	}
 	query := fmt.Sprintf("SELECT d.ip_address FROM (%s) d ORDER BY random() LIMIT $1", inner)
 
@@ -600,7 +626,7 @@ func runOne(network string, sampled netip.Addr, maxHops, cycles int, interval fl
 		return result{network: network, sampledIP: sampled, status: "mtr_error: " + err.Error(), probeMethod: method}
 	}
 
-	r := classifyHops(hops, reverseDNS, backtrackHops, rules)
+	r := classifyHops(hops, sampled, reverseDNS, backtrackHops, rules)
 	r.network = network
 	r.sampledIP = sampled
 	r.probeMethod = method
@@ -610,16 +636,39 @@ func runOne(network string, sampled netip.Addr, maxHops, cycles int, interval fl
 // classifyHops implements the full classification pipeline over an ordered
 // hop list, taking resolve() for reverse DNS so it is decoupled from the
 // network:
-//  1. Order all responding hops from the far end of the trace backward.
+//
+//  0. Discard any responding hop whose address IS the address being traced.
+//     The destination is not a carrier node, by definition. This matters
+//     enormously for landmark targets and barely at all for range targets,
+//     which is why it went unnoticed: a random address inside a range almost
+//     never answers, so the trace dies short and the last responding hop
+//     really is carrier equipment. A landmark is a WEB SERVER and it does
+//     answer, so the trace completes, the final responding hop is the landmark
+//     itself, and a hostname like box5184.bluehost.com matches no exclusion
+//     and no customer marker and was therefore accepted as the "carrier node".
+//     That result is unusable: a probe range's carrier node can never match a
+//     landmark's own web server, so every such row was wasted. Measured on a
+//     2,000-address landmark pass, this was between a third and a half of all
+//     rows. The hop that IS wanted is already in the trace, one position
+//     earlier; only the choice was wrong.
+//
+//     The rule is correct for the range source too, where it fixes the same
+//     bug in its rare form: if a randomly chosen probe address does answer, it
+//     is a customer host, not carrier equipment, and must not be accepted.
+//
+//  1. Order the remaining responding hops from the far end of the trace backward.
+//
 //  2. Find the nearest one with ANY resolvable hostname (content not
 //     yet considered) — if that's at position 2 or 3, the whole path
 //     died right at the local ISP boundary: status=unreachable,
 //     terminal, regardless of what the hostname actually says.
+//
 //  3. Otherwise, walk backward through resolved hostnames: a match
 //     against a TLD/domain exclusion rule is terminal with that
 //     rule's status label; a match against a customer-equipment
 //     marker is skipped (keep searching further back); the first
 //     hostname that's neither is accepted as the carrier hop.
+//
 //  4. Once accepted, compare the accepted hop's latency to the very next
 //     hop: a large *delta* (a jump of more than 20ms from this hop to the
 //     next) signals a long-haul backbone link beyond the accepted hop,
@@ -628,14 +677,21 @@ func runOne(network string, sampled netip.Addr, maxHops, cycles int, interval fl
 //     hop's absolute latency — on a transcontinental path every terminal
 //     hop sits well above 20ms, so an absolute test misfires and buries
 //     legitimate customer-serving edge nodes as excluded-internal.
-func classifyHops(hops []hop, resolve func(netip.Addr) *string, backtrackHops int, rules classificationRules) result {
+func classifyHops(hops []hop, traced netip.Addr, resolve func(netip.Addr) *string, backtrackHops int, rules classificationRules) result {
 	r := result{hopCount: len(hops)}
 
 	var candidates []hop
 	for i := len(hops) - 1; i >= 0; i-- {
-		if hops[i].ok {
-			candidates = append(candidates, hops[i])
+		if !hops[i].ok {
+			continue
 		}
+		// Step 0: the destination is never a carrier node. Compared by address
+		// rather than by position because mtr can report the destination at
+		// more than one hop when the final hops repeat.
+		if traced.IsValid() && hops[i].addr == traced {
+			continue
+		}
+		candidates = append(candidates, hops[i])
 	}
 	if len(candidates) == 0 {
 		r.status = "incomplete"
