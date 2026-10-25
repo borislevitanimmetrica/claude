@@ -218,3 +218,96 @@ ORDER BY 2 DESC;
 -- END
 -- $$;
 -- COMMIT;
+
+
+
+-- ---------------------------------------------------------------------------
+-- 6. THE REMAINING TABLE, DONE THE WAY IT SHOULD HAVE BEEN DONE: add the new
+-- column, populate it, verify against the old one, and only then drop the old.
+--
+-- Sections 2 to 4 above used a direct RENAME. That was not what was asked for,
+-- and the cost is concrete rather than theoretical: once the old column is
+-- renamed away there is nothing left to verify the new values against. The row
+-- counts after the fact were consistent, 2,082,217 'f' and 15,653 'm' in the
+-- probe table, but a row-by-row check of the mapping is no longer possible on
+-- those four tables. That verification step is gone and cannot be recovered.
+--
+-- ip2city_dbiplite_traceroute_backup_tbl was missed by the table list in
+-- section 2 and still carries the old boolean, which is the one place left to
+-- do this properly. The same four steps are the pattern for every future
+-- column change here.
+--
+-- Nothing is dropped by this file. Step 4 is written out and commented, to be
+-- run only after step 3 reports zero mismatches, because a DROP COLUMN is the
+-- irreversible part and should be a separate deliberate act.
+-- ---------------------------------------------------------------------------
+
+-- STEP 1. Add, alongside. Harmless on its own and reversible by a DROP.
+
+ALTER TABLE ip2city_dbiplite_traceroute_backup_tbl
+    ADD COLUMN IF NOT EXISTS mobile_transit varchar(1);
+
+ALTER TABLE ip2city_dbiplite_traceroute_backup_tbl
+    DROP CONSTRAINT IF EXISTS ip2city_dbiplite_traceroute_backup_tbl_mobile_transit_chk;
+
+ALTER TABLE ip2city_dbiplite_traceroute_backup_tbl
+    ADD CONSTRAINT ip2city_dbiplite_traceroute_backup_tbl_mobile_transit_chk
+    CHECK (mobile_transit IS NULL OR mobile_transit IN ('m','t','f'));
+
+
+-- STEP 2. Populate, from the old column and then from the transit rules.
+
+UPDATE ip2city_dbiplite_traceroute_backup_tbl
+SET mobile_transit = CASE WHEN likely_mobile_cgnat IS NULL THEN NULL
+                          WHEN likely_mobile_cgnat        THEN 'm'
+                          ELSE 'f' END
+WHERE mobile_transit IS NULL;
+
+UPDATE ip2city_dbiplite_traceroute_backup_tbl t
+SET mobile_transit = 't'
+WHERE t.mobile_transit = 'f'
+  AND t.last_hop_hostname IS NOT NULL
+  AND EXISTS (
+      SELECT 1 FROM traceroute_hostname_rules r
+      WHERE r.rule_type = 'transit_domain'
+        AND (lower(t.last_hop_hostname) = lower(r.pattern)
+          OR lower(t.last_hop_hostname) LIKE '%.' || lower(r.pattern)));
+
+
+-- STEP 3. VERIFY, row by row, while both columns still exist. This is the step
+-- the rename destroyed on the other four tables. mismatches must be 0.
+--
+-- 't' rows are expected to disagree with the old boolean's false, since
+-- transit is new information the boolean never held, so they are counted
+-- separately rather than treated as errors.
+
+SELECT count(*)                                                       AS rows_total,
+       count(*) FILTER (WHERE likely_mobile_cgnat IS TRUE
+                          AND mobile_transit <> 'm')                  AS mismatch_true_not_m,
+       count(*) FILTER (WHERE likely_mobile_cgnat IS FALSE
+                          AND mobile_transit NOT IN ('f','t'))        AS mismatch_false_not_f_or_t,
+       count(*) FILTER (WHERE likely_mobile_cgnat IS NULL
+                          AND mobile_transit IS NOT NULL)             AS mismatch_null_not_null,
+       count(*) FILTER (WHERE likely_mobile_cgnat IS FALSE
+                          AND mobile_transit = 't')                   AS promoted_to_transit,
+       count(*) FILTER (WHERE likely_mobile_cgnat IS TRUE
+                          AND mobile_transit = 'm')                   AS agreed_mobile,
+       count(*) FILTER (WHERE likely_mobile_cgnat IS FALSE
+                          AND mobile_transit = 'f')                   AS agreed_fixed
+FROM ip2city_dbiplite_traceroute_backup_tbl;
+
+
+-- STEP 4. DROP, only after step 3 reports every mismatch column as 0.
+-- Irreversible, so it is commented and left as a separate deliberate act.
+
+-- ALTER TABLE ip2city_dbiplite_traceroute_backup_tbl DROP COLUMN likely_mobile_cgnat;
+
+
+-- Anything anywhere still carrying the old column, so none can be forgotten
+-- again the way the backup table was.
+
+SELECT table_name, column_name, data_type
+FROM information_schema.columns
+WHERE table_schema = 'public'
+  AND column_name = 'likely_mobile_cgnat'
+ORDER BY 1;

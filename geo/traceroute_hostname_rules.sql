@@ -44,6 +44,49 @@ ALTER TABLE traceroute_hostname_rules ADD  CONSTRAINT traceroute_hostname_rules_
     CHECK (rule_type IN ('tld_exclude','domain_exclude','customer_marker',
                          'customer_marker_regex','transit_domain'));
 
+-- THE UNIQUE CONSTRAINT MUST BE ADDED THE SAME WAY, and the omission of this
+-- block caused a silent failure worth recording. CREATE TABLE IF NOT EXISTS
+-- skips an existing table entirely, so the UNIQUE (rule_type, pattern) declared
+-- above never reached an installation whose table predates it. Every
+-- INSERT ... ON CONFLICT (rule_type, pattern) in this file then aborted with
+-- "there is no unique or exclusion constraint matching the ON CONFLICT
+-- specification", which psql reports and carries on past, so the run looked
+-- successful while loading ZERO rules. The downstream effect was that the
+-- transit backfill in mobile_transit_migration.sql updated nothing and the tier
+-- distribution read 100% fixed when about two thirds should have been transit.
+--
+-- Deduplicate before adding it, because the constraint cannot be created if the
+-- table already holds a duplicate pair. Keeping the lowest id is arbitrary but
+-- harmless: the rows are identical in every column that matters.
+
+DELETE FROM traceroute_hostname_rules a
+ WHERE EXISTS (SELECT 1 FROM traceroute_hostname_rules b
+               WHERE b.rule_type = a.rule_type
+                 AND b.pattern = a.pattern
+                 AND b.id < a.id);
+
+DO $$
+BEGIN
+    IF NOT EXISTS (
+        SELECT 1 FROM pg_constraint
+        WHERE conrelid = 'traceroute_hostname_rules'::regclass
+          AND contype IN ('u', 'p')
+          AND conkey = ARRAY[
+              (SELECT attnum FROM pg_attribute
+               WHERE attrelid = 'traceroute_hostname_rules'::regclass AND attname = 'rule_type'),
+              (SELECT attnum FROM pg_attribute
+               WHERE attrelid = 'traceroute_hostname_rules'::regclass AND attname = 'pattern')]::smallint[]
+    ) THEN
+        ALTER TABLE traceroute_hostname_rules
+            ADD CONSTRAINT traceroute_hostname_rules_rule_type_pattern_key
+            UNIQUE (rule_type, pattern);
+        RAISE NOTICE 'added the missing UNIQUE (rule_type, pattern)';
+    ELSE
+        RAISE NOTICE 'UNIQUE (rule_type, pattern) already present';
+    END IF;
+END
+$$;
+
 -- 2. Supersede the earlier IPv4-only fuse.net patterns (idempotent cleanup).
 DELETE FROM traceroute_hostname_rules
  WHERE rule_type = 'customer_marker_regex'
