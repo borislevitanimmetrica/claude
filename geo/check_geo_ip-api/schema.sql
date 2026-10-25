@@ -6,7 +6,7 @@
 --
 -- The JSON "status"/"query" map onto existing/added columns; the ip-api
 -- "message" (only on a fail) is recorded in the existing classification_note
--- column; probe_method is set to 'ip-api' by the writer; likely_mobile_cgnat is
+-- column; probe_method is set to 'ip-api' by the writer; mobile_transit is
 -- set true when isp/org contains "wireless", "mobile", or "cellular".
 
 ALTER TABLE ip2city_dbiplite_traceroute_tbl

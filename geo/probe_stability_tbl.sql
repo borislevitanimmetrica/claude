@@ -188,7 +188,7 @@ LIMIT 200;
 -- ---------------------------------------------------------------------------
 -- 4. DOES ip-api's OWN mobile FLAG AGREE WITH THE KEYWORD RULE.
 --
--- The pipeline sets likely_mobile_cgnat from a keyword match on isp and org, and
+-- The pipeline sets mobile_transit from a keyword match on isp and org, and
 -- has never consulted ip-api's mobile field, which is not in ip-api's default
 -- field set. This lists the isp strings where the two would disagree, which is the
 -- set worth reading before relying on either alone to gate ZIP-level output.

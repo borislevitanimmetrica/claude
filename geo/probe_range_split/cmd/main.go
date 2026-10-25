@@ -110,7 +110,7 @@ type geoResult struct {
 
 	// Mobile is ip-api's OWN judgement, and it is NOT part of ip-api's default
 	// field set, so it has to be requested explicitly. Nothing in this project
-	// captured it before: likely_mobile_cgnat is set from a keyword match on isp
+	// captured it before: mobile_transit is set from a keyword match on isp
 	// and org, which is a different judgement that happens to agree most of the
 	// time. Recording both is what makes the disagreement visible.
 	Mobile bool `json:"mobile"`

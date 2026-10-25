@@ -66,7 +66,7 @@ type result struct {
 	status             string
 	probeMethod        string
 	attempts           int
-	likelyMobileCGN    bool
+	mobileTransit      string
 	classificationNote *string
 	rdapLookup         *string
 
@@ -120,12 +120,24 @@ type classificationRules struct {
 	// label-prefix marker cannot express (e.g. auto-generated PTRs that
 	// encode the customer's own IP address).
 	customerMarkerRegexes []*regexp.Regexp
+	// transitDomains holds "transit_domain" rules. A node in one of these
+	// belongs to a transit operator rather than a retail access network, which
+	// sets mobile_transit to 't': DMA accuracy, not a discard.
+	transitDomains map[string]bool
 }
+
+// Accuracy tiers stored in mobile_transit. See geo/mobile_transit_migration.sql.
+const (
+	tierMobile  = "m"
+	tierTransit = "t"
+	tierFixed   = "f"
+)
 
 func loadClassificationRules(ctx context.Context, conn *pgx.Conn) (classificationRules, error) {
 	rules := classificationRules{
 		tldExclusions:    map[string]string{},
 		domainExclusions: map[string]string{},
+		transitDomains:   map[string]bool{},
 	}
 
 	rows, err := conn.Query(ctx, `SELECT rule_type, pattern, status_label FROM traceroute_hostname_rules`)
@@ -163,6 +175,8 @@ func loadClassificationRules(ctx context.Context, conn *pgx.Conn) (classificatio
 				continue
 			}
 			rules.customerMarkerRegexes = append(rules.customerMarkerRegexes, re)
+		case "transit_domain":
+			rules.transitDomains[strings.ToLower(strings.TrimSpace(pattern))] = true
 		}
 	}
 	return rules, rows.Err()
@@ -434,7 +448,7 @@ WHERE NOT EXISTS (
     SELECT 1 FROM ip2city_dbiplite_traceroute_tbl tr
     WHERE tr.network = t.network
       AND (
-        (tr.status = 'reached' AND tr.last_hop_hostname IS NOT NULL AND tr.likely_mobile_cgnat = false)
+        (tr.status = 'reached' AND tr.last_hop_hostname IS NOT NULL AND tr.mobile_transit = 'f')
         OR tr.status = 'unreachable'
         OR tr.status LIKE 'excluded-%'
       )
@@ -851,7 +865,7 @@ func classifyHops(hops []hop, traced netip.Addr, resolve func(netip.Addr) *strin
 		r.lastHopIP = &c.addr
 		r.lastHopName = &hn
 		r.lastHopNumber = c.num
-		r.likelyMobileCGN = isLikelyMobileCarrierHostname(hn)
+		r.mobileTransit = rules.accuracyTier(&hn)
 		if r.cpeSkipped > 0 {
 			note := fmt.Sprintf("accepted after skipping %d customer hop(s)", r.cpeSkipped)
 			r.classificationNote = &note
@@ -908,6 +922,37 @@ func applyLatencyOverride(r *result, c hop, byNum map[int]hop) {
 	note := fmt.Sprintf("long-haul latency jump after hop %d: +%.1fms to hop %d (%.1fms)",
 		c.num, next.avgMs-c.avgMs, next.num, next.avgMs)
 	r.classificationNote = &note
+}
+
+// matchTransitDomain reports whether the hostname is in a transit operator's
+// domain, with a domain-boundary suffix match rather than a substring one, so
+// that a pattern cannot match mid-label.
+func (r classificationRules) matchTransitDomain(hostname string) bool {
+	lower := strings.ToLower(strings.TrimSuffix(strings.TrimSpace(hostname), "."))
+	for d := range r.transitDomains {
+		if lower == d || strings.HasSuffix(lower, "."+d) {
+			return true
+		}
+	}
+	return false
+}
+
+// accuracyTier classifies the accepted carrier node. Mobile wins over transit:
+// a mobile carrier reached across a transit operator is still mobile, and
+// mobile is the stronger statement about what the address can locate to. An
+// unnamed node cannot be classified at all and yields the empty string, which
+// is stored as NULL, because "not classified" and "fixed" are different facts.
+func (r classificationRules) accuracyTier(hostname *string) string {
+	if hostname == nil {
+		return ""
+	}
+	if isLikelyMobileCarrierHostname(*hostname) {
+		return tierMobile
+	}
+	if r.matchTransitDomain(*hostname) {
+		return tierTransit
+	}
+	return tierFixed
 }
 
 func isLikelyMobileCarrierHostname(name string) bool {
@@ -1006,7 +1051,7 @@ func runRange(t target, maxHops, cycles int, interval float64, useUDP bool, meth
 			// trace on a result that may already have been usable; the
 			// measured rate decides whether that trade is worth keeping and
 			// whether 3 attempts is enough.
-			if (r.status != "reached" || !r.likelyMobileCGN) && r.hop2Responded {
+			if (r.status != "reached" || r.mobileTransit != tierMobile) && r.hop2Responded {
 				break
 			}
 		}
@@ -1134,7 +1179,7 @@ func writeResult(ctx context.Context, conn *pgx.Conn, r result) error {
 	_, err := conn.Exec(ctx, `
 INSERT INTO ip2city_dbiplite_traceroute_tbl
     (network, sampled_ip, last_hop_ip, last_hop_hostname, last_hop_number, hop_count, status,
-     probe_method, likely_mobile_cgnat, classification_note, attempts, rdap_lookup, ran_at)
+     probe_method, mobile_transit, classification_note, attempts, rdap_lookup, ran_at)
 VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, now())
 ON CONFLICT (network) DO UPDATE SET
     sampled_ip           = EXCLUDED.sampled_ip,
@@ -1144,13 +1189,13 @@ ON CONFLICT (network) DO UPDATE SET
     hop_count                = EXCLUDED.hop_count,
     status                    = EXCLUDED.status,
     probe_method                = EXCLUDED.probe_method,
-    likely_mobile_cgnat           = EXCLUDED.likely_mobile_cgnat,
+    mobile_transit                = EXCLUDED.mobile_transit,
     classification_note             = EXCLUDED.classification_note,
     attempts                          = EXCLUDED.attempts,
     rdap_lookup                         = EXCLUDED.rdap_lookup,
     ran_at                              = now()
 `, r.network, r.sampledIP, r.lastHopIP, r.lastHopName, nullIfZero(r.lastHopNumber), r.hopCount, r.status,
-		r.probeMethod, r.likelyMobileCGN, r.classificationNote, r.attempts, r.rdapLookup)
+		r.probeMethod, nullIfEmpty(r.mobileTransit), r.classificationNote, r.attempts, r.rdapLookup)
 	return err
 }
 
@@ -1186,7 +1231,7 @@ func writeTrace(ctx context.Context, conn *pgx.Conn, table string, r result) err
 	_, err = conn.Exec(ctx, fmt.Sprintf(`
 INSERT INTO %s
     (ip, last_hop_ip, last_hop_hostname, last_hop_number, hop_count, status,
-     probe_method, likely_mobile_cgnat, classification_note, attempts,
+     probe_method, mobile_transit, classification_note, attempts,
      hop2_responded, hop2_miss_attempts, cpe_skipped, hops, traced_at)
 VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, now())
 ON CONFLICT (ip) DO UPDATE SET
@@ -1196,7 +1241,7 @@ ON CONFLICT (ip) DO UPDATE SET
     hop_count           = EXCLUDED.hop_count,
     status              = EXCLUDED.status,
     probe_method        = EXCLUDED.probe_method,
-    likely_mobile_cgnat = EXCLUDED.likely_mobile_cgnat,
+    mobile_transit      = EXCLUDED.mobile_transit,
     classification_note = EXCLUDED.classification_note,
     attempts            = EXCLUDED.attempts,
     hop2_responded      = EXCLUDED.hop2_responded,
@@ -1205,9 +1250,18 @@ ON CONFLICT (ip) DO UPDATE SET
     hops                = EXCLUDED.hops,
     traced_at           = now()
 `, table), r.sampledIP, r.lastHopIP, r.lastHopName, nullIfZero(r.lastHopNumber), r.hopCount, r.status,
-		r.probeMethod, r.likelyMobileCGN, r.classificationNote, r.attempts,
+		r.probeMethod, nullIfEmpty(r.mobileTransit), r.classificationNote, r.attempts,
 		r.hop2Responded, r.hop2MissAttempts, r.cpeSkipped, string(hopsJSON))
 	return err
+}
+
+// nullIfEmpty stores an unclassified tier as NULL rather than as an empty
+// string, because the CHECK constraint admits only m, t, f or NULL.
+func nullIfEmpty(s string) any {
+	if s == "" {
+		return nil
+	}
+	return s
 }
 
 func nullIfZero(n int) any {
