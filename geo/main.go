@@ -69,6 +69,44 @@ type result struct {
 	likelyMobileCGN    bool
 	classificationNote *string
 	rdapLookup         *string
+
+	// hops is the whole trace, kept so the carrier node can be re-chosen later
+	// without re-probing. Two passes have now been spent discovering that the
+	// choice rule was wrong, and a pass costs hours; the hop list costs about a
+	// kilobyte per address. Storing it also makes the BGP origin-AS test
+	// possible as a SQL pass, which is the only robust way to recognise an
+	// UNNAMED customer router.
+	hops []hop
+
+	// hop2Responded records whether hop 2, the first carrier node out of this
+	// host, answered on the final attempt. cpeSkipped counts how many hops were
+	// discarded as customer equipment before a carrier node was accepted.
+	hop2Responded    bool
+	hop2MissAttempts int
+	cpeSkipped       int
+}
+
+// hopJSON is the serialised form of a hop. The fields of `hop` are unexported,
+// so a separate exported shape is needed for encoding.
+type hopJSON struct {
+	N    int     `json:"n"`
+	IP   string  `json:"ip,omitempty"`
+	Host *string `json:"host,omitempty"`
+	Avg  float64 `json:"avg,omitempty"`
+}
+
+// registeredDomain returns the last two labels of a hostname, which is the
+// registrable domain for the US-only gTLD and usTLD space this runs against
+// (mit.edu, harvard.edu, cambridgema.gov, comcast.net). It is deliberately not
+// a public-suffix implementation: a multi-label suffix such as .co.uk would be
+// mishandled, and none occurs here.
+func registeredDomain(host string) string {
+	h := strings.TrimSuffix(strings.ToLower(strings.TrimSpace(host)), ".")
+	parts := strings.Split(h, ".")
+	if len(parts) < 2 {
+		return h
+	}
+	return parts[len(parts)-2] + "." + parts[len(parts)-1]
 }
 
 // classificationRules holds the contents of traceroute_hostname_rules,
@@ -630,6 +668,18 @@ func runOne(network string, sampled netip.Addr, maxHops, cycles int, interval fl
 	r.network = network
 	r.sampledIP = sampled
 	r.probeMethod = method
+	r.hops = hops
+
+	// Hop 2 is the first carrier node out of this host. Its silence is the
+	// signature of ICMP rate limiting at the local access router rather than
+	// anything about the destination, so it is recorded per attempt and can be
+	// retried. On AWS this is expected to stop happening.
+	for _, h := range hops {
+		if h.num == 2 && h.ok {
+			r.hop2Responded = true
+			break
+		}
+	}
 	return r
 }
 
@@ -708,44 +758,59 @@ func classifyHops(hops []hop, traced netip.Addr, resolve func(netip.Addr) *strin
 		byNum[h.num] = h
 	}
 
-	nearestIdx := -1
-	var nearestName string
+	// Resolve every candidate once, up front. The previous shape resolved the
+	// nearest hop separately and then re-resolved it inside the walk, and with
+	// a CPE test added the walk needs each name more than once.
+	names := make([]*string, limit)
 	for i := 0; i < limit; i++ {
-		if name := resolve(candidates[i].addr); name != nil {
-			nearestIdx = i
-			nearestName = *name
-			break
+		names[i] = resolve(candidates[i].addr)
+	}
+
+	// The customer's own domain, taken from the traced address's own reverse
+	// DNS. A business commonly presents more than one router in the trace, two
+	// or three, and the ones nearest the carrier interconnect are named in the
+	// customer's domain: a trace to 18.9.108.52 ends at
+	// oc11-755-rtr-1-backbone-rtr-1.mit.edu, which is MIT's own backbone
+	// router, not MIT's carrier. Those hops match no exclusion and no customer
+	// marker, so they were being accepted. Measured on 301 Massachusetts
+	// landmarks, the accepted node was the customer's own equipment in 8 of 10
+	// sampled cases (MIT, Harvard, Tufts, City of Cambridge).
+	destDomain := ""
+	if traced.IsValid() {
+		if dn := resolve(traced); dn != nil {
+			destDomain = registeredDomain(*dn)
 		}
 	}
 
-	if nearestIdx == -1 {
-		r.status = "incomplete"
-		return r
-	}
+	// One walk, far end of the trace toward this host, collecting three things:
+	//
+	//   namedPick    the first hop that is named, is not an exclusion, is not
+	//                customer equipment, and is not this host's own access
+	//                router at position 2 or 3. Preferred, because the
+	//                geography lives in the name.
+	//   unnamedPick  the first hop with no reverse DNS at all, past position 3.
+	//                Used only when there is no namedPick, because the last
+	//                carrier node sometimes has no PTR, which is seen on
+	//                business private-access circuits, and refusing those
+	//                discards a real measurement.
+	//   localNamed   a named hop at position 2 or 3. On its own it means the
+	//                path died at this host's own ISP boundary.
+	//
+	// Preferring a named hop further from the destination over an unnamed hop
+	// closer to it is deliberate: the unnamed closer hop may still be customer
+	// equipment, and an unnamed hop cannot be tested for that.
+	namedPick, unnamedPick, localNamed := -1, -1, -1
 
-	if n := candidates[nearestIdx].num; n == 2 || n == 3 {
-		r.status = "unreachable"
-		r.lastHopIP = &candidates[nearestIdx].addr
-		r.lastHopName = &nearestName
-		r.lastHopNumber = n
-		note := fmt.Sprintf("nearest resolved hop at position %d", n)
-		r.classificationNote = &note
-		return r
-	}
-
-	for i := nearestIdx; i < limit; i++ {
+	for i := 0; i < limit; i++ {
 		c := candidates[i]
 
-		var hn string
-		if i == nearestIdx {
-			hn = nearestName
-		} else {
-			resolved := resolve(c.addr)
-			if resolved == nil {
-				continue
+		if names[i] == nil {
+			if unnamedPick < 0 && c.num > 3 {
+				unnamedPick = i
 			}
-			hn = *resolved
+			continue
 		}
+		hn := *names[i]
 
 		if label, excluded := rules.matchExclusion(hn); excluded {
 			r.status = label
@@ -758,27 +823,91 @@ func classifyHops(hops []hop, traced netip.Addr, resolve func(netip.Addr) *strin
 		}
 
 		if rules.matchCustomerMarker(hn) {
+			r.cpeSkipped++
 			continue
 		}
 
+		if destDomain != "" && registeredDomain(hn) == destDomain {
+			r.cpeSkipped++
+			continue
+		}
+
+		if c.num <= 3 {
+			if localNamed < 0 {
+				localNamed = i
+			}
+			continue
+		}
+
+		namedPick = i
+		break
+	}
+
+	switch {
+	case namedPick >= 0:
+		c := candidates[namedPick]
+		hn := *names[namedPick]
 		r.status = "reached"
 		r.lastHopIP = &c.addr
 		r.lastHopName = &hn
 		r.lastHopNumber = c.num
 		r.likelyMobileCGN = isLikelyMobileCarrierHostname(hn)
-
-		if next, ok := byNum[c.num+1]; ok && next.ok && next.hasLatency && c.hasLatency && (next.avgMs-c.avgMs) > 20.0 {
-			r.status = "excluded-internal"
-			note := fmt.Sprintf("long-haul latency jump after hop %d: +%.1fms to hop %d (%.1fms)",
-				c.num, next.avgMs-c.avgMs, next.num, next.avgMs)
+		if r.cpeSkipped > 0 {
+			note := fmt.Sprintf("accepted after skipping %d customer hop(s)", r.cpeSkipped)
 			r.classificationNote = &note
 		}
+		applyLatencyOverride(&r, c, byNum)
 
-		return r
+	case unnamedPick >= 0:
+		// Labelled reached-unnamed rather than reached, deliberately, so it
+		// stays separable: it carries a weaker guarantee. An unnamed hop cannot
+		// be tested for customer ownership by domain, so if the customer's own
+		// routers are themselves unnamed this will have accepted one of them.
+		// The test that settles it is whether the hop's BGP origin AS equals
+		// the destination's, which the stored hop list now makes possible as a
+		// SQL pass. Until that is run, treat these as candidates only.
+		c := candidates[unnamedPick]
+		r.status = "reached-unnamed"
+		r.lastHopIP = &c.addr
+		r.lastHopNumber = c.num
+		note := fmt.Sprintf("no named carrier node; accepted unnamed hop %d after skipping %d customer hop(s)",
+			c.num, r.cpeSkipped)
+		r.classificationNote = &note
+		applyLatencyOverride(&r, c, byNum)
+
+	case localNamed >= 0:
+		c := candidates[localNamed]
+		hn := *names[localNamed]
+		r.status = "unreachable"
+		r.lastHopIP = &c.addr
+		r.lastHopName = &hn
+		r.lastHopNumber = c.num
+		note := fmt.Sprintf("nearest resolved hop at position %d", c.num)
+		r.classificationNote = &note
+
+	default:
+		r.status = "incomplete"
 	}
 
-	r.status = "incomplete"
 	return r
+}
+
+// applyLatencyOverride reclassifies an accepted hop as carrier-internal when
+// the jump to the NEXT hop exceeds 20ms, which marks a long-haul backbone link
+// beyond it. A delta, not an absolute: on a transcontinental path every
+// terminal hop sits well above 20ms.
+func applyLatencyOverride(r *result, c hop, byNum map[int]hop) {
+	next, ok := byNum[c.num+1]
+	if !ok || !next.ok || !next.hasLatency || !c.hasLatency {
+		return
+	}
+	if next.avgMs-c.avgMs <= 20.0 {
+		return
+	}
+	r.status = "excluded-internal"
+	note := fmt.Sprintf("long-haul latency jump after hop %d: +%.1fms to hop %d (%.1fms)",
+		c.num, next.avgMs-c.avgMs, next.num, next.avgMs)
+	r.classificationNote = &note
 }
 
 func isLikelyMobileCarrierHostname(name string) bool {
@@ -796,10 +925,17 @@ func isLikelyMobileCarrierHostname(name string) bool {
 	return false
 }
 
+// resultRank orders outcomes so a retry keeps the best one. reached-unnamed
+// sits between reached and the exclusions: a carrier node with no reverse DNS
+// is weaker than a named one, because it cannot be checked for customer
+// ownership by domain, but it is a real measurement and clearly better than
+// "unreachable" or "incomplete".
 func resultRank(status string) int {
 	switch {
 	case status == "reached":
 		return 300
+	case status == "reached-unnamed":
+		return 250
 	case status == "unreachable" || strings.HasPrefix(status, "excluded-"):
 		return 200
 	case status == "incomplete":
@@ -809,8 +945,13 @@ func resultRank(status string) int {
 	}
 }
 
+// isTerminal reports whether retrying could not improve the outcome.
+// reached-unnamed is terminal: re-tracing the same address yields the same
+// hops, and a hop with no PTR will not acquire one on a second look, so the
+// retry would only burn time.
 func isTerminal(status string) bool {
-	return status == "reached" || status == "unreachable" || strings.HasPrefix(status, "excluded-")
+	return status == "reached" || status == "reached-unnamed" ||
+		status == "unreachable" || strings.HasPrefix(status, "excluded-")
 }
 
 func runRange(t target, maxHops, cycles int, interval float64, useUDP bool, method string, maxAttempts, backtrackHops int, rules classificationRules, rdapScript string) result {
@@ -818,6 +959,7 @@ func runRange(t target, maxHops, cycles int, interval float64, useUDP bool, meth
 	haveBest := false
 	tried := map[netip.Addr]bool{}
 	totalAttempts := 0
+	hop2Misses := 0
 
 	for i := 0; i < maxAttempts; i++ {
 		// An exact target retries the SAME address. Rerolling would defeat the
@@ -849,10 +991,22 @@ func runRange(t target, maxHops, cycles int, interval float64, useUDP bool, meth
 			haveBest = true
 		}
 
+		if !r.hop2Responded {
+			hop2Misses++
+		}
+
 		if isTerminal(r.status) {
 			// "reached" still retries if it's mobile-flagged (not
 			// truly satisfactory); everything else terminal stops.
-			if r.status != "reached" || !r.likelyMobileCGN {
+			//
+			// Hop 2 going silent also forces a retry, even on an otherwise
+			// good result, because that silence means the local access router
+			// rate-limited this trace and the rest of the trace may be
+			// degraded in ways that are not visible. The cost is a repeated
+			// trace on a result that may already have been usable; the
+			// measured rate decides whether that trade is worth keeping and
+			// whether 3 attempts is enough.
+			if (r.status != "reached" || !r.likelyMobileCGN) && r.hop2Responded {
 				break
 			}
 		}
@@ -863,6 +1017,7 @@ func runRange(t target, maxHops, cycles int, interval float64, useUDP bool, meth
 	}
 
 	best.attempts = totalAttempts
+	best.hop2MissAttempts = hop2Misses
 
 	// RDAP ownership/location fallback.
 	//
@@ -1011,11 +1166,29 @@ func writeTrace(ctx context.Context, conn *pgx.Conn, table string, r result) err
 	if !r.sampledIP.IsValid() {
 		return fmt.Errorf("no address was traced for %s (status %q), nothing to key on", r.network, r.status)
 	}
-	_, err := conn.Exec(ctx, fmt.Sprintf(`
+	// The whole hop list goes in as jsonb so the carrier node can be re-chosen
+	// without re-tracing, and so the BGP origin-AS test that would recognise an
+	// unnamed customer router can be run as a SQL pass.
+	hj := make([]hopJSON, 0, len(r.hops))
+	for _, h := range r.hops {
+		e := hopJSON{N: h.num, Avg: h.avgMs}
+		if h.ok {
+			e.IP = h.addr.String()
+			e.Host = reverseDNS(h.addr)
+		}
+		hj = append(hj, e)
+	}
+	hopsJSON, err := json.Marshal(hj)
+	if err != nil {
+		return fmt.Errorf("encoding hop list for %s: %w", r.sampledIP, err)
+	}
+
+	_, err = conn.Exec(ctx, fmt.Sprintf(`
 INSERT INTO %s
     (ip, last_hop_ip, last_hop_hostname, last_hop_number, hop_count, status,
-     probe_method, likely_mobile_cgnat, classification_note, attempts, traced_at)
-VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, now())
+     probe_method, likely_mobile_cgnat, classification_note, attempts,
+     hop2_responded, hop2_miss_attempts, cpe_skipped, hops, traced_at)
+VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, now())
 ON CONFLICT (ip) DO UPDATE SET
     last_hop_ip         = EXCLUDED.last_hop_ip,
     last_hop_hostname   = EXCLUDED.last_hop_hostname,
@@ -1026,9 +1199,14 @@ ON CONFLICT (ip) DO UPDATE SET
     likely_mobile_cgnat = EXCLUDED.likely_mobile_cgnat,
     classification_note = EXCLUDED.classification_note,
     attempts            = EXCLUDED.attempts,
+    hop2_responded      = EXCLUDED.hop2_responded,
+    hop2_miss_attempts  = EXCLUDED.hop2_miss_attempts,
+    cpe_skipped         = EXCLUDED.cpe_skipped,
+    hops                = EXCLUDED.hops,
     traced_at           = now()
 `, table), r.sampledIP, r.lastHopIP, r.lastHopName, nullIfZero(r.lastHopNumber), r.hopCount, r.status,
-		r.probeMethod, r.likelyMobileCGN, r.classificationNote, r.attempts)
+		r.probeMethod, r.likelyMobileCGN, r.classificationNote, r.attempts,
+		r.hop2Responded, r.hop2MissAttempts, r.cpeSkipped, string(hopsJSON))
 	return err
 }
 

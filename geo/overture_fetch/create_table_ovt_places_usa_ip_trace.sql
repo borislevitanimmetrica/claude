@@ -53,6 +53,30 @@ CREATE TABLE IF NOT EXISTS public.ovt_places_usa_ip_trace
    CONSTRAINT ovt_places_usa_ip_trace_pkey PRIMARY KEY (ip)
 );
 
+-- Added after the first two passes. ADD COLUMN IF NOT EXISTS rather than a
+-- changed CREATE TABLE, so applying this file to a populated table is safe.
+--
+-- hops is the entire trace. Two passes were spent discovering that the rule for
+-- choosing the carrier node was wrong, and each pass costs hours of ICMP, while
+-- the hop list costs about a kilobyte per address. With it stored, the node can
+-- be re-chosen by a SQL pass instead of by re-probing. It is also what makes
+-- the BGP origin-AS test possible, which is the only robust way to recognise an
+-- UNNAMED customer router: compare each hop's origin_asn to the destination's.
+--
+-- hop2_responded and hop2_miss_attempts measure silence at hop 2, the first
+-- carrier node out of the probing host. That silence is ICMP rate limiting at
+-- the local access router and says nothing about the destination, so it is
+-- counted per attempt and triggers a retry. Expected to disappear on AWS.
+--
+-- cpe_skipped counts customer routers discarded before a carrier node was
+-- accepted. A business commonly presents two or three, named in its own domain.
+
+ALTER TABLE public.ovt_places_usa_ip_trace
+    ADD COLUMN IF NOT EXISTS hops               jsonb,
+    ADD COLUMN IF NOT EXISTS hop2_responded     boolean,
+    ADD COLUMN IF NOT EXISTS hop2_miss_attempts integer,
+    ADD COLUMN IF NOT EXISTS cpe_skipped        integer;
+
 ALTER TABLE public.ovt_places_usa_ip_trace ALTER ip SET STORAGE MAIN;
 ALTER TABLE public.ovt_places_usa_ip_trace ALTER last_hop_ip SET STORAGE MAIN;
 

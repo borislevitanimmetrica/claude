@@ -211,6 +211,128 @@ LEFT JOIN LATERAL (
 -- DELETE FROM public.ovt_places_usa_ip_trace WHERE last_hop_ip = ip;
 
 
+-- ---------------------------------------------------------------------------
+-- 1c. SILENCE AT HOP 2, the first carrier node out of the probing host.
+--
+-- Hop 2 going quiet is ICMP rate limiting at the local access router. It says
+-- nothing about the destination, so it is counted per ATTEMPT and now forces a
+-- retry even on an otherwise good result, because a rate-limited trace may be
+-- degraded in ways that are not visible. Expected to stop occurring on AWS.
+--
+-- The first figure is the share of individual mtr calls in which hop 2 did not
+-- answer. The second is the share of ADDRESSES where it never answered across
+-- every attempt, which is the number that decides whether 3 retries is enough:
+-- if it is close to the per-call rate cubed, the failures are independent and
+-- more retries will help; if it is much higher, the silence is persistent for
+-- those destinations and more retries will not.
+-- ---------------------------------------------------------------------------
+
+SELECT sum(attempts)                                                 AS mtr_calls,
+       sum(coalesce(hop2_miss_attempts, 0))                          AS calls_hop2_silent,
+       round(100.0 * sum(coalesce(hop2_miss_attempts, 0))
+             / nullif(sum(attempts), 0), 2)                          AS pct_calls_hop2_silent,
+       count(*)                                                      AS addresses,
+       count(*) FILTER (WHERE coalesce(hop2_miss_attempts, 0) >= attempts
+                          AND attempts > 0)                          AS addresses_silent_every_attempt,
+       round(100.0 * count(*) FILTER (WHERE coalesce(hop2_miss_attempts, 0) >= attempts
+                                        AND attempts > 0)
+             / nullif(count(*), 0), 2)                               AS pct_addresses_silent_every_attempt,
+       round(avg(attempts), 2)                                       AS mean_attempts
+FROM public.ovt_places_usa_ip_trace;
+
+
+-- Whether retrying actually recovers the trace. If attempts > 1 rows end up
+-- reached at a similar rate to attempts = 1 rows, the retry is working; if they
+-- are much worse, hop-2 silence is a symptom of an unreachable destination
+-- rather than a cause of a bad measurement, and the retry is wasted time.
+
+SELECT attempts,
+       count(*)                                                      AS addresses,
+       count(*) FILTER (WHERE status LIKE 'reached%')                 AS reached,
+       round(100.0 * count(*) FILTER (WHERE status LIKE 'reached%')
+             / nullif(count(*), 0), 1)                               AS pct_reached
+FROM public.ovt_places_usa_ip_trace
+GROUP BY 1
+ORDER BY 1;
+
+
+-- ---------------------------------------------------------------------------
+-- 1d. CUSTOMER EQUIPMENT. A business commonly presents two or three of its own
+-- routers in the trace, and the ones nearest the carrier interconnect are named
+-- in its own domain. Those matched no exclusion and no customer marker, so they
+-- were being accepted as the carrier node. On the 301-address Massachusetts
+-- pass the accepted node was the customer's own equipment in 8 of 10 sampled
+-- cases: MIT, Harvard, Tufts and the City of Cambridge.
+--
+-- cpe_skipped counts how many were discarded before a node was accepted. A
+-- distribution with a healthy tail at 1, 2 and 3 is the fix working.
+-- ---------------------------------------------------------------------------
+
+SELECT coalesce(cpe_skipped, 0)                                       AS customer_hops_skipped,
+       count(*)                                                      AS addresses,
+       count(*) FILTER (WHERE status = 'reached')                     AS reached_named,
+       count(*) FILTER (WHERE status = 'reached-unnamed')             AS reached_unnamed
+FROM public.ovt_places_usa_ip_trace
+GROUP BY 1
+ORDER BY 1;
+
+
+-- THE TEST THAT SETTLES THE UNNAMED CASE, now possible because the whole hop
+-- list is stored. An unnamed hop cannot be checked for customer ownership by
+-- domain, so reached-unnamed rows may still be sitting on the customer's own
+-- router. The BGP origin AS decides it: if the node's origin AS equals the
+-- destination's, the node is inside the customer and the row must be rejected.
+--
+-- Run this before trusting any reached-unnamed row. The same join also audits
+-- the named rows, where it should mostly agree with the domain test.
+
+BEGIN;
+
+CREATE TEMP TABLE lcn_asn_chk ON COMMIT DROP AS
+SELECT DISTINCT b.cidr_block, b.origin_asn
+FROM bgp_route_views b
+WHERE b.origin_asn IS NOT NULL
+  AND family(b.cidr_block) = 4
+  AND masklen(b.cidr_block) >= 8;
+CREATE INDEX ON lcn_asn_chk USING gist (cidr_block inet_ops);
+ANALYZE lcn_asn_chk;
+
+SELECT t.status,
+       count(*)                                                      AS addresses,
+       count(*) FILTER (WHERE da.origin_asn = na.origin_asn)         AS node_inside_customer_as,
+       round(100.0 * count(*) FILTER (WHERE da.origin_asn = na.origin_asn)
+             / nullif(count(*), 0), 1)                               AS pct_inside,
+       count(*) FILTER (WHERE da.origin_asn IS NULL OR na.origin_asn IS NULL)
+                                                                     AS asn_unknown
+FROM public.ovt_places_usa_ip_trace t
+LEFT JOIN LATERAL (
+    SELECT a.origin_asn FROM lcn_asn_chk a WHERE a.cidr_block >>= t.ip
+    ORDER BY masklen(a.cidr_block) DESC LIMIT 1) da ON true
+LEFT JOIN LATERAL (
+    SELECT a.origin_asn FROM lcn_asn_chk a WHERE t.last_hop_ip IS NOT NULL
+      AND a.cidr_block >>= t.last_hop_ip
+    ORDER BY masklen(a.cidr_block) DESC LIMIT 1) na ON true
+WHERE t.last_hop_ip IS NOT NULL
+GROUP BY 1
+ORDER BY 2 DESC;
+
+COMMIT;
+
+
+-- Re-choosing the carrier node from the stored hop list, without re-tracing.
+-- This is the shape the origin-AS rule takes once a decision is made about it:
+-- unnest the hops, drop the destination, drop every hop whose origin AS is the
+-- destination's, and take the nearest survivor. Shown for one address so the
+-- effect can be inspected before it is applied to the table. Substitute the ip.
+
+SELECT h.n, h.ip, h.host, h.avg
+FROM public.ovt_places_usa_ip_trace t
+CROSS JOIN LATERAL jsonb_to_recordset(t.hops)
+     AS h(n integer, ip text, host text, avg double precision)
+WHERE t.ip = '18.9.108.52'
+ORDER BY h.n;
+
+
 -- Which carrier operators the usable nodes actually belong to, by the domain of
 -- the node's reverse DNS. Read this to see whose hostnames carry a town name
 -- and are therefore worth anything: Comcast's rur/ssag/soag forms encode one
