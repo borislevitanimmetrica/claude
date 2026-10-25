@@ -271,7 +271,7 @@ func parseTTLSeconds(h string) int {
 }
 
 // mobileISPKeywords are lower-case substrings that, when present in the ip-api
-// isp/org fields, mark a network as a US mobile carrier (likely_mobile_cgnat).
+// isp/org fields, mark a network as a US mobile carrier (mobile_transit).
 //
 // The generic radio-access words cover the great majority of carriers and
 // their MVNOs/brands whose ownership string carries them (Verizon Wireless,
@@ -307,7 +307,7 @@ var mobileISPKeywords = []string{
 }
 
 // isMobileISP reports whether the ip-api isp/org fields indicate a US mobile
-// carrier — used to set likely_mobile_cgnat — via a case-insensitive substring
+// carrier — used to set mobile_transit — via a case-insensitive substring
 // match against mobileISPKeywords.
 func isMobileISP(isp, org string) bool {
 	s := strings.ToLower(isp + " " + org)
@@ -327,11 +327,11 @@ func isMobileISP(isp, org string) bool {
 // status/classification_note so the prefix can be retried on a later run (it
 // stays city IS NULL).
 //
-// likely_mobile_cgnat is set true when the resolved isp/org looks like a mobile
+// mobile_transit is set true when the resolved isp/org looks like a mobile
 // carrier (see isMobileISP). On INSERT (a network with no prior row) the
 // mtr-only numeric columns are given zero-values to satisfy any NOT NULL
 // constraints; on UPDATE hop_count/attempts are left untouched so an existing
-// mtr row's hop data is not clobbered, while likely_mobile_cgnat IS refreshed.
+// mtr row's hop data is not clobbered, while mobile_transit IS refreshed.
 func writeGeo(ctx context.Context, conn *pgx.Conn, tgt geoTarget, g geoResult, callErr error) error {
 	var (
 		status  any
@@ -355,7 +355,18 @@ func writeGeo(ctx context.Context, conn *pgx.Conn, tgt geoTarget, g geoResult, c
 	if success {
 		latArg, lonArg = g.Lat, g.Lon
 	}
-	mobile := success && isMobileISP(g.ISP, g.Org)
+	// One-character accuracy tier, not a boolean. Like check_geo_ip-api this
+	// tool never sees a traceroute node, so it can decide 'm' against 'f' but
+	// never 't'. NULL when the lookup failed, because unclassified and fixed are
+	// different facts.
+	tier := any(nil)
+	if success {
+		if isMobileISP(g.ISP, g.Org) {
+			tier = "m"
+		} else {
+			tier = "f"
+		}
+	}
 
 	query := nullIfEmpty(g.Query)
 	if query == nil {
@@ -364,7 +375,7 @@ func writeGeo(ctx context.Context, conn *pgx.Conn, tgt geoTarget, g geoResult, c
 
 	_, err := conn.Exec(ctx, `
 INSERT INTO ip2city_dbiplite_traceroute_tbl
-    (network, status, probe_method, likely_mobile_cgnat, hop_count, attempts,
+    (network, status, probe_method, mobile_transit, hop_count, attempts,
      classification_note, country, countrycode, region, regionname, city, zip, lat, lon,
      timezone, isp, org, "as", query, ran_at)
 VALUES ($1, $2, 'ip-api', $3, 0, 0,
@@ -373,7 +384,7 @@ VALUES ($1, $2, 'ip-api', $3, 0, 0,
 ON CONFLICT (network) DO UPDATE SET
     status              = EXCLUDED.status,
     probe_method        = EXCLUDED.probe_method,
-    likely_mobile_cgnat = EXCLUDED.likely_mobile_cgnat,
+    mobile_transit = EXCLUDED.mobile_transit,
     classification_note = EXCLUDED.classification_note,
     country             = EXCLUDED.country,
     countrycode         = EXCLUDED.countrycode,
@@ -390,7 +401,7 @@ ON CONFLICT (network) DO UPDATE SET
     query               = EXCLUDED.query,
     ran_at              = now()
 `,
-		tgt.network, status, mobile, note,
+		tgt.network, status, tier, note,
 		nullIfEmpty(g.Country), nullIfEmpty(g.CountryCode), nullIfEmpty(g.Region), nullIfEmpty(g.RegionName),
 		nullIfEmpty(g.City), nullIfEmpty(g.Zip), latArg, lonArg,
 		nullIfEmpty(g.Timezone), nullIfEmpty(g.ISP), nullIfEmpty(g.Org), nullIfEmpty(g.As), query)

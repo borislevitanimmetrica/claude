@@ -61,7 +61,7 @@ type geoResult struct {
 
 	// Mobile is ip-api's OWN judgement that the address belongs to a mobile
 	// network. It is NOT in ip-api's default field set, so it has to be requested
-	// explicitly, and until now this tool did not request it: likely_mobile_cgnat
+	// explicitly, and until now this tool did not request it: mobile_transit
 	// was set purely from a keyword match on isp and org. Both signals are used
 	// now, because they are different judgements and either one being right matters
 	// more than them agreeing.
@@ -421,7 +421,7 @@ func parseTTLSeconds(h string) int {
 }
 
 // mobileISPKeywords are lower-case substrings that, when present in the ip-api
-// isp/org fields, mark a network as a US mobile carrier (likely_mobile_cgnat).
+// isp/org fields, mark a network as a US mobile carrier (mobile_transit).
 //
 // The generic radio-access words cover the great majority of carriers and
 // their MVNOs/brands whose ownership string carries them (Verizon Wireless,
@@ -457,7 +457,7 @@ var mobileISPKeywords = []string{
 }
 
 // isMobileISP reports whether the ip-api isp/org fields indicate a US mobile
-// carrier — used to set likely_mobile_cgnat — via a case-insensitive substring
+// carrier — used to set mobile_transit — via a case-insensitive substring
 // match against mobileISPKeywords.
 func isMobileISP(isp, org string) bool {
 	s := strings.ToLower(isp + " " + org)
@@ -478,7 +478,7 @@ func isMobileISP(isp, org string) bool {
 // the reason is recorded in status/classification_note so the range can be
 // retried on a later run (it stays city IS NULL).
 //
-// likely_mobile_cgnat is set true when EITHER the resolved isp/org looks like a
+// mobile_transit is set true when EITHER the resolved isp/org looks like a
 // mobile carrier by keyword (see isMobileISP) OR ip-api's own mobile field says so.
 // The two are different judgements and the union is used deliberately: this flag
 // gates ZIP-level output, where the cost of a false negative is publishing a ZIP
@@ -489,7 +489,7 @@ func isMobileISP(isp, org string) bool {
 // On INSERT (a range with no prior row) the mtr-only
 // numeric columns are given zero-values to satisfy any NOT NULL constraints; on
 // UPDATE hop_count/attempts are left untouched so an existing mtr row's hop data
-// is not clobbered, while likely_mobile_cgnat IS refreshed from this lookup.
+// is not clobbered, while mobile_transit IS refreshed from this lookup.
 func writeGeo(ctx context.Context, conn *pgx.Conn, tgt geoTarget, g geoResult, callErr error) error {
 	var (
 		status  any
@@ -515,8 +515,22 @@ func writeGeo(ctx context.Context, conn *pgx.Conn, tgt geoTarget, g geoResult, c
 	}
 	// Union of the two signals. See the note above writeGeo for why over-marking is
 	// the correct bias for a flag that gates ZIP-level output.
+	// mobile_transit is a one-character accuracy tier, not a boolean. This tool
+	// geolocates by ip-api and never sees a traceroute node, so it can decide
+	// 'm' against 'f' but never 't': transit is a property of the last carrier
+	// node and only the mtr tool observes that. A row this tool writes as 'f'
+	// may later be promoted to 't' by last_carrier_node or by section 4 of
+	// geo/mobile_transit_migration.sql, and must not be read as "confirmed
+	// fixed" until it has been traced.
 	byKeyword := isMobileISP(g.ISP, g.Org)
-	mobile := success && (byKeyword || g.Mobile)
+	tier := any(nil)
+	if success {
+		if byKeyword || g.Mobile {
+			tier = "m"
+		} else {
+			tier = "f"
+		}
+	}
 	if success && byKeyword != g.Mobile {
 		// A disagreement is worth seeing rather than resolving silently. It is the
 		// set that decides whether either signal can be trusted alone.
@@ -546,7 +560,7 @@ UPDATE ip2city_dbiplite_probe_tbl SET
     last_hop_ip         = $2,
     status              = $3,
     probe_method        = 'ip-api',
-    likely_mobile_cgnat = $4,
+    mobile_transit = $4,
     classification_note = $5,
     country             = $6,
     countrycode         = coalesce($7, countrycode),
@@ -564,7 +578,7 @@ UPDATE ip2city_dbiplite_probe_tbl SET
     ran_at              = now()
 WHERE network = $1
 `,
-		tgt.network, tgt.ip.String(), status, mobile, note,
+		tgt.network, tgt.ip.String(), status, tier, note,
 		nullIfEmpty(g.Country), nullIfEmpty(g.CountryCode), nullIfEmpty(g.Region), nullIfEmpty(g.RegionName),
 		nullIfEmpty(g.City), nullIfEmpty(g.Zip), latArg, lonArg,
 		nullIfEmpty(g.Timezone), nullIfEmpty(g.ISP), nullIfEmpty(g.Org), nullIfEmpty(g.As))

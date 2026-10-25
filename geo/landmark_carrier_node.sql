@@ -104,6 +104,7 @@ CREATE TABLE IF NOT EXISTS public.range2zip_carrier_node_tbl
     zips_at_node   integer     NOT NULL,
     landmarks      integer     NOT NULL,
     example_ip     inet,
+    tier           varchar(1),
     assigned_at    timestamptz NOT NULL DEFAULT now(),
     CONSTRAINT range2zip_carrier_node_zip_shape CHECK (zip ~ '^[0-9]{5}$'),
     CONSTRAINT range2zip_carrier_node_kind CHECK (node_kind IN ('ip', 'hostname')),
@@ -142,7 +143,9 @@ SELECT 'landmark side'                                               AS side,
                           AND last_hop_ip IS NOT NULL)                AS with_node_ip,
        count(*) FILTER (WHERE status = 'reached'
                           AND last_hop_hostname IS NOT NULL)          AS with_node_hostname,
-       count(*) FILTER (WHERE likely_mobile_cgnat)                    AS mobile_flagged
+       count(*) FILTER (WHERE mobile_transit = 'm')                   AS tier_mobile,
+       count(*) FILTER (WHERE mobile_transit = 't')                   AS tier_transit,
+       count(*) FILTER (WHERE mobile_transit = 'f')                   AS tier_fixed
 FROM public.ovt_places_usa_ip_trace
 UNION ALL
 SELECT 'range side (mtr only)',
@@ -150,7 +153,9 @@ SELECT 'range side (mtr only)',
        count(*) FILTER (WHERE status = 'reached'),
        count(*) FILTER (WHERE status = 'reached' AND last_hop_ip IS NOT NULL),
        count(*) FILTER (WHERE status = 'reached' AND last_hop_hostname IS NOT NULL),
-       count(*) FILTER (WHERE likely_mobile_cgnat)
+       count(*) FILTER (WHERE mobile_transit = 'm'),
+       count(*) FILTER (WHERE mobile_transit = 't'),
+       count(*) FILTER (WHERE mobile_transit = 'f')
 FROM ip2city_dbiplite_traceroute_tbl
 WHERE probe_method LIKE 'mtr%';
 
@@ -549,7 +554,7 @@ WITH addr AS (
     JOIN ovt_places_usa p ON p.ip_address = t.ip
     WHERE t.status = 'reached'
       AND t.last_hop_ip IS NOT NULL
-      AND NOT coalesce(t.likely_mobile_cgnat, false)
+      AND t.mobile_transit = 'f'
       AND p.onpremises = true
       AND p.overture_zip ~ '^[0-9]{5}$'
     GROUP BY 1, 2, 3
@@ -732,11 +737,15 @@ LIMIT 40;
 --
 -- Mobile and CGNAT nodes are excluded on both sides. A mobile carrier's node
 -- serves whoever is in range of it, so shared routing carries no postal
--- meaning, and the existing likely_mobile_cgnat flag already identifies them.
+-- meaning. Only mobile_transit = 'f' is admitted here: 'm' is CGNAT and 't' is a
+-- transit node, and both locate to a DMA rather than a ZIP. Neither is
+-- DISCARDED, which would throw away real inventory, since a business address
+-- consumes biddable media at work and in campus housing. They are simply not
+-- ZIP assignments, and the DMA-tier assignment is section 9.
 -- ---------------------------------------------------------------------------
 
 INSERT INTO public.range2zip_carrier_node_tbl
-    (network, zip, node_kind, node_ip, node_hostname, zips_at_node, landmarks, example_ip)
+    (network, zip, node_kind, node_ip, node_hostname, zips_at_node, landmarks, example_ip, tier)
 WITH guard AS (
     SELECT 1 AS max_zips_per_node
 ),
@@ -750,7 +759,7 @@ node_zip AS (
     JOIN ovt_places_usa p ON p.ip_address = t.ip
     WHERE t.status = 'reached'
       AND t.last_hop_ip IS NOT NULL
-      AND NOT coalesce(t.likely_mobile_cgnat, false)
+      AND t.mobile_transit = 'f'
       AND p.onpremises = true
       AND p.overture_zip ~ '^[0-9]{5}$'
     GROUP BY 1
@@ -762,14 +771,15 @@ SELECT pr.network,
        pr.last_hop_hostname,
        nz.zips_at_node,
        nz.landmarks,
-       nz.example_ip
+       nz.example_ip,
+       pr.mobile_transit
 FROM ip2city_dbiplite_traceroute_tbl pr
 JOIN node_zip nz ON nz.node_ip = pr.last_hop_ip
 CROSS JOIN guard g
 WHERE pr.probe_method LIKE 'mtr%'
   AND pr.status = 'reached'
   AND pr.last_hop_ip IS NOT NULL
-  AND NOT coalesce(pr.likely_mobile_cgnat, false)
+  AND pr.mobile_transit = 'f'
   AND nz.zips_at_node <= g.max_zips_per_node
 ON CONFLICT (network, zip, node_kind) DO UPDATE SET
     node_ip       = EXCLUDED.node_ip,
@@ -777,6 +787,7 @@ ON CONFLICT (network, zip, node_kind) DO UPDATE SET
     zips_at_node  = EXCLUDED.zips_at_node,
     landmarks     = EXCLUDED.landmarks,
     example_ip    = EXCLUDED.example_ip,
+    tier          = EXCLUDED.tier,
     assigned_at   = now();
 
 
@@ -795,7 +806,7 @@ ON CONFLICT (network, zip, node_kind) DO UPDATE SET
 -- which is worse than assigning nothing at all.
 
 INSERT INTO public.range2zip_carrier_node_tbl
-    (network, zip, node_kind, node_ip, node_hostname, zips_at_node, landmarks, example_ip)
+    (network, zip, node_kind, node_ip, node_hostname, zips_at_node, landmarks, example_ip, tier)
 WITH guard AS (
     SELECT 1 AS max_zips_per_node
 ),
@@ -809,7 +820,7 @@ node_zip AS (
     JOIN ovt_places_usa p ON p.ip_address = t.ip
     WHERE t.status = 'reached'
       AND t.last_hop_hostname IS NOT NULL
-      AND NOT coalesce(t.likely_mobile_cgnat, false)
+      AND t.mobile_transit = 'f'
       AND p.onpremises = true
       AND p.overture_zip ~ '^[0-9]{5}$'
     GROUP BY 1
@@ -821,14 +832,15 @@ SELECT pr.network,
        nz.node_hostname,
        nz.zips_at_node,
        nz.landmarks,
-       nz.example_ip
+       nz.example_ip,
+       pr.mobile_transit
 FROM ip2city_dbiplite_traceroute_tbl pr
 JOIN node_zip nz ON nz.node_hostname = pr.last_hop_hostname
 CROSS JOIN guard g
 WHERE pr.probe_method LIKE 'mtr%'
   AND pr.status = 'reached'
   AND pr.last_hop_hostname IS NOT NULL
-  AND NOT coalesce(pr.likely_mobile_cgnat, false)
+  AND pr.mobile_transit = 'f'
   AND nz.zips_at_node <= g.max_zips_per_node
 ON CONFLICT (network, zip, node_kind) DO UPDATE SET
     node_ip       = EXCLUDED.node_ip,
@@ -836,6 +848,7 @@ ON CONFLICT (network, zip, node_kind) DO UPDATE SET
     zips_at_node  = EXCLUDED.zips_at_node,
     landmarks     = EXCLUDED.landmarks,
     example_ip    = EXCLUDED.example_ip,
+    tier          = EXCLUDED.tier,
     assigned_at   = now();
 
 
@@ -941,6 +954,40 @@ WHERE pr.zip IS NOT NULL
 GROUP BY 1
 ORDER BY 2 DESC
 LIMIT 40;
+
+
+-- ---------------------------------------------------------------------------
+-- 9. THE DMA TIER. Not built here, and the reason is recorded so it is not
+-- mistaken for an oversight.
+--
+-- Section 5 assigns ZIPs and admits only mobile_transit = 'f'. That leaves the
+-- 'm' and 't' rows, which on the Massachusetts pass are the majority, and they
+-- must NOT be discarded: a business address consumes biddable media in its own
+-- right, at work and in campus housing, so a transit-reached landmark is real
+-- inventory whose accuracy happens to be DMA rather than ZIP.
+--
+-- Assigning at DMA tier needs a ZIP-to-DMA mapping, and one already exists in
+-- this repository under geo/dma_export and geo/dma_api. Wiring it in is a
+-- deliberate separate step, because a DMA assignment is a different row shape
+-- from a ZIP assignment and writing it into a table whose primary key is
+-- (network, zip, node_kind) would overload that key with two meanings.
+--
+-- What is in place now is the tier column on range2zip_carrier_node_tbl, so the
+-- rows that section 5 declines are at least countable and the DMA work has a
+-- place to land. This query is the size of that backlog.
+-- ---------------------------------------------------------------------------
+
+SELECT coalesce(t.mobile_transit, 'NULL not classified')             AS tier,
+       count(*)                                                      AS landmark_addresses,
+       count(DISTINCT t.last_hop_ip)                                 AS router_ips,
+       count(DISTINCT p.overture_zip)                                AS zips_covered
+FROM public.ovt_places_usa_ip_trace t
+JOIN ovt_places_usa p ON p.ip_address = t.ip
+WHERE t.status LIKE 'reached%'
+  AND p.onpremises = true
+  AND p.overture_zip ~ '^[0-9]{5}$'
+GROUP BY 1
+ORDER BY 2 DESC;
 
 
 -- ---------------------------------------------------------------------------

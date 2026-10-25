@@ -111,7 +111,7 @@ BEGIN
             network, start_ip, end_ip, query, last_hop_ip, last_hop_hostname,
             city, state, state_code,
             zip, lat, lon, country, countrycode, timezone, rdap_lookup, hop_count,
-            probe_method, status, isp, org, "as", likely_mobile_cgnat,
+            probe_method, status, isp, org, "as", mobile_transit,
             last_hop_number, is_infrastructure, is_unreachable_local_carrier,
             classification_note, attempts, ran_at
         )
@@ -119,7 +119,7 @@ BEGIN
             network, start_ip, end_ip, query, last_hop_ip, last_hop_hostname,
             city, state, state_code,
             zip, lat, lon, country, countrycode, timezone, rdap_lookup, hop_count,
-            probe_method, status, isp, org, "as", likely_mobile_cgnat,
+            probe_method, status, isp, org, "as", mobile_transit,
             last_hop_number, is_infrastructure, is_unreachable_local_carrier,
             classification_note, attempts, ran_at
         FROM ip2city_dbiplite_probe_tbl;

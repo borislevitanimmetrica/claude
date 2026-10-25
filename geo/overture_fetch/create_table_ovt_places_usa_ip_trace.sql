@@ -46,7 +46,7 @@ CREATE TABLE IF NOT EXISTS public.ovt_places_usa_ip_trace
    hop_count            integer,
    status               text,
    probe_method         text,
-   likely_mobile_cgnat  boolean,
+   mobile_transit       varchar(1),
    classification_note  text,
    attempts             integer,
    traced_at            timestamptz DEFAULT now(),
