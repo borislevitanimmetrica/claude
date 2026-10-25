@@ -16,11 +16,36 @@
 --   3. Where a range's node is the SAME node as a landmark's, give the range
 --      the landmark's Overture ZIP.            -> range2zip_carrier_node_tbl
 --
--- Step 3 is only sound if a node is specific to a small area. A node serving
--- one ZIP transfers that ZIP unambiguously; a node serving forty transfers
--- nothing. Section 4 MEASURES that distribution instead of assuming it, and
--- section 5 will not assign a ZIP through a node that exceeds the measured
--- bound. Nothing here guesses a threshold.
+-- THE NODE IS THE ONLY LINK. THE PREFIX IS NOT A LINK.
+--
+-- A landmark has a static address and a household has a dynamic one, and a
+-- carrier keeps those in SEPARATE ranges on purpose, so that the dynamic range
+-- can be relocated by automation while the static range stays with the
+-- customer. So a landmark's prefix tells you nothing about which households are
+-- near it, and no amount of prefix arithmetic will recover it. Matching here is
+-- node to node and never prefix to prefix: range2zip_carrier_node_tbl is keyed
+-- on the probe range only because that is the row being labelled, and the
+-- ip_address_range columns section 2 fills are provenance, not a join key.
+--
+-- Step 3 is then only sound if the node is specific to a small area, AND if the
+-- node carries retail subscribers at all. Both conditions failed for most of
+-- the first Massachusetts pass, in ways section 4b and 4d measure:
+--
+--   Of 235 reached landmarks, 65% had a TRANSIT provider as their node. Two
+--   Cogent Boston routers alone carried 37% of the sample, spanning 7 and 11
+--   ZIPs. A transit circuit to a business carries no household traffic
+--   whatsoever, so those landmarks cannot anchor a ZIP for any household no
+--   matter how narrow the node turns out to be.
+--
+--   Only 16% had a retail access node, where Comcast names the town. Those are
+--   the usable ones, and their breadth is not yet measured because the sample
+--   holds about one landmark per Comcast node.
+--
+-- Section 4 measures the distribution instead of assuming it, section 4b
+-- removes the shared-address inflation that makes section 4 unreadable on its
+-- own, section 4d splits by what the operator routes, and section 5 will not
+-- assign through a node that exceeds the measured bound. Nothing here guesses a
+-- threshold.
 --
 -- ON DERIVING THIS FROM BGP INSTEAD, WHICH DOES NOT WORK
 --
@@ -493,6 +518,181 @@ FROM (
     GROUP BY 1) x
 GROUP BY 1, 2
 ORDER BY 2;
+
+
+-- ---------------------------------------------------------------------------
+-- 4b. THE HISTOGRAMS ABOVE CONFLATE TWO DIFFERENT THINGS and must not be read
+-- as node breadth on their own.
+--
+-- They count distinct Overture ZIPs among all PLACES behind a node. But one
+-- traced address is commonly shared by many places, because a web host serves
+-- many businesses from one IP, and the trace is deliberately stored per address
+-- rather than per place. So a node can show 1,108 ZIPs while serving four
+-- addresses, which measures the sharing, not the node.
+--
+--   ae5.5.bear1.Boston1.net.lumen.tech  4 addresses, 1,108 ZIPs, 01002 to 99403
+--   pf1.cologix.linknowmedia.cloud      9 addresses,   924 ZIPs, 01440 to 99705
+--
+-- Genuine node breadth is measured only on landmark addresses that map to ONE
+-- ZIP, where the address is unambiguous and any spread is the node's own. That
+-- is this query. Grouped by node domain, because the answer differs completely
+-- by operator and the aggregate hides it.
+-- ---------------------------------------------------------------------------
+
+WITH addr AS (
+    SELECT t.ip,
+           t.last_hop_ip,
+           t.last_hop_hostname,
+           count(DISTINCT p.overture_zip)                            AS zips_at_addr,
+           min(p.overture_zip)                                       AS zip
+    FROM public.ovt_places_usa_ip_trace t
+    JOIN ovt_places_usa p ON p.ip_address = t.ip
+    WHERE t.status = 'reached'
+      AND t.last_hop_ip IS NOT NULL
+      AND NOT coalesce(t.likely_mobile_cgnat, false)
+      AND p.onpremises = true
+      AND p.overture_zip ~ '^[0-9]{5}$'
+    GROUP BY 1, 2, 3
+),
+unambiguous AS (
+    SELECT * FROM addr WHERE zips_at_addr = 1
+),
+per_node AS (
+    SELECT last_hop_ip,
+           reverse(split_part(reverse(last_hop_hostname), '.', 2)) || '.'
+           || reverse(split_part(reverse(last_hop_hostname), '.', 1))  AS node_domain,
+           count(DISTINCT zip)                                       AS zips_at_node,
+           count(DISTINCT ip)                                        AS addresses_at_node
+    FROM unambiguous
+    WHERE last_hop_hostname IS NOT NULL
+    GROUP BY 1, 2
+)
+SELECT node_domain,
+       count(*)                                                      AS router_ips,
+       sum(addresses_at_node)                                        AS landmark_addresses,
+       max(zips_at_node)                                             AS worst_zips_at_one_node,
+       round(avg(zips_at_node), 2)                                   AS mean_zips_at_node,
+       count(*) FILTER (WHERE zips_at_node = 1)                      AS routers_serving_one_zip
+FROM per_node
+GROUP BY 1
+ORDER BY 3 DESC;
+
+
+-- ---------------------------------------------------------------------------
+-- 4c. SHARED ADDRESSES, which are the other half of what section 4 was
+-- measuring. An address carrying landmarks in many ZIPs is a web host, and it
+-- belongs in provider_names so rule 2 drops it before it is ever traced.
+--
+-- Read the top of this list as a candidate provider list. From the 312-address
+-- Massachusetts pass it surfaced LinkNow Media, a website builder, at 924 ZIPs
+-- across 9 addresses, which is not in provider_names. Research each before
+-- adding, as the standing rule requires: a name alone is not evidence.
+-- ---------------------------------------------------------------------------
+
+SELECT t.ip,
+       t.last_hop_hostname                                           AS node,
+       count(DISTINCT p.overture_zip)                                AS zips_at_this_address,
+       count(*)                                                      AS places_at_this_address,
+       min(p.registrant_1)                                           AS registrant,
+       min(p.overture_zip)                                           AS zip_lo,
+       max(p.overture_zip)                                           AS zip_hi
+FROM public.ovt_places_usa_ip_trace t
+JOIN ovt_places_usa p ON p.ip_address = t.ip
+WHERE p.onpremises = true
+  AND p.overture_zip ~ '^[0-9]{5}$'
+GROUP BY 1, 2
+HAVING count(DISTINCT p.overture_zip) > 5
+ORDER BY 3 DESC
+LIMIT 40;
+
+
+-- ---------------------------------------------------------------------------
+-- 4d. THE SPLIT THAT DECIDES WHETHER THE METHOD GIVES ZIPS OR METROS.
+--
+-- Measured on the Massachusetts pass, of 235 reached landmarks:
+--
+--   transit and backbone   152 nodes on  44 router IPs   64.7%
+--   retail access           38 nodes on  35 router IPs   16.2%
+--   hosting and other       45 nodes on  29 router IPs   19.1%
+--
+-- Two Cogent routers alone carried 87 of the 235, 37% of the sample:
+--   be3664.agr22.bos01  63 addresses spanning  7 ZIPs, 02110 to 02215
+--   be3255.ccr32.bos01  24 addresses spanning 11 ZIPs, 02114 to 02215
+--
+-- Those are Boston metro aggregation routers. A landmark behind one cannot
+-- anchor a ZIP, and separately it shares no access plant with any household,
+-- because a transit circuit to a business carries no retail subscribers at all.
+-- Both reasons disqualify it, and the second is the stronger one.
+--
+-- The retail access nodes are the opposite: Comcast names them by town, and the
+-- pass produced westroxbury, cambridge, framingham, norwood, peabody, plymouth,
+-- foxboro, exeter, derry and londonderry. A business on Comcast Business in
+-- Framingham is on the same access plant as Comcast residential in Framingham,
+-- which is exactly the convergence the method needs. Their breadth is NOT yet
+-- measured, because this sample has roughly one landmark per Comcast node, so
+-- there is nothing to spread. Measuring it needs more landmarks per town, not
+-- more towns.
+--
+-- This table makes the classification explicit and reviewable rather than
+-- buried in a regex. Class 'retail' is the only one that can anchor a ZIP.
+-- ---------------------------------------------------------------------------
+
+CREATE TABLE IF NOT EXISTS public.carrier_node_class
+(
+    node_domain text PRIMARY KEY,
+    class       text NOT NULL
+                CHECK (class IN ('retail', 'transit', 'hosting', 'unknown')),
+    note        text,
+    added_at    timestamptz NOT NULL DEFAULT now()
+);
+
+COMMENT ON TABLE public.carrier_node_class IS
+    'What the operator of a last carrier node actually routes. Only class = retail can anchor a ZIP, because only a retail access node carries the dynamic household addresses the ZIP is wanted for. Seeded from the 312-address Massachusetts pass and FOR REVIEW: every entry is an observation of one metro, not a national conclusion.';
+
+INSERT INTO public.carrier_node_class (node_domain, class, note) VALUES
+    ('comcast.net',        'retail',  'town in the hostname: westroxbury, framingham, norwood, peabody, plymouth, foxboro'),
+    ('verizon-gni.net',    'retail',  'VFTTP and LFTTP forms carry a wire centre code'),
+    ('rcn.net',            'retail',  'aggr1.bos.ma names a metro, finer measurement needed'),
+    ('astound.net',        'retail',  'aggr1.dca-lnh.md names a metro, finer measurement needed'),
+    ('charter.com',        'retail',  'netops naming, rcr01albynyyf encodes Albany NY'),
+    ('atlanticbb.net',     'retail',  'cpe in the hostname'),
+    ('sbcglobal.net',      'retail',  'lightspeed forms encode a wire centre'),
+    ('cogentco.com',       'transit', 'agr and ccr are metro aggregation and core: 7 and 11 Boston ZIPs on one router'),
+    ('lumen.tech',         'transit', 'bear1.Boston1 is a metro border router'),
+    ('zayo.com',           'transit', 'er and mpr are core; IDIA- forms are customer circuits, see the open question'),
+    ('he.net',             'transit', 'core2.fmt1 is Fremont, nowhere near the landmarks behind it'),
+    ('twelve99-cust.net',  'transit', 'Telia customer interconnect, names the customer but is not near it'),
+    ('att.net',            'transit', 'ggr2.n54ny is a New York gateway'),
+    ('ntt.net',            'transit', 'gin.ntt.net is the global IP network'),
+    ('as3491.net',         'transit', 'PCCW backbone'),
+    ('qwest.net',          'transit', 'inet.qwest.net edge, now Lumen'),
+    ('linknowmedia.cloud', 'hosting', 'website builder: 924 ZIPs across 9 addresses, candidate for provider_names'),
+    ('akamai.com',         'hosting', 'CDN'),
+    ('msn.net',            'hosting', 'Microsoft'),
+    ('psychz.net',         'hosting', 'hosting'),
+    ('rackdog.net',        'hosting', 'hosting'),
+    ('savvis.net',         'hosting', 'hosting'),
+    ('imdc.com',           'hosting', 'hosting'),
+    ('hostasaurus.com',    'hosting', 'hosting')
+ON CONFLICT (node_domain) DO NOTHING;
+
+
+-- Yield under the retail-only rule, which is the number that matters. Anything
+-- not classified retail cannot anchor a ZIP, so it is not a loss to be
+-- recovered: it is a landmark the method cannot use at all.
+
+SELECT coalesce(c.class, 'unclassified')                             AS node_class,
+       count(*)                                                      AS landmark_addresses,
+       count(DISTINCT t.last_hop_ip)                                 AS router_ips,
+       round(100.0 * count(*) / sum(count(*)) OVER (), 1)            AS pct
+FROM public.ovt_places_usa_ip_trace t
+LEFT JOIN public.carrier_node_class c
+  ON c.node_domain = reverse(split_part(reverse(t.last_hop_hostname), '.', 2)) || '.'
+                     || reverse(split_part(reverse(t.last_hop_hostname), '.', 1))
+WHERE t.status = 'reached'
+  AND t.last_hop_hostname IS NOT NULL
+GROUP BY 1
+ORDER BY 2 DESC;
 
 
 -- The worst offenders by name. Carrier naming conventions are visible here, and
