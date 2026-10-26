@@ -12,6 +12,7 @@ import (
 	"net/netip"
 	"os"
 	"os/exec"
+	"path/filepath"
 	"regexp"
 	"strconv"
 	"strings"
@@ -253,7 +254,8 @@ func main() {
 	country := flag.String("country", "", "restrict to this country_iso_code (e.g. US); empty = no filter")
 	maxAttempts := flag.Int("max-attempts", 3, "retries while the status is not terminal, up to this many tries; with -source ranges each try takes a new random address in the range, with -source landmarks each try re-traces the same landmark address")
 	backtrackHops := flag.Int("backtrack-hops", 5, "how many responding hops back from the trace's far end to search for a usable carrier hostname")
-	rdapScriptFlag := flag.String("rdap-script", "./rdap-lookup.sh", "path to rdap-lookup.sh; run on the sampled IP as an ownership/location fallback when status is excluded-internal (empty string disables the fallback)")
+	rdapScriptFlag := flag.String("rdap-script", rdapScriptAuto, "path to rdap-lookup.sh, run on the sampled IP as an ownership/location fallback when status is excluded-internal. \"auto\" searches the standard locations (next to this binary, then $GEO_HOME, then a developer checkout); an explicit path that is not usable is a fatal error; the empty string disables the fallback")
+	databaseName := flag.String("database", "", "database to connect to, overriding PGDATABASE and any dbname in DATABASE_URL. Empty means take the database from DATABASE_URL when set, otherwise from the libpq environment and its defaults")
 	ipv4Only := flag.Bool("ipv4-only", false, "sample only IPv4 ranges even when IPv6 connectivity is available (skips the IPv6 connectivity probe)")
 	source := flag.String("source", sourceRanges, "where targets come from: \"ranges\" traces a random address inside each ip2city_dbiplite_tbl prefix and writes ip2city_dbiplite_traceroute_tbl keyed on network (the original behaviour); \"landmarks\" traces each distinct on-premises landmark address from -landmark-table exactly and writes -trace-table keyed on that address")
 	landmarkTable := flag.String("landmark-table", "ovt_places_usa", "landmark table read by -source landmarks; needs columns ip_address inet and onpremises boolean")
@@ -285,40 +287,107 @@ func main() {
 		log.Fatalf("mtr binary not found on PATH: %v", err)
 	}
 
-	// The RDAP fallback is only a last resort for excluded-internal
-	// results (see runRange). If the script isn't present we disable
-	// the fallback with a warning rather than aborting the whole run —
-	// the traceroute classification is still useful without it.
-	rdapScript := *rdapScriptFlag
-	if rdapScript != "" {
-		if _, err := os.Stat(rdapScript); err != nil {
-			log.Printf("warning: rdap script %q not usable (%v); excluded-internal RDAP fallback disabled", rdapScript, err)
-			rdapScript = ""
-		} else {
-			log.Printf("excluded-internal RDAP fallback enabled via %q", rdapScript)
-		}
-	} else {
+	// The RDAP fallback is only a last resort for excluded-internal results
+	// (see runRange), so a missing script disables the fallback rather than
+	// aborting: the traceroute classification is still useful without it.
+	//
+	// An explicitly given -rdap-script is different. Asking for a specific
+	// script and silently getting no RDAP at all is how this defect went
+	// unnoticed through a five-hour run, so an explicit path that does not
+	// resolve is fatal.
+	var rdapScript string
+	switch *rdapScriptFlag {
+	case "":
 		log.Printf("excluded-internal RDAP fallback disabled (-rdap-script empty)")
+	case rdapScriptAuto:
+		var tried []string
+		for _, cand := range rdapScriptCandidates() {
+			if err := rdapScriptUsable(cand); err != nil {
+				tried = append(tried, fmt.Sprintf("%s (%v)", cand, err))
+				continue
+			}
+			rdapScript = cand
+			break
+		}
+		if rdapScript == "" {
+			log.Printf("excluded-internal RDAP fallback disabled: no usable rdap-lookup.sh found. Searched %s. Install it with geo/pipeline/deploy.sh, or pass -rdap-script with an explicit path.",
+				strings.Join(tried, "; "))
+		}
+	default:
+		if err := rdapScriptUsable(*rdapScriptFlag); err != nil {
+			log.Fatalf("-rdap-script %q not usable: %v", *rdapScriptFlag, err)
+		}
+		rdapScript = *rdapScriptFlag
+	}
+	if rdapScript != "" {
+		log.Printf("excluded-internal RDAP fallback enabled via %s", rdapScript)
 	}
 
-	// An empty DATABASE_URL is NOT an error. pgx.Connect with an empty string
-	// resolves the connection from the standard libpq environment (PGHOST,
-	// PGPORT, PGUSER, PGDATABASE, PGPASSFILE) and its built-in defaults, which
-	// is exactly what "psql" with no connection string does. That lets a service
-	// account connect over a Unix socket with peer authentication and no
-	// credentials anywhere on disk or in a crontab.
+	// An empty DATABASE_URL is NOT an error and is not worth a warning. pgx
+	// resolves an empty connection string from the standard libpq environment
+	// (PGHOST, PGPORT, PGUSER, PGDATABASE, PGPASSFILE) and its built-in
+	// defaults, exactly as "psql" with no connection string does, which lets a
+	// service account use a Unix socket with peer authentication and keep no
+	// credentials on disk or in a crontab.
+	//
+	// What DOES need saying is which database that resolved to, because libpq's
+	// default dbname is THE USER NAME, not "postgres". Interactively that is
+	// usually harmless. Under cron it is not: trugeo.cron sets PGDATABASE, but
+	// a direct invocation by a service account with PGDATABASE unset would
+	// quietly target a database named after the account. So the resolved target
+	// is logged BEFORE the attempt, where it also explains a failure, and
+	// confirmed from the server AFTER it.
 	databaseURL := os.Getenv("DATABASE_URL")
-	if databaseURL == "" {
-		log.Printf("DATABASE_URL not set; connecting via libpq environment and defaults")
+
+	connConfig, err := pgx.ParseConfig(databaseURL)
+	if err != nil {
+		log.Fatalf("parsing database configuration: %v", err)
 	}
+
+	origin := "DATABASE_URL"
+	if databaseURL == "" {
+		origin = "libpq environment and defaults"
+	}
+	if *databaseName != "" {
+		connConfig.Database = *databaseName
+		origin += ", database overridden by -database"
+	}
+
+	// pgx leaves Database empty when neither the connection string nor
+	// PGDATABASE names one, and the SERVER then substitutes the user name.
+	// Resolving it here changes nothing about which database is used, but it
+	// stops the log line below printing database "" and makes pgx's own error
+	// name the database instead of showing "database=". This is the case worth
+	// seeing: under cron a service account with PGDATABASE unset silently
+	// targets a database named after the account.
+	if connConfig.Database == "" {
+		connConfig.Database = connConfig.User
+		origin += "; PGDATABASE unset, so the database defaults to the user name"
+	}
+
+	log.Printf("connecting to database %q as user %q at %s (from %s)",
+		connConfig.Database, connConfig.User, hostPort(connConfig), origin)
 
 	ctx := context.Background()
 
-	conn, err := pgx.Connect(ctx, databaseURL)
+	conn, err := pgx.ConnectConfig(ctx, connConfig)
 	if err != nil {
 		log.Fatalf("PostgreSQL connection failed: %v", err)
 	}
 	defer conn.Close(context.Background())
+
+	// Confirm from the server rather than trusting the client-side config, and
+	// in the same shape geo_common.sh and dma_api already report it.
+	var serverIdent, serverAddr string
+	var serverPort int
+	if err := conn.QueryRow(ctx,
+		`SELECT current_user || '@' || current_database(),
+		        coalesce(host(inet_server_addr())::text, 'unix-socket'),
+		        coalesce(inet_server_port(), current_setting('port')::int)`,
+	).Scan(&serverIdent, &serverAddr, &serverPort); err != nil {
+		log.Fatalf("database unreachable after connect: %v", err)
+	}
+	log.Printf("database reachable as %s on %s:%d", serverIdent, serverAddr, serverPort)
 
 	rules, err := loadClassificationRules(ctx, conn)
 	if err != nil {
@@ -1089,6 +1158,81 @@ func runRange(t target, maxHops, cycles int, interval float64, useUDP bool, meth
 	}
 
 	return best
+}
+
+// rdapScriptAuto is the -rdap-script default. It means "search the standard
+// locations" instead of naming one, because the correct path differs between a
+// deployed tree and a developer checkout. The previous default was the relative
+// path "./rdap-lookup.sh", which resolved against the caller's working
+// directory: from the deployed tree nothing was there at all, and from the
+// repository's geo/ directory it found the stale copy that used to live there.
+const rdapScriptAuto = "auto"
+
+// rdapScriptCandidates lists the paths searched when -rdap-script is "auto", in
+// priority order.
+func rdapScriptCandidates() []string {
+	var c []string
+
+	// Next to this binary. deploy.sh installs rdap-lookup.sh alongside the
+	// last_carrier_node executable precisely so this resolves in the deployed
+	// tree with no configuration and no dependence on the working directory.
+	if exe, err := os.Executable(); err == nil {
+		if resolved, err := filepath.EvalSymlinks(exe); err == nil {
+			exe = resolved
+		}
+		c = append(c, filepath.Join(filepath.Dir(exe), "rdap-lookup.sh"))
+	}
+
+	// The deployed tree, in case the binary is run from a copy elsewhere.
+	geoHome := os.Getenv("GEO_HOME")
+	if geoHome == "" {
+		geoHome = "/var/trugeo"
+	}
+	c = append(c, filepath.Join(geoHome, "last_carrier_node", "bin", "rdap-lookup.sh"))
+
+	// A developer checkout: relative to geo/, which is where this package's
+	// main.go sits, and then the canonical location on the workstations.
+	c = append(c, filepath.Join("rdap-lookup", "cmd", "rdap-lookup.sh"))
+	if home, err := os.UserHomeDir(); err == nil {
+		c = append(c, filepath.Join(home, "geo", "rdap-lookup", "cmd", "rdap-lookup.sh"))
+		c = append(c, filepath.Join(home, "geo", "src", "claude", "geo", "rdap-lookup", "cmd", "rdap-lookup.sh"))
+	}
+	return c
+}
+
+// rdapScriptUsable reports whether path is a non-empty regular file.
+//
+// It deliberately does NOT require the executable bit, because runRDAP invokes
+// the script as "bash <path>" and so only needs it readable. Requiring the bit
+// would reject a mode 0644 copy that runs perfectly well.
+func rdapScriptUsable(path string) error {
+	st, err := os.Stat(path)
+	if err != nil {
+		return err
+	}
+	if st.IsDir() {
+		return fmt.Errorf("is a directory")
+	}
+	if !st.Mode().IsRegular() {
+		return fmt.Errorf("not a regular file (mode %s)", st.Mode())
+	}
+	if st.Size() == 0 {
+		return fmt.Errorf("is empty")
+	}
+	return nil
+}
+
+// hostPort renders the host and port a pgx config resolved to, for logging. A
+// leading "/" host is a Unix socket directory, which is the normal case for
+// peer authentication and has no port worth printing.
+func hostPort(cfg *pgx.ConnConfig) string {
+	if cfg == nil {
+		return "unknown"
+	}
+	if strings.HasPrefix(cfg.Host, "/") {
+		return fmt.Sprintf("unix socket %s", cfg.Host)
+	}
+	return fmt.Sprintf("%s:%d", cfg.Host, cfg.Port)
 }
 
 // runRDAP invokes rdap-lookup.sh against the sampled IP to recover the

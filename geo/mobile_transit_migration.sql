@@ -237,9 +237,11 @@ ORDER BY 2 DESC;
 -- do this properly. The same four steps are the pattern for every future
 -- column change here.
 --
--- Nothing is dropped by this file. Step 4 is written out and commented, to be
--- run only after step 3 reports zero mismatches, because a DROP COLUMN is the
--- irreversible part and should be a separate deliberate act.
+-- Step 4 DOES drop the old column, but only when step 3's comparison passes
+-- with zero mismatches, which it re-evaluates itself rather than trusting the
+-- operator to have read the output. A DROP COLUMN is the irreversible part, so
+-- the gate is the safety argument; a failed comparison keeps the column and
+-- raises, because after the drop the mapping can never be rechecked.
 -- ---------------------------------------------------------------------------
 
 -- STEP 1. Add, alongside. Harmless on its own and reversible by a DROP.
@@ -255,52 +257,111 @@ ALTER TABLE ip2city_dbiplite_traceroute_backup_tbl
     CHECK (mobile_transit IS NULL OR mobile_transit IN ('m','t','f'));
 
 
--- STEP 2. Populate, from the old column and then from the transit rules.
-
-UPDATE ip2city_dbiplite_traceroute_backup_tbl
-SET mobile_transit = CASE WHEN likely_mobile_cgnat IS NULL THEN NULL
-                          WHEN likely_mobile_cgnat        THEN 'm'
-                          ELSE 'f' END
-WHERE mobile_transit IS NULL;
-
-UPDATE ip2city_dbiplite_traceroute_backup_tbl t
-SET mobile_transit = 't'
-WHERE t.mobile_transit = 'f'
-  AND t.last_hop_hostname IS NOT NULL
-  AND EXISTS (
-      SELECT 1 FROM traceroute_hostname_rules r
-      WHERE r.rule_type = 'transit_domain'
-        AND (lower(t.last_hop_hostname) = lower(r.pattern)
-          OR lower(t.last_hop_hostname) LIKE '%.' || lower(r.pattern)));
-
-
--- STEP 3. VERIFY, row by row, while both columns still exist. This is the step
--- the rename destroyed on the other four tables. mismatches must be 0.
+-- STEPS 2, 3 and 4: populate, verify, then drop. One block, because all three
+-- must see the same two columns, and because the drop must be decided by the
+-- verification it just ran rather than by an operator reading output.
 --
--- 't' rows are expected to disagree with the old boolean's false, since
--- transit is new information the boolean never held, so they are counted
--- separately rather than treated as errors.
+-- Step 4 was previously commented out, to be run by hand. That was the wrong
+-- call: the request was for an end result, not a rename, and a manual step that
+-- nobody runs leaves the old column in place indefinitely, which is what
+-- happened twice. The drop is now automatic but CONDITIONAL, and the condition
+-- is the entire safety argument: once the boolean is gone the mapping can never
+-- be rechecked, so a nonzero mismatch raises and KEEPS the column.
+--
+-- Re-running the file after a successful drop is a no-op. The guard returns
+-- early, and because PL/pgSQL plans each statement on first execution rather
+-- than at block entry, the statements that name the dropped column are never
+-- planned and so cannot error. That is what makes this file safe to re-run;
+-- as plain top-level SQL, step 2 failed on the second run.
+--
+-- 't' rows are expected to disagree with the old boolean's false, since transit
+-- is information the boolean never carried. They are counted separately, as
+-- promoted_to_transit, rather than treated as errors.
 
-SELECT count(*)                                                       AS rows_total,
-       count(*) FILTER (WHERE likely_mobile_cgnat IS TRUE
-                          AND mobile_transit <> 'm')                  AS mismatch_true_not_m,
-       count(*) FILTER (WHERE likely_mobile_cgnat IS FALSE
-                          AND mobile_transit NOT IN ('f','t'))        AS mismatch_false_not_f_or_t,
-       count(*) FILTER (WHERE likely_mobile_cgnat IS NULL
-                          AND mobile_transit IS NOT NULL)             AS mismatch_null_not_null,
-       count(*) FILTER (WHERE likely_mobile_cgnat IS FALSE
-                          AND mobile_transit = 't')                   AS promoted_to_transit,
-       count(*) FILTER (WHERE likely_mobile_cgnat IS TRUE
-                          AND mobile_transit = 'm')                   AS agreed_mobile,
-       count(*) FILTER (WHERE likely_mobile_cgnat IS FALSE
-                          AND mobile_transit = 'f')                   AS agreed_fixed
-FROM ip2city_dbiplite_traceroute_backup_tbl;
+DO $$
+DECLARE
+    v_rows      bigint;
+    v_mis_true  bigint;
+    v_mis_false bigint;
+    v_mis_null  bigint;
+    v_promoted  bigint;
+    v_ag_mobile bigint;
+    v_ag_fixed  bigint;
+BEGIN
+    IF NOT EXISTS (SELECT 1 FROM information_schema.columns
+                   WHERE table_schema = 'public'
+                     AND table_name   = 'ip2city_dbiplite_traceroute_backup_tbl'
+                     AND column_name  = 'likely_mobile_cgnat') THEN
+        RAISE NOTICE 'ip2city_dbiplite_traceroute_backup_tbl.likely_mobile_cgnat is already gone; populate, verify and drop all skipped';
+        RETURN;
+    END IF;
+
+    -- STEP 2. Populate, from the old column and then from the transit rules.
+
+    UPDATE ip2city_dbiplite_traceroute_backup_tbl
+    SET mobile_transit = CASE WHEN likely_mobile_cgnat IS NULL THEN NULL
+                              WHEN likely_mobile_cgnat        THEN 'm'
+                              ELSE 'f' END
+    WHERE mobile_transit IS NULL;
+
+    UPDATE ip2city_dbiplite_traceroute_backup_tbl t
+    SET mobile_transit = 't'
+    WHERE t.mobile_transit = 'f'
+      AND t.last_hop_hostname IS NOT NULL
+      AND EXISTS (
+          SELECT 1 FROM traceroute_hostname_rules r
+          WHERE r.rule_type = 'transit_domain'
+            AND (lower(t.last_hop_hostname) = lower(r.pattern)
+              OR lower(t.last_hop_hostname) LIKE '%.' || lower(r.pattern)));
+
+    -- STEP 3. Verify row by row, while both columns still exist. This is the
+    -- step the rename destroyed on the other four tables.
+
+    SELECT count(*),
+           count(*) FILTER (WHERE likely_mobile_cgnat IS TRUE
+                              AND mobile_transit <> 'm'),
+           count(*) FILTER (WHERE likely_mobile_cgnat IS FALSE
+                              AND mobile_transit NOT IN ('f','t')),
+           count(*) FILTER (WHERE likely_mobile_cgnat IS NULL
+                              AND mobile_transit IS NOT NULL),
+           count(*) FILTER (WHERE likely_mobile_cgnat IS FALSE
+                              AND mobile_transit = 't'),
+           count(*) FILTER (WHERE likely_mobile_cgnat IS TRUE
+                              AND mobile_transit = 'm'),
+           count(*) FILTER (WHERE likely_mobile_cgnat IS FALSE
+                              AND mobile_transit = 'f')
+      INTO v_rows, v_mis_true, v_mis_false, v_mis_null,
+           v_promoted, v_ag_mobile, v_ag_fixed
+      FROM ip2city_dbiplite_traceroute_backup_tbl;
+
+    RAISE NOTICE 'verify % rows: mismatch_true_not_m=%, mismatch_false_not_f_or_t=%, mismatch_null_not_null=%, promoted_to_transit=%, agreed_mobile=%, agreed_fixed=%',
+        v_rows, v_mis_true, v_mis_false, v_mis_null,
+        v_promoted, v_ag_mobile, v_ag_fixed;
+
+    -- STEP 4. Drop, only because the verification above passed.
+
+    IF v_mis_true <> 0 OR v_mis_false <> 0 OR v_mis_null <> 0 THEN
+        RAISE EXCEPTION
+            'verification FAILED on % rows: true_not_m=%, false_not_f_or_t=%, null_not_null=%. likely_mobile_cgnat KEPT so the mapping can still be checked.',
+            v_rows, v_mis_true, v_mis_false, v_mis_null;
+    END IF;
+
+    ALTER TABLE ip2city_dbiplite_traceroute_backup_tbl
+        DROP COLUMN likely_mobile_cgnat;
+
+    RAISE NOTICE 'verification passed on % rows (0/0/0 mismatches); dropped likely_mobile_cgnat', v_rows;
+END $$;
 
 
--- STEP 4. DROP, only after step 3 reports every mismatch column as 0.
--- Irreversible, so it is commented and left as a separate deliberate act.
+-- Final state of the backup table, by tier. Valid whether or not this run was
+-- the one that did the drop, so it reports the same thing on every re-run.
 
--- ALTER TABLE ip2city_dbiplite_traceroute_backup_tbl DROP COLUMN likely_mobile_cgnat;
+SELECT coalesce(mobile_transit, 'NULL not classified') AS tier,
+       count(*)                                        AS rows,
+       round(100.0 * count(*) / nullif(sum(count(*)) OVER (), 0), 1) AS pct
+FROM ip2city_dbiplite_traceroute_backup_tbl
+GROUP BY 1
+ORDER BY 1;
 
 
 -- Anything anywhere still carrying the old column, so none can be forgotten
