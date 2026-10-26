@@ -170,6 +170,32 @@ sudo install -o root -g root -m 0644 "$REPO_ROOT/geo/dma_api/query.sql" "$GEO_HO
 sudo install -o root -g root -m 0644 "$REPO_ROOT/geo/dma_api/trugeo-dma-api.service" "$GEO_HOME/dma_api/"
 sudo install -o root -g root -m 0755 "$_self_dir/scratch_test_rollover.sh" "$GEO_HOME/pipeline/"
 
+# rdap-lookup.sh is a RUNTIME DEPENDENCY of last_carrier_node, which shells out
+# to it as the ownership fallback for excluded-internal traces. It was missing
+# from this list, so the deployed tree never had it and the fallback silently
+# disabled itself on every run.
+#
+# It is installed NEXT TO the last_carrier_node binary because that is the first
+# place the tool's "auto" search looks, which keeps the resolution independent of
+# the caller's working directory.
+#
+# The canonical copy is geo/rdap-lookup/cmd/rdap-lookup.sh, checksum
+# "3459968002 4609", the copy recorded as identical on both workstations. Do not
+# substitute rdap-lookup-follow.sh: redirect-following is out of scope, ARIN only.
+say "installing rdap-lookup.sh beside last_carrier_node"
+sudo mkdir -p "$GEO_HOME/last_carrier_node/bin"
+sudo install -o root -g root -m 0755 \
+  "$REPO_ROOT/geo/rdap-lookup/cmd/rdap-lookup.sh" \
+  "$GEO_HOME/last_carrier_node/bin/rdap-lookup.sh"
+
+# The script is bash + curl + jq. A missing jq fails only at the moment the
+# fallback fires, which can be hours into a run, so say so now.
+for _dep in curl jq; do
+  if ! command -v "$_dep" >/dev/null 2>&1; then
+    say "  WARNING: $_dep not on PATH; rdap-lookup.sh will fail when the RDAP fallback fires"
+  fi
+done
+
 say "installing cron file to $CRON_TARGET"
 sudo install -o root -g root -m 0644 "$_self_dir/trugeo.cron" "$CRON_TARGET"
 
@@ -182,6 +208,19 @@ for entry in $TOOLS; do
   mod=$(go version -m "$installed" | grep vcs.modified | cut -d= -f2)
   say "  $name revision=$rev modified=$mod"
 done
+
+# Verify the runtime dependency actually landed and matches the source, rather
+# than assuming the install succeeded. A silently absent script is the whole
+# reason this check exists.
+_rdap_installed="$GEO_HOME/last_carrier_node/bin/rdap-lookup.sh"
+_rdap_source="$REPO_ROOT/geo/rdap-lookup/cmd/rdap-lookup.sh"
+if [ ! -s "$_rdap_installed" ]; then
+  fail "rdap-lookup.sh missing or empty at $_rdap_installed after install"
+fi
+if [ "$(cksum < "$_rdap_installed")" != "$(cksum < "$_rdap_source")" ]; then
+  fail "rdap-lookup.sh at $_rdap_installed does not match $_rdap_source"
+fi
+say "  rdap-lookup.sh $_rdap_installed cksum=$(cksum < "$_rdap_installed")"
 
 say "done, deployed from revision $REVISION"
 say "cron jobs are defined in $CRON_TARGET and run as cronuser"
