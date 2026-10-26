@@ -22,13 +22,61 @@ work here. Foursquare moved distribution to a gated Hugging Face dataset.
 **The licence did not change.** The data is still Apache 2.0 and still free for
 commercial use. Only the download is behind a login.
 
-### What is needed, once
+### Exact procedure, once
 
-1. A free Hugging Face account.
-2. Accept the terms at <https://huggingface.co/datasets/foursquare/fsq-os-places>.
-   Gating is `"auto"`, so approval is immediate, not a review queue.
-3. A read token from <https://huggingface.co/settings/tokens>.
-4. `export HF_TOKEN=hf_...`
+Steps 1 to 3 are browser actions. There is no API for creating an account or
+accepting a licence, so they cannot be commands.
+
+**1. Create the account.** Go to <https://huggingface.co/join>, enter an email
+address and password, pick any username, and confirm the verification email. No
+payment details, no organisation required.
+
+**2. Accept the dataset terms.** Signed in, go to
+<https://huggingface.co/datasets/foursquare/fsq-os-places>. A box appears
+headed "You need to agree to share your contact information to access this
+dataset". Tick the agreement checkbox and press **Agree and access repository**.
+Gating is `"auto"`, so access is granted immediately rather than queued for
+review. The agreement is that Foursquare may name your employer in its partner
+material.
+
+**3. Create a read token.** Go to
+<https://huggingface.co/settings/tokens>, press **Create new token**, choose
+type **Read**, name it anything (`trugeo`), and copy the `hf_...` value. It is
+shown once.
+
+**4. Put it in the environment.** Keep it out of shell history and out of git:
+
+```
+read -rsp 'HF token: ' HF_TOKEN && export HF_TOKEN && echo
+printf 'export HF_TOKEN=%s\n' "$HF_TOKEN" >> ~/.hf_token && chmod 600 ~/.hf_token
+```
+
+Then `source ~/.hf_token` in later shells. Do not put it in the repository or
+in a crontab.
+
+**5. Verify the token actually works** before starting a 10 GB load. This asks
+for one kilobyte of the first parquet file. Anonymous returns 401; a good token
+returns 206:
+
+```
+curl -s -o /dev/null -w '%{http_code}\n' -r 0-1023 -L \
+  -H "Authorization: Bearer $HF_TOKEN" \
+  'https://huggingface.co/datasets/foursquare/fsq-os-places/resolve/main/release/dt=2026-10-15/places/parquet/places_000000.parquet'
+```
+
+| result | meaning |
+|---|---|
+| `206` | token works, partial content served. Proceed. |
+| `401` | token not sent or invalid. Re-check step 4. |
+| `403` | token valid but the terms in step 2 were not accepted. |
+| `404` | that release no longer exists. Run `python3 fsq_fetch.py releases`. |
+
+**6. Confirm the current release**, since the date in the URL above moves
+monthly. This needs no token:
+
+```
+python3 fsq_fetch.py releases
+```
 
 Listing needs none of this, so the current release can be discovered first:
 
