@@ -51,8 +51,17 @@ read -rsp 'HF token: ' HF_TOKEN && export HF_TOKEN && echo
 printf 'export HF_TOKEN=%s\n' "$HF_TOKEN" >> ~/.hf_token && chmod 600 ~/.hf_token
 ```
 
-Then `source ~/.hf_token` in later shells. Do not put it in the repository or
-in a crontab.
+Then make every future shell pick it up automatically, instead of sourcing it
+by hand. Run this once:
+
+```
+grep -q hf_token ~/.bashrc || printf '\n[ -r ~/.hf_token ] && . ~/.hf_token\n' >> ~/.bashrc
+```
+
+The token lives in `~/.hf_token` at mode 600, and `.bashrc` only sources it.
+Keeping it in a separate file means `.bashrc` stays safe to show or copy, and
+the guard makes the line idempotent so repeated runs cannot append it twice.
+Do not put the token in the repository or in a crontab.
 
 **5. Verify the token actually works** before starting a 10 GB load. This asks
 for one kilobyte of the first parquet file. Anonymous returns 401; a good token

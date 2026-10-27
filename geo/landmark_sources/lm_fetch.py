@@ -215,7 +215,15 @@ def normalise_url(u):
     return u
 
 
-def http_json(url, data=None, headers=None, timeout=180, retries=3):
+# Longest we will ever sleep on a Retry-After. WDQS answered a 429 with
+# Retry-After: 1000 during its outage, and honouring that literally parked the
+# run for nearly 17 minutes with no output, which is indistinguishable from a
+# hang. Past this, the right answer is to stop and say come back later.
+MAX_BACKOFF = 120
+
+
+def http_json(url, data=None, headers=None, timeout=180, retries=3,
+              max_backoff=MAX_BACKOFF):
     hdr = {"User-Agent": UA, "Accept": "application/json"}
     hdr.update(headers or {})
     body = data.encode() if isinstance(data, str) else data
@@ -238,6 +246,12 @@ def http_json(url, data=None, headers=None, timeout=180, retries=3):
                     wait = int(ra)
                 except (TypeError, ValueError):
                     wait = 65 if exc.code == 429 else 15 * attempt
+                if wait > max_backoff:
+                    return {"__error__":
+                            f"{last}; the server asked for a {wait}s wait, which is "
+                            f"longer than the {max_backoff}s limit. Not sleeping. "
+                            f"The service is rate-limiting or down, so re-run this "
+                            f"source later; nothing else is affected."}
                 print(f"    {last}, retrying in {wait}s", flush=True)
                 time.sleep(wait)
                 continue

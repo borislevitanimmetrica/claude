@@ -21,10 +21,16 @@ ACCESS IS GATED. This is not a code problem and no flag works around it.
     commercial use. Only distribution is behind a login.
 
 Setup:
-    pip install duckdb
     Create a token at https://huggingface.co/settings/tokens (role: read)
     Accept the terms at https://huggingface.co/datasets/foursquare/fsq-os-places
     export HF_TOKEN=hf_...
+
+    duckdb is required. On Debian, Ubuntu and Mint, a plain "pip install duckdb"
+    fails with "externally-managed-environment" (PEP 668), because the system
+    Python refuses to install into itself. Use pipx, which keeps it in its own
+    virtual environment, or add --break-system-packages if you accept the risk:
+        pipx install duckdb
+        pip install --break-system-packages duckdb
 
 Two ways to read the parquet:
 
