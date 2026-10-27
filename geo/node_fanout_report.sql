@@ -42,7 +42,14 @@ SELECT coalesce(reverse(split_part(reverse(node_hostname), '.', 2)) || '.'
        sum(landmarks_at_node)                                          AS landmarks,
        round(avg(landmarks_at_node), 2)                                AS mean_landmarks_per_node,
        round(avg(zips_at_node), 2)                                     AS mean_zips,
-       round(avg(clusters_at_node), 2)                                 AS mean_clusters,
+       -- too_wide nodes exceeded the 40-ZIP cap, so zip_clusters never counted
+       -- their clusters and the column is 0. Averaging that in reports 0.00
+       -- mean_clusters for the very WIDEST nodes, which reads as "narrow" and
+       -- is the opposite of the truth: as3491.net showed 171 ZIPs at 0.00
+       -- clusters. So too_wide rows are excluded from the average and counted
+       -- in their own column instead.
+       round(avg(clusters_at_node) FILTER (WHERE NOT too_wide), 2)     AS mean_clusters,
+       count(*) FILTER (WHERE too_wide)                                AS too_wide,
        count(*) FILTER (WHERE verdict LIKE 'zip-level%')               AS zip_level,
        count(*) FILTER (WHERE verdict LIKE 'reject%')                  AS rejected
 FROM node_fanout_tbl
