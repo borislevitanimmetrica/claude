@@ -215,11 +215,23 @@ def normalise_url(u):
     return u
 
 
-# Longest we will ever sleep on a Retry-After. WDQS answered a 429 with
-# Retry-After: 1000 during its outage, and honouring that literally parked the
-# run for nearly 17 minutes with no output, which is indistinguishable from a
-# hang. Past this, the right answer is to stop and say come back later.
-MAX_BACKOFF = 120
+# Longest we will ever sleep on a Retry-After.
+#
+# 60s, and the number is derived rather than chosen. The only rate-limit
+# INTERVAL any of these services has actually stated is WDQS's "1 req / min",
+# seen in its own 429 body. 60s is therefore the shortest cap that still lets
+# every rate limit we have observed recover on the next attempt. The Overpass
+# 502s carried no Retry-After at all and recovered at 15s and 30s, well inside
+# this.
+#
+# An earlier 120s was a round number I picked, not a measurement, which is the
+# kind of invented threshold that has no business being in here.
+#
+# Above the cap we do not sleep. WDQS answered one 429 with Retry-After: 1000,
+# and honouring that parked the run for nearly 17 minutes with no output, which
+# is indistinguishable from a hang. A demand that long means the service is
+# down, not busy, and no tolerable sleep makes it succeed.
+MAX_BACKOFF = 60
 
 
 def http_json(url, data=None, headers=None, timeout=180, retries=3,
@@ -311,7 +323,7 @@ def cmd_osm_overpass(args):
         print(f"  {st} ...", end="", flush=True)
         d = http_json(OVERPASS, data=urllib.parse.urlencode({"data": q}),
                       headers={"Content-Type": "application/x-www-form-urlencoded"},
-                      timeout=args.timeout + 30)
+                      timeout=args.timeout + 30, max_backoff=args.max_backoff)
         if "__error__" in d:
             print(f" FAILED ({d['__error__']})")
             failed.append(st)
@@ -448,7 +460,7 @@ def cmd_wikidata(args):
         print(f"  offset {offset:,} ...", end="", flush=True)
         url = WDQS + "?" + urllib.parse.urlencode({"query": q, "format": "json"})
         d = http_json(url, headers={"Accept": "application/sparql-results+json"},
-                      timeout=args.timeout)
+                      timeout=args.timeout, max_backoff=args.max_backoff)
         if "__error__" in d:
             print(f" FAILED ({d['__error__']}); stopping and loading what we have")
             break
@@ -500,7 +512,7 @@ def cmd_nps(args):
     while True:
         url = NPS_API + "?" + urllib.parse.urlencode(
             {"limit": 50, "start": start, "api_key": key})
-        d = http_json(url)
+        d = http_json(url, max_backoff=args.max_backoff)
         if "__error__" in d:
             sys.exit(f"NPS request failed: {d['__error__']}")
         data = d.get("data", [])
@@ -560,6 +572,10 @@ def main():
                                          "(default: today)")
         s.add_argument("--sleep", type=float, default=2.0,
                        help="seconds between requests (default 2)")
+        s.add_argument("--max-backoff", type=int, default=MAX_BACKOFF,
+                       help=f"never sleep longer than this on a Retry-After "
+                            f"(default {MAX_BACKOFF}, which is the only stated "
+                            f"rate-limit interval observed: WDQS's 1 req/min)")
         return s
 
     o = common(sub.add_parser("osm-overpass", help="OSM via Overpass, per state"))
