@@ -120,12 +120,50 @@ python3 lm_fetch.py osm-pbf --input filtered.geojsonseq
 `geojsonseq` is one feature per line, so the loader streams it instead of
 holding 11 GB in memory, and it COPYs in batches of 200,000.
 
-### Wikidata may refuse
+### Wikidata: use QLever, and pull everything
 
-The query service was rate-limiting to **1 request per minute** during an active
-outage when this was built. The loader honours `Retry-After`, waits 65s on a
-bare 429, and on final failure loads what it already has rather than discarding
-the run. If it reports a 429, come back later rather than lowering `--page`.
+**There is no row limit by default.** `--limit 0` means all matching items, which
+is the default. Measured 2026-10-26: **29,858** US items carry both `P6375`
+(street address) and `P856` (website), of which **26,088** have a 5-digit ZIP in
+the address. `--limit` exists only to cap a deliberate smoke test, and it counts
+rows fetched *by that run*, so it composes with `--resume`.
+
+The default endpoint is **QLever** (`qlever.dev`), an independent index of the
+same Wikidata dump. It answered a `COUNT` in under a second while the canonical
+WDQS was returning `504` to the identical query, and it is unaffected by WDQS
+outages. `--endpoint wdqs` switches back for a cross-check.
+
+`ORDER BY ?item` is not decoration: without it SPARQL `OFFSET` has no defined
+order, so pages can overlap or skip and pagination is not reproducible.
+
+Three independent stopping mechanisms, none of which lose work:
+
+| mechanism | effect |
+|---|---|
+| `--deadline-minutes N` | stops the whole pull after N minutes, keeping every page merged so far |
+| `--max-backoff N` | refuses a `Retry-After` longer than N seconds rather than sleeping |
+| page failure | stops, keeps everything already merged, names the other endpoint |
+
+Every page is merged as it arrives, so an interrupted pull keeps its progress
+and `--resume` continues from the rows already present. Resume is safe in one
+direction only, deliberately: the stored row count is always at or below the
+offset actually reached, because rows with no parseable ZIP are fetched and then
+dropped, so resuming by count can re-fetch a little but can never skip an item.
+
+A full pull in practice:
+
+```
+python3 lm_fetch.py wikidata
+```
+
+If it stops early for any reason:
+
+```
+python3 lm_fetch.py wikidata --resume
+```
+
+Measured: an unbounded run with a 1-minute deadline merged 21,692 rows, so the
+whole 26,088 takes roughly two minutes.
 
 ## Chains are expected, and are handled
 

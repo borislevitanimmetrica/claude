@@ -67,6 +67,7 @@ import os
 import re
 import subprocess
 import sys
+import tempfile
 import time
 import urllib.error
 import urllib.parse
@@ -139,12 +140,22 @@ def read_csv_dicts(raw):
             yield dict(zip(header, row))
 
 
-def load_rows(source, rows, replace=True):
-    """COPY rows into lm_places_usa.
+def load_rows(source, rows, replace=False):
+    """Upsert rows into lm_places_usa. NEVER destroys progress.
 
-    Rows for this source are deleted first so a re-run replaces rather than
-    duplicates; the unique index on (source, source_id) would otherwise abort
-    the whole load on the first repeat.
+    This used to DELETE every row for the source and then COPY, which quietly
+    went backwards: a first run that fetched 30,000 rows followed by a second
+    run that managed only 20,000 before the service failed left 20,000, losing
+    10,000. Under a rate limit that is the normal case, not the edge case, so
+    repeated partial runs could never accumulate.
+
+    Now the batch is staged in a temp table and merged with ON CONFLICT, so a
+    partial run adds what it got and leaves the rest alone. Only the 15 load
+    columns are updated, so enrichment the chain has already written
+    (ip_address, onpremises, registrants) survives a re-load of the same place.
+
+    replace=True restores the old delete-first behaviour, for a deliberate full
+    refresh. It is opt-in precisely because it can lose rows.
     """
     if not rows:
         print(f"{source}: nothing to load.")
@@ -158,7 +169,10 @@ def load_rows(source, rows, replace=True):
         sys.exit(f"{source}: {blank:,} of {len(rows):,} rows have no source_id. "
                  f"The key column was almost certainly not parsed. Refusing to load.")
     buf = io.StringIO()
-    w = csv.writer(buf, quoting=csv.QUOTE_MINIMAL)
+    # lineterminator is forced to "\n": the default "\r\n" leaves a stray
+    # carriage return inside the last field of every row once PostgreSQL has
+    # split on the newline.
+    w = csv.writer(buf, quoting=csv.QUOTE_MINIMAL, lineterminator="\n")
     seen = set()
     written = 0
     for r in rows:
@@ -170,11 +184,45 @@ def load_rows(source, rows, replace=True):
         written += 1
     if replace:
         psql("-q", "-c", f"DELETE FROM lm_places_usa WHERE source = '{source}'")
+
     cols = ", ".join(COLUMNS)
-    psql("-q", "-c", f"COPY lm_places_usa ({cols}) FROM STDIN WITH (FORMAT csv)",
-         stdin=buf.getvalue())
-    print(f"{source}: loaded {written:,} rows "
-          f"({len(rows) - written:,} duplicate ids skipped).")
+    updates = ", ".join(f"{c} = EXCLUDED.{c}"
+                        for c in COLUMNS if c not in ("source", "source_id"))
+
+    # The data goes through a temp FILE read by psql's client-side \copy, not
+    # inline after a COPY FROM STDIN. Inline data is read line by line while
+    # psql looks for the backslash-dot terminator, so a field containing a
+    # newline, which Wikidata street addresses do contain, breaks the load with
+    # "unquoted newline found in data" even though the CSV quoting is correct.
+    # \copy hands the file to COPY as one stream and quoted newlines survive.
+    #
+    # A temp table plus ON CONFLICT does the merge. Both must be in the same
+    # psql invocation because a temp table is session-scoped.
+    fd, path = tempfile.mkstemp(prefix=f"lm_{source}_", suffix=".csv")
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8", newline="") as fh:
+            fh.write(buf.getvalue())
+        script = (
+            "BEGIN;\n"
+            "CREATE TEMP TABLE lm_stage (LIKE lm_places_usa) ON COMMIT DROP;\n"
+            f"\\copy lm_stage ({cols}) FROM '{path}' WITH (FORMAT csv)\n"
+            f"INSERT INTO lm_places_usa ({cols})\n"
+            f"SELECT {cols} FROM lm_stage\n"
+            f"ON CONFLICT (source, source_id) DO UPDATE SET {updates};\n"
+            "COMMIT;\n"
+        )
+        psql("-q", "-f", "-", stdin=script)
+    finally:
+        try:
+            os.unlink(path)
+        except OSError:
+            pass
+
+    total = psql("-qtA", "-c",
+                 f"SELECT count(*) FROM lm_places_usa WHERE source = '{source}'").strip()
+    print(f"{source}: merged {written:,} rows "
+          f"({len(rows) - written:,} duplicate ids skipped); "
+          f"{source} now holds {int(total):,}.")
 
 
 def build_row(source, source_id, release, name, address, locality, region,
@@ -432,15 +480,49 @@ def cmd_nces_ipeds(args):
 # Wikidata
 # --------------------------------------------------------------------------
 
-WD_QUERY = """
+# Two endpoints for the same data.
+#
+# QLever is the default. It is an independent index of the same Wikidata dump,
+# it answered a COUNT in under a second while WDQS was returning 504 to the
+# identical query, and it is not affected by WDQS outages. Measured 2026-10-26:
+# 29,858 US items with P6375 and P856, of which 26,088 carry a 5-digit ZIP.
+#
+# WDQS remains available with --endpoint wdqs. It is the canonical service, so
+# it is worth keeping as a cross-check, but it is not what a bulk pull should
+# depend on.
+WD_ENDPOINTS = {
+    "qlever": "https://qlever.dev/api/wikidata",
+    "wdqs": "https://query.wikidata.org/sparql",
+}
+
+# ORDER BY ?item is not decoration. Without it, SPARQL OFFSET has no defined
+# order, so two pages can overlap or skip rows and pagination is not
+# reproducible. Ordering makes a given OFFSET mean the same thing on every run,
+# which is what makes resuming correct rather than approximate.
+#
+# rdfs:label is used instead of the wikibase:label SERVICE because that service
+# is a WDQS extension and QLever does not implement it.
+WD_QUERY = """PREFIX wdt: <http://www.wikidata.org/prop/direct/>
+PREFIX wd: <http://www.wikidata.org/entity/>
+PREFIX rdfs: <http://www.w3.org/2000/01/rdf-schema#>
 SELECT ?item ?itemLabel ?addr ?site WHERE {{
   ?item wdt:P17 wd:Q30 ;
         wdt:P6375 ?addr ;
-        wdt:P856 ?site .
+        wdt:P856 ?site ;
+        rdfs:label ?itemLabel .
+  FILTER(LANG(?itemLabel) = "en")
   FILTER(REGEX(STR(?addr), "[0-9]{{5}}"))
-  SERVICE wikibase:label {{ bd:serviceParam wikibase:language "en". }}
 }}
+ORDER BY ?item
 LIMIT {limit} OFFSET {offset}
+"""
+
+WD_COUNT = """PREFIX wdt: <http://www.wikidata.org/prop/direct/>
+PREFIX wd: <http://www.wikidata.org/entity/>
+SELECT (COUNT(*) AS ?n) WHERE {
+  ?item wdt:P17 wd:Q30 ; wdt:P6375 ?addr ; wdt:P856 ?site .
+  FILTER(REGEX(STR(?addr), "[0-9]{5}"))
+}
 """
 
 # The ZIP sits inside the address text. Prefer a ZIP that follows a 2-letter
@@ -451,23 +533,86 @@ WD_ZIP_AT_END = re.compile(r"(\d{5})(?:-\d{4})?\s*$")
 
 
 def cmd_wikidata(args):
+    """Pull every matching Wikidata item, resumably.
+
+    Unbounded by default. --limit exists only to cap a deliberate smoke test;
+    it is not a safety belt, and the earlier default of 50,000 was a number I
+    picked without knowing the total. The total is 26,088, so that default
+    happened not to truncate anything, which was luck rather than design.
+
+    Three mechanisms stop a run, none of which lose work:
+      --deadline-minutes  wall-clock budget for the whole pull
+      --max-backoff       refuse a Retry-After longer than this
+      page failure        stop, keep every page already merged
+
+    Each page is merged as it arrives, so an interrupted pull keeps its
+    progress and --resume continues from the rows already present.
+    """
     require_table()
+    endpoint = WD_ENDPOINTS[args.endpoint]
     release = args.release or time.strftime("%Y-%m-%d")
-    rows, offset, page = [], 0, args.page
-    while offset < args.limit:
-        n = min(page, args.limit - offset)
-        q = WD_QUERY.format(limit=n, offset=offset)
-        print(f"  offset {offset:,} ...", end="", flush=True)
-        url = WDQS + "?" + urllib.parse.urlencode({"query": q, "format": "json"})
-        d = http_json(url, headers={"Accept": "application/sparql-results+json"},
-                      timeout=args.timeout, max_backoff=args.max_backoff)
-        if "__error__" in d:
-            print(f" FAILED ({d['__error__']}); stopping and loading what we have")
+    started = time.monotonic()
+
+    total = None
+    d = http_json(endpoint + "?" + urllib.parse.urlencode(
+        {"query": WD_COUNT, "format": "json"}),
+        headers={"Accept": "application/sparql-results+json"},
+        timeout=args.timeout, max_backoff=args.max_backoff)
+    if "__error__" not in d:
+        try:
+            total = int(d["results"]["bindings"][0]["n"]["value"])
+            print(f"  {endpoint} reports {total:,} matching items")
+        except (KeyError, IndexError, ValueError):
+            pass
+    else:
+        print(f"  count unavailable ({d['__error__']}); paging until a short page")
+
+    # Resume from the number of rows already stored. That count is always LESS
+    # than or equal to the offset actually reached, because rows whose address
+    # has no parseable ZIP are fetched and then dropped. So resuming by count
+    # can only re-fetch a little, never skip: the overlap is absorbed by the
+    # ON CONFLICT merge, and no item can be missed. Resuming by a stored offset
+    # would be tighter but would skip rows if the filter rate ever changed.
+    offset = 0
+    if args.resume:
+        offset = int(psql("-qtA", "-c", "SELECT count(*) FROM lm_places_usa "
+                                        "WHERE source = 'wikidata'").strip() or 0)
+        print(f"  resuming from offset {offset:,}")
+
+    # --limit counts rows fetched BY THIS RUN, not an absolute offset ceiling.
+    # As a ceiling it combined with --resume to do nothing at all: resuming at
+    # offset 961 with --limit 500 found 961 already past 500 and exited having
+    # merged zero, which looks exactly like a failure.
+    merged = 0
+    stop_at = (offset + args.limit) if args.limit else 0
+    while stop_at == 0 or offset < stop_at:
+        if args.deadline_minutes and \
+                (time.monotonic() - started) / 60.0 >= args.deadline_minutes:
+            print(f"  deadline of {args.deadline_minutes} min reached; "
+                  f"stopping with {merged:,} rows merged. Re-run with --resume.")
             break
+
+        n = args.page if stop_at == 0 else min(args.page, stop_at - offset)
+        q = WD_QUERY.format(limit=n, offset=offset)
+        shown = f"/{total:,}" if total else ""
+        print(f"  offset {offset:,}{shown} ...", end="", flush=True)
+        d = http_json(endpoint + "?" + urllib.parse.urlencode(
+            {"query": q, "format": "json"}),
+            headers={"Accept": "application/sparql-results+json"},
+            timeout=args.timeout, max_backoff=args.max_backoff)
+        if "__error__" in d:
+            print(f" FAILED ({d['__error__']})")
+            print(f"  stopping with {merged:,} rows merged. Re-run with --resume, "
+                  f"or try --endpoint "
+                  f"{'wdqs' if args.endpoint == 'qlever' else 'qlever'}.")
+            break
+
         binds = d.get("results", {}).get("bindings", [])
         print(f" {len(binds):,}")
         if not binds:
             break
+
+        rows = []
         for b in binds:
             addr = b.get("addr", {}).get("value", "")
             site = normalise_url(b.get("site", {}).get("value"))
@@ -486,11 +631,17 @@ def cmd_wikidata(args):
                 "wikidata", qid, release,
                 b.get("itemLabel", {}).get("value"), addr, "", region, zipc,
                 site, None, None, "wikidata"))
+
+        # Merge per page, so an interrupted pull keeps what it already fetched.
+        load_rows("wikidata", rows, replace=False)
+        merged += len(rows)
+
         if len(binds) < n:
             break
         offset += n
         time.sleep(args.sleep)
-    load_rows("wikidata", rows)
+
+    print(f"wikidata: {merged:,} rows merged this run.")
 
 
 # --------------------------------------------------------------------------
@@ -594,8 +745,19 @@ def main():
     n.add_argument("--year", type=int, default=2023)
 
     w = common(sub.add_parser("wikidata", help="Wikidata items with P856 + P6375"))
-    w.add_argument("--limit", type=int, default=50000, help="max rows to fetch")
-    w.add_argument("--page", type=int, default=10000, help="rows per SPARQL page")
+    w.add_argument("--limit", type=int, default=0,
+                   help="0 means ALL matching items, which is the default. Set a "
+                        "number only to cap a deliberate smoke test")
+    w.add_argument("--page", type=int, default=5000, help="rows per SPARQL page")
+    w.add_argument("--endpoint", choices=sorted(WD_ENDPOINTS), default="qlever",
+                   help="qlever (default, independent index, unaffected by WDQS "
+                        "outages) or wdqs (canonical, useful as a cross-check)")
+    w.add_argument("--resume", action="store_true",
+                   help="continue from the wikidata rows already loaded instead "
+                        "of starting at offset 0")
+    w.add_argument("--deadline-minutes", type=int, default=0,
+                   help="stop the whole pull after this many minutes, keeping "
+                        "every page already merged (0 = no deadline)")
     w.add_argument("--timeout", type=int, default=180)
 
     s = common(sub.add_parser("nps", help="National Park Service (needs a key; low value)"))
