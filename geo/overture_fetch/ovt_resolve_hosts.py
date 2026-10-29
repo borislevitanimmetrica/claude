@@ -67,6 +67,7 @@ import re
 import shutil
 import socket
 import subprocess
+import threading
 import sys
 import time
 from concurrent.futures import ThreadPoolExecutor, as_completed
@@ -113,13 +114,58 @@ def check_ident(label, value):
 PSQL_ENV = None   # environment for every psql call (carries work_mem etc.); set in main()
 
 
-def run_script(script):
+HEARTBEAT_SECONDS = 15
+
+
+def _psql_with_heartbeat(cmd, stdin_text, label):
+    """Run psql, printing an elapsed-time heartbeat while it works.
+
+    psql emits nothing until a statement completes, so a single long statement
+    looks exactly like a hang. The locality/ZIP scan crosses the whole table in
+    one statement, an onpremises chunk can take minutes, and the periodic
+    VACUUM took 1,456 seconds in one observed run with no output at all. During
+    any of those there was no way to tell "still working" from "stuck", which is
+    the difference between waiting and intervening.
+
+    The heartbeat carries no information beyond elapsed time, deliberately:
+    psql cannot report intra-statement progress, and inventing a percentage
+    would be a fabrication. Elapsed time is what is actually known.
+    """
+    t0 = time.monotonic()
+    proc = subprocess.Popen(
+        cmd,
+        stdin=subprocess.PIPE if stdin_text is not None else None,
+        stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+        text=True, env=PSQL_ENV)
+
+    captured = {}
+
+    def _communicate():
+        captured["result"] = proc.communicate(input=stdin_text)
+
+    worker = threading.Thread(target=_communicate, daemon=True)
+    worker.start()
+
+    next_beat = HEARTBEAT_SECONDS
+    while worker.is_alive():
+        worker.join(timeout=1.0)
+        elapsed = time.monotonic() - t0
+        if worker.is_alive() and elapsed >= next_beat:
+            print(f"    {label}: still running, {elapsed:,.0f}s elapsed", flush=True)
+            next_beat += HEARTBEAT_SECONDS
+
+    out, err = captured.get("result", ("", ""))
+    return proc.returncode, out or "", err or ""
+
+
+def run_script(script, label="sql"):
     """Run a multi-statement script (may contain COPY ... FROM STDIN data) in one transaction."""
-    r = subprocess.run(["psql", "-X", "-q", "-v", "ON_ERROR_STOP=1", "-1", "-f", "-"],
-                       input=script, capture_output=True, text=True, env=PSQL_ENV)
-    if r.returncode != 0:
-        sys.exit(f"psql failed:\n{r.stderr.strip()}")
-    return r.stdout
+    code, out, err = _psql_with_heartbeat(
+        ["psql", "-X", "-q", "-v", "ON_ERROR_STOP=1", "-1", "-f", "-"],
+        script, label)
+    if code != 0:
+        sys.exit(f"psql failed:\n{err.strip()}")
+    return out
 
 
 def query_csv(select_sql):
@@ -471,12 +517,14 @@ def registrant_fields(result):
     return out
 
 
-def run_sql(sql):
+def run_sql(sql, label=None):
     """Run one statement outside a transaction block (needed for CREATE INDEX CONCURRENTLY)."""
-    r = subprocess.run(["psql", "-X", "-q", "-v", "ON_ERROR_STOP=1", "-c", sql],
-                       capture_output=True, text=True, env=PSQL_ENV)
-    if r.returncode != 0:
-        sys.exit(f"psql failed:\n{r.stderr.strip()}")
+    if label is None:
+        label = sql.strip().split(None, 2)[0].upper() if sql.strip() else "sql"
+    code, _, err = _psql_with_heartbeat(
+        ["psql", "-X", "-q", "-v", "ON_ERROR_STOP=1", "-c", sql], None, label)
+    if code != 0:
+        sys.exit(f"psql failed:\n{err.strip()}")
 
 
 def ensure_column(ctx, name):
@@ -728,7 +776,8 @@ def run_chunks(ctx, args, label, chunks, make_script):
     t0 = time.time()
     for i, (cond, n) in enumerate(chunks, 1):
         guard_space(ctx, args, extra=int(2 * n * width), where=f" (chunk {i}/{len(chunks)})")
-        out = run_script(make_script(cond))
+        out = run_script(make_script(cond),
+                         label=f"{label} chunk {i}/{len(chunks)} ({n:,} rows)")
         nums = re.findall(r"^\s*(\d+)\s*$", out, re.M)
         changed += int(nums[-1]) if nums else 0
         done += n
@@ -737,7 +786,7 @@ def run_chunks(ctx, args, label, chunks, make_script):
               f"{time.time() - t0:,.0f}s", flush=True)
         if args.vacuum_every and since_vacuum >= args.vacuum_every and i < len(chunks):
             print("  VACUUM ...", flush=True)
-            run_sql(f"VACUUM {ctx.target}")
+            run_sql(f"VACUUM {ctx.target}", label=f"VACUUM {ctx.target}")
             since_vacuum = 0
     return changed
 
@@ -820,7 +869,7 @@ def cmd_overture_zip(args):
     reg = f"upper(btrim(substring({a} from {lit(OV_REGION_RE)})))"
     loc_t = f"{q(args.pg_schema)}.{q(args.table + '_tmp_loc_zip')}"
     print("Collecting locality/ZIP evidence (scans the whole table) ...", flush=True)
-    run_script(f"""
+    run_script(label="locality/ZIP evidence scan", script=f"""
 DROP TABLE IF EXISTS {loc_t};
 CREATE UNLOGGED TABLE {loc_t} AS
 SELECT lk, rk, min(z) AS zip FROM (
