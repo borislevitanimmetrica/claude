@@ -76,6 +76,19 @@ import zipfile
 
 UA = "trugeo-landmark-fetch/1.0 (geolocation research; contact via repository)"
 
+# CISA publishes the authoritative list of every .gov domain. Open, no key.
+# Measured 2026-10-26: 16,980 domains, of which 14,140 local government.
+DOTGOV_URL = ("https://raw.githubusercontent.com/cisagov/dotgov-data/"
+              "main/current-full.csv")
+
+# Local government only by default. Federal executive domains are nationally
+# centralised and would behave like the NPS case, many rows collapsing onto a
+# few hosts, so they are off unless asked for.
+DOTGOV_LOCAL_TYPES = ("City", "County", "Special district", "Tribal",
+                      "School district", "City - Election",
+                      "County - Election", "Special district - Election",
+                      "Tribal - Election")
+
 OVERPASS = "https://overpass-api.de/api/interpreter"
 WDQS = "https://query.wikidata.org/sparql"
 IPEDS = "https://nces.ed.gov/ipeds/datacenter/data/HD{year}.zip"
@@ -693,6 +706,70 @@ def cmd_nps(args):
 # status
 # --------------------------------------------------------------------------
 
+def cmd_dotgov(args):
+    """Load local-government .gov domains from CISA's registry.
+
+    Aimed specifically at sparsely populated ZIPs, which is where the landmark
+    corpus is thinnest. It is a registry of municipalities, and a small town IS
+    a municipality, so coverage follows settlement rather than commercial
+    density. Sampled rural reach: Vermont 94 domains across 87 towns against
+    roughly 250 municipalities, Maine 134 across 107, Montana 114 across 80.
+
+    THE FILE HAS NO ZIP. It carries Organization name, City and State only.
+    That is survivable rather than fatal: the chain's overture-zip step already
+    resolves a locality and region to the one ZIP every row with that locality
+    carries, when unambiguous, and labels the result 'locality' so the weaker
+    provenance stays visible. Inventing a ZIP here would hide that.
+
+    EXPECTED YIELD IS GENUINELY UNKNOWN and could be poor. Many small
+    municipalities use a civic-web vendor (CivicPlus, Revize, Granicus), and a
+    vendor-hosted site has the vendor's registrant ZIP, so onpremises will
+    reject it exactly as it rejects a Squarespace business. Counties and larger
+    towns are likelier to self-host. The case for loading it anyway is not the
+    row count but WHERE the rows are: even a low hit rate lands in ZIPs that
+    currently have no landmark at all, which is worth more per row than another
+    metropolitan business.
+    """
+    require_table()
+    release = args.release or time.strftime("%Y-%m-%d")
+    print(f"Downloading {DOTGOV_URL} ...", flush=True)
+    req = urllib.request.Request(DOTGOV_URL, headers={"User-Agent": UA})
+    try:
+        with urllib.request.urlopen(req, timeout=120) as r:
+            raw = r.read()
+    except (urllib.error.HTTPError, OSError) as exc:
+        sys.exit(f"dotgov download failed: {exc}")
+
+    wanted = None if args.all_types else set(DOTGOV_LOCAL_TYPES)
+    rows, skipped = [], 0
+    for d in read_csv_dicts(raw):
+        dtype = (d.get("Domain type") or "").strip()
+        if wanted is not None and dtype not in wanted:
+            skipped += 1
+            continue
+        domain = (d.get("Domain name") or "").strip().lower()
+        if not domain or "." not in domain:
+            skipped += 1
+            continue
+        url = normalise_url("https://" + domain)
+        if not url:
+            skipped += 1
+            continue
+        rows.append(build_row(
+            "dotgov", domain, release,
+            d.get("Organization name"),
+            "",                              # no street address in the file
+            d.get("City"), d.get("State"),
+            "",                              # no ZIP; locality fallback fills it
+            url, None, None, dtype))
+    print(f"  {len(rows):,} domains selected, {skipped:,} skipped "
+          f"({'all types' if args.all_types else 'local government only'})")
+    load_rows("dotgov", rows, replace=args.replace)
+    print("\nThese rows have NO postcode by design. Run the chain's "
+          "overture-zip step to\nassign a ZIP from locality and region; it will "
+          "be labelled overture_zip_source='locality'.")
+
+
 def cmd_status(args):
     print(psql("-c", """
 SELECT source,
@@ -760,6 +837,14 @@ def main():
                         "every page already merged (0 = no deadline)")
     w.add_argument("--timeout", type=int, default=180)
 
+    g = common(sub.add_parser("dotgov", help="CISA .gov registry, local government"))
+    g.add_argument("--all-types", action="store_true",
+                   help="include federal and state domains too; off by default "
+                        "because they are nationally centralised and many rows "
+                        "would collapse onto a few hosts, as with NPS")
+    g.add_argument("--replace", action="store_true",
+                   help="delete existing dotgov rows first")
+
     s = common(sub.add_parser("nps", help="National Park Service (needs a key; low value)"))
     s.add_argument("--api-key")
 
@@ -768,7 +853,7 @@ def main():
     args = p.parse_args()
     {"osm-overpass": cmd_osm_overpass, "osm-pbf": cmd_osm_pbf,
      "nces-ipeds": cmd_nces_ipeds, "wikidata": cmd_wikidata,
-     "nps": cmd_nps, "status": cmd_status}[args.cmd](args)
+     "dotgov": cmd_dotgov, "nps": cmd_nps, "status": cmd_status}[args.cmd](args)
 
 
 if __name__ == "__main__":

@@ -53,7 +53,12 @@
 -- fan-out figure computed from one landmark is not a measurement.
 --
 -- Prerequisites: ovt_places_usa_ip_trace populated, zip_adjacency, and
--- ovt_places_usa with onpremises set.
+-- landmarks_usa with onpremises set.
+--
+-- Reads landmarks_usa, not ovt_places_usa, so the fan-out measurement and
+-- address_hosting_tbl cover EVERY source rather than Overture alone. The trace
+-- table keeps its ovt_ name: it is keyed on ip and is still the only
+-- landmark-side trace store, whatever source the landmark came from.
 --
 -- Contains NO backslashes so it survives copy/paste.
 
@@ -164,7 +169,7 @@ WITH addr AS (
            min(p.overture_zip)                                       AS zip,
            count(DISTINCT p.overture_zip)                            AS zips_at_addr
     FROM ovt_places_usa_ip_trace t
-    JOIN ovt_places_usa p ON p.ip_address = t.ip
+    JOIN landmarks_usa p ON p.ip_address = t.ip
     WHERE t.status LIKE 'reached%'
       AND t.last_hop_ip IS NOT NULL
       AND p.onpremises = true
@@ -275,7 +280,7 @@ WITH zip_pt AS (
 node_zip AS (
     SELECT DISTINCT host(t.last_hop_ip) AS node, t.last_hop_hostname, p.overture_zip AS zip
     FROM ovt_places_usa_ip_trace t
-    JOIN ovt_places_usa p ON p.ip_address = t.ip
+    JOIN landmarks_usa p ON p.ip_address = t.ip
     WHERE t.status LIKE 'reached%'
       AND t.last_hop_ip IS NOT NULL
       AND p.onpremises = true
@@ -333,7 +338,7 @@ CREATE TABLE address_hosting_tbl AS
 WITH addr_zip AS (
     SELECT host(p.ip_address)                                         AS addr,
            p.overture_zip                                             AS zip
-    FROM ovt_places_usa p
+    FROM landmarks_usa p
     WHERE p.onpremises = true
       AND p.ip_address IS NOT NULL
       AND p.overture_zip ~ '^[0-9]{5}$'
@@ -348,9 +353,9 @@ SELECT cl.grp::inet                                                   AS ip_addr
        cl.zips                                                        AS zips_at_address,
        cl.clusters                                                    AS clusters_at_address,
        cl.too_wide,
-       (SELECT count(*) FROM ovt_places_usa p
+       (SELECT count(*) FROM landmarks_usa p
         WHERE p.ip_address = cl.grp::inet AND p.onpremises = true)     AS places,
-       (SELECT min(p.registrant_1) FROM ovt_places_usa p
+       (SELECT min(p.registrant_1) FROM landmarks_usa p
         WHERE p.ip_address = cl.grp::inet)                            AS registrant,
        CASE WHEN cl.too_wide          THEN 'hosting: too wide to cluster'
             WHEN cl.clusters > 1      THEN 'hosting: ' || cl.clusters || ' disjoint areas'
