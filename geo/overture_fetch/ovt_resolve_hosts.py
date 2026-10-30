@@ -171,14 +171,23 @@ def run_script(script, label="sql"):
     return out
 
 
-def query_csv(select_sql):
-    """Run a SELECT and return its rows as lists of strings (NULL -> '')."""
-    r = subprocess.run(["psql", "-X", "-q", "-v", "ON_ERROR_STOP=1", "-c",
-                        f"COPY ({select_sql}) TO STDOUT WITH CSV"],
-                       capture_output=True, text=True, env=PSQL_ENV)
-    if r.returncode != 0:
-        sys.exit(f"psql failed:\n{r.stderr.strip()}")
-    return list(csv.reader(io.StringIO(r.stdout)))
+def query_csv(select_sql, label=None):
+    """Run a SELECT and return its rows as lists of strings (NULL -> '').
+
+    Heartbeated like run_script and run_sql. This one was missed, and it is the
+    worst place to miss it: the rdap step starts with a SELECT DISTINCT over
+    every row of the target table, which on 14 million rows is a minutes-long
+    silence before the first progress line. On a restart that is exactly the
+    moment the operator is asking whether anything is happening.
+    """
+    if label is None:
+        label = "query"
+    code, out, err = _psql_with_heartbeat(
+        ["psql", "-X", "-q", "-v", "ON_ERROR_STOP=1", "-c",
+         f"COPY ({select_sql}) TO STDOUT WITH CSV"], None, label)
+    if code != 0:
+        sys.exit(f"psql failed:\n{err.strip()}")
+    return list(csv.reader(io.StringIO(out)))
 
 
 def csv_text(rows):
@@ -1304,6 +1313,10 @@ def cmd_rdap(args):
     for c in REG_COLUMNS:
         ensure_column(ctx, c)
     ensure_ip_index(ctx)
+    # Each of these crosses the whole table, so on a restart against 14 million
+    # rows they are minutes of silence before the first lookup. Name the phase
+    # being entered; the heartbeat inside then reports elapsed time.
+    print("Refreshing lookup_status from the data already stored ...", flush=True)
     refresh_statuses(ctx)
 
     # Work list: distinct IPs with status NULL (not looked up yet) or 'lookup error' (possibly
@@ -1311,10 +1324,12 @@ def cmd_rdap(args):
     retry = [STATUS_ERROR] + ([STATUS_NOT_ARIN, STATUS_NO_REGISTRANT] if args.retry_failed else [])
     cond = "lookup_status IS NULL OR lookup_status IN (" + ", ".join(lit(x) for x in retry) + ")"
     order = "random()" if args.random else "ip"
+    print(f"Selecting distinct IPs still needing RDAP from {args.table} "
+          f"(scans the whole table) ...", flush=True)
     ips = [r[0] for r in query_csv(f"""
 SELECT host(ip) FROM (SELECT DISTINCT ip_address AS ip FROM {ctx.target}
                       WHERE ip_address IS NOT NULL AND ({cond})) d
-ORDER BY {order}""")]
+ORDER BY {order}""", label="distinct-IP selection")]
     if args.limit:
         ips = ips[:args.limit]
     log = args.error_log or f"{args.table}_rdap_errors.csv"
