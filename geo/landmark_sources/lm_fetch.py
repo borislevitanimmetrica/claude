@@ -422,10 +422,38 @@ def cmd_osm_pbf(args):
     document so this streams instead of loading 11 GB into memory.
     """
     require_table()
+    # A relative --input is resolved against the CURRENT directory, which is
+    # usually not where osmium wrote the file. Say so plainly instead of
+    # surfacing a bare FileNotFoundError from deep in the reader.
+    if not os.path.exists(args.input):
+        here = os.getcwd()
+        guess = os.path.abspath(args.input)
+        sys.exit(f"--input not found: {args.input}\n"
+                 f"  looked for: {guess}\n"
+                 f"  current directory: {here}\n"
+                 f"Pass an ABSOLUTE path. osmium writes to the directory it ran "
+                 f"in, which is\nnot this one if you changed directory in "
+                 f"between.")
+    if os.path.getsize(args.input) == 0:
+        sys.exit(f"--input is empty: {args.input}\n"
+                 f"The osmium export produced no data; re-check the "
+                 f"tags-filter step.")
+
     release = args.release or time.strftime("%Y-%m-%d")
-    rows, seen_bad = [], 0
+    size_mb = os.path.getsize(args.input) / 1024 / 1024
+    print(f"Reading {args.input} ({size_mb:,.0f} MB) ...", flush=True)
+    rows, seen_bad, read, kept = [], 0, 0, 0
+    t0 = time.monotonic()
     with open(args.input, encoding="utf-8", errors="replace") as fh:
         for line in fh:
+            read = read + 1
+            # A national export is tens of millions of lines and the batch
+            # print only fires every --batch rows, so without this the run is
+            # silent for minutes at a time.
+            if read % 500000 == 0:
+                elapsed = time.monotonic() - t0
+                print(f"  read {read:,} features, {kept:,} usable, "
+                      f"{elapsed:,.0f}s", flush=True)
             line = line.strip().lstrip("\x1e")   # RS, if geojson-seq used it
             if not line or line[0] != "{":
                 continue
@@ -446,10 +474,14 @@ def cmd_osm_pbf(args):
             if r:
                 r[1] = str(el["id"])
                 rows.append(r)
+                kept = kept + 1
             if len(rows) >= args.batch:
                 load_rows("osm", rows, replace=False)
                 rows = []
     load_rows("osm", rows, replace=False)
+    print(f"  read {read:,} features total, {kept:,} usable "
+          f"(had both a website and a 5-digit addr:postcode), "
+          f"{time.monotonic() - t0:,.0f}s")
     if seen_bad:
         print(f"  {seen_bad:,} unparseable lines skipped.")
 
@@ -771,20 +803,52 @@ def cmd_dotgov(args):
 
 
 def cmd_status(args):
+    """Load state of lm_places_usa, plus enrichment state from landmarks_usa.
+
+    The onpremises column used to be read from lm_places_usa, where it is now
+    always 0 and therefore actively misleading: enrichment moved to
+    landmarks_usa, and lm_places_usa is only the staging import. The verdict is
+    read from landmarks_usa when that table exists.
+    """
+    print("LOADED into lm_places_usa (staging):")
     print(psql("-c", """
 SELECT source,
        count(*)                                                   AS rows,
-       count(DISTINCT lower(btrim(website)))                      AS distinct_websites,
-       count(DISTINCT postcode)                                   AS distinct_zips,
+       count(DISTINCT lower(btrim(website)))                      AS distinct_hosts,
        round(100.0 * count(DISTINCT lower(btrim(website)))
              / nullif(count(*),0), 1)                             AS pct_unique_hosts,
-       count(*) FILTER (WHERE onpremises IS TRUE)                  AS onpremises_true
+       count(DISTINCT postcode) FILTER (WHERE postcode ~ '^[0-9]{5}$')
+                                                                  AS zips_from_source
 FROM lm_places_usa
 GROUP BY 1
 ORDER BY 2 DESC"""))
     print("pct_unique_hosts is the column that matters: a source where many rows "
           "share\none host contributes far fewer landmarks than its row count "
           "suggests.")
+    print("zips_from_source is 0 for dotgov by design; it has no postcode and the")
+    print("overture-zip locality fallback assigns one during enrichment.\n")
+
+    have = psql("-qtA", "-c", "select count(*) from information_schema.tables "
+                              "where table_schema='public' "
+                              "and table_name='landmarks_usa'").strip()
+    if have != "1":
+        print("landmarks_usa does not exist yet; run "
+              "../landmarks/create_table_landmarks_usa.sql then "
+              "migrate_into_landmarks_usa.sql")
+        return
+    print("ENRICHED in landmarks_usa (this is where onpremises is decided):")
+    print(psql("-c", """
+SELECT source,
+       count(*)                                                   AS rows,
+       count(*) FILTER (WHERE ip_address IS NOT NULL)              AS resolved,
+       count(*) FILTER (WHERE lookup_status = 'true')              AS rdap_ok,
+       count(*) FILTER (WHERE overture_zip ~ '^[0-9]{5}$')         AS have_zip,
+       count(*) FILTER (WHERE onpremises IS TRUE)                   AS onpremises_true,
+       count(DISTINCT overture_zip) FILTER (WHERE onpremises IS TRUE)
+                                                                  AS zips_delivered
+FROM landmarks_usa
+GROUP BY 1
+ORDER BY 2 DESC"""))
 
 
 def main():
