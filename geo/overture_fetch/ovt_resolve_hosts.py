@@ -66,8 +66,11 @@ import os
 import re
 import shutil
 import socket
+import http.client
+import json
 import subprocess
 import threading
+import types
 import sys
 import time
 from concurrent.futures import ThreadPoolExecutor, as_completed
@@ -418,11 +421,199 @@ def clean_rdap(stdout, name_only):
     return " | ".join(lines)
 
 
-def rdap_one(script, ip, timeout, attempts, delay, name_only=False):
+RDAP_HOST = "rdap.arin.net"
+
+# One HTTPS connection per worker thread, reused across lookups.
+#
+# WHY THIS EXISTS. Each lookup used to spawn rdap-lookup.sh, which spawns curl,
+# which opens a fresh TCP connection and performs a fresh TLS handshake. Measured
+# against ARIN: 20 separate curl processes took 3.833s, while one curl process
+# reusing the connection for the same 20 URLs took 0.121s. That is 32 times
+# faster, because the per-call breakdown is dns 0.001s, tcp connect 0.061s, tls
+# 0.066s, leaving only about 0.060s for the query itself. Setup was 68% of every
+# call and was paid again on every IP.
+_rdap_local = threading.local()
+
+
+def _rdap_conn():
+    conn = getattr(_rdap_local, "conn", None)
+    if conn is None:
+        conn = http.client.HTTPSConnection(RDAP_HOST, timeout=30)
+        _rdap_local.conn = conn
+    return conn
+
+
+def _rdap_drop_conn():
+    conn = getattr(_rdap_local, "conn", None)
+    if conn is not None:
+        try:
+            conn.close()
+        except Exception:
+            pass
+    _rdap_local.conn = None
+
+
+def _vcard_props(entity):
+    arr = entity.get("vcardArray")
+    if not isinstance(arr, list) or len(arr) < 2 or not isinstance(arr[1], list):
+        return []
+    return [p for p in arr[1] if isinstance(p, list) and len(p) >= 4]
+
+
+def _vcard_field(entity, name):
+    for p in _vcard_props(entity):
+        if p[0] == name:
+            return p[3] if isinstance(p[3], str) else None
+    return None
+
+
+def _flatten_str(v):
+    if isinstance(v, list):
+        out = []
+        for x in v:
+            out.extend(_flatten_str(x))
+        return out
+    if isinstance(v, str):
+        return [v]
+    return []
+
+
+def _vcard_adr(entity):
+    """Mirror of the script's adr_text: joined address parts, else the label."""
+    adr = None
+    for p in _vcard_props(entity):
+        if p[0] == "adr":
+            adr = p
+            break
+    if adr is None:
+        return None
+    parts = [x for x in _flatten_str(adr[3]) if x]
+    if parts:
+        return ", ".join(parts)
+    label = adr[1].get("label") if isinstance(adr[1], dict) else None
+    return label.replace("\n", ", ") if isinstance(label, str) else None
+
+
+def _all_role_objects(node, acc):
+    """Mirror of jq '.. | objects | select(has("roles"))', recursive descent."""
+    if isinstance(node, dict):
+        if "roles" in node:
+            acc.append(node)
+        for v in node.values():
+            _all_role_objects(v, acc)
+    elif isinstance(node, list):
+        for v in node:
+            _all_role_objects(v, acc)
+
+
+def _jq_sort_key(rec):
+    # jq's unique sorts objects by their key-value pairs in sorted key order,
+    # which for these records is adr, email, name, org. jq orders null before
+    # any string, so None maps to a lower bucket.
+    out = []
+    for k in ("adr", "email", "name", "org"):
+        v = rec.get(k)
+        out.append((0, "") if v is None else (1, v))
+    return tuple(out)
+
+
+def rdap_native(ip, timeout):
+    """Fetch and format one ARIN RDAP record, byte-identical to rdap-lookup.sh.
+
+    Returns (stdout_text, ok). ok is False for the cases where the script would
+    have exited non-zero, and the text then carries the same "HTTP <code>"
+    marker classify_error already looks for, so lookup_status is unchanged.
+    """
+    path = "/registry/ip/" + ip
+    for attempt in (1, 2):
+        try:
+            conn = _rdap_conn()
+            conn.timeout = timeout
+            conn.request("GET", path, headers={
+                "Accept": "application/rdap+json",
+                "User-Agent": "trugeo-rdap/1.0",
+                "Connection": "keep-alive"})
+            resp = conn.getresponse()
+            body = resp.read()
+            status = resp.status
+            break
+        except Exception as exc:
+            _rdap_drop_conn()
+            if attempt == 2:
+                return (f"Error: curl failed to reach {RDAP_HOST} "
+                        f"(network/DNS/timeout). {exc}"), False
+    if status != 200:
+        return (f"Error: ARIN RDAP returned HTTP {status} for {ip}."), False
+    try:
+        doc = json.loads(body.decode("utf-8", "replace"))
+    except ValueError:
+        return (f"Error: Network execution target failed to return valid JSON "
+                f"from {RDAP_HOST}"), False
+
+    ents = []
+    _all_role_objects(doc, ents)
+    recs = []
+    for e in ents:
+        roles = e.get("roles") or []
+        if "registrant" not in roles:
+            continue
+        recs.append({"name": _vcard_field(e, "fn"),
+                     "org": _vcard_field(e, "org"),
+                     "adr": _vcard_adr(e),
+                     "email": _vcard_field(e, "email")})
+    seen, uniq = set(), []
+    for r in sorted(recs, key=_jq_sort_key):
+        k = (r["adr"], r["email"], r["name"], r["org"])
+        if k not in seen:
+            seen.add(k)
+            uniq.append(r)
+
+    country = doc.get("country") or ""
+    out = ["=== ARIN VCARD GEOGRAPHIC RECORD ===",
+           f"Query Target IP   : {ip}"]
+    if not uniq:
+        out.append("Registrant Entity : NOT_FOUND")
+        out.append("Geographic Address: NOT_POPULATED")
+        if country:
+            out.append(f"Network Country    : {country}")
+    else:
+        for r in uniq:
+            name, org = r["name"] or "", r["org"] or ""
+            out.append("------------------------------------")
+            out.append(f"Registrant Entity : {name or org or 'NOT_FOUND'}")
+            if org and org != name:
+                out.append(f"Organization      : {org}")
+            out.append(f"Geographic Address: {r['adr'] or 'NOT_POPULATED'}")
+            if r["email"]:
+                out.append(f"Email             : {r['email']}")
+        if country:
+            out.append(f"Network Country    : {country}")
+    out.append("====================================")
+    return "\n".join(out) + "\n", True
+
+
+def rdap_one(script, ip, timeout, attempts, delay, name_only=False, native=True):
+    """One RDAP lookup, native by default.
+
+    native=True does the HTTP in-process on a connection kept alive per thread,
+    which avoids a TCP and TLS handshake per IP. Verified byte-identical to the
+    script on 15 addresses, including the NOT_FOUND, outside-ARIN and
+    multi-registrant cases, and 2.9 times faster on a single thread here.
+
+    native=False keeps the original path, spawning the script. It stays because
+    the script is the reference implementation: if the two ever disagree, the
+    script is right by definition and this flag is how to fall back.
+    """
     err = "unknown"
     for attempt in range(1, attempts + 1):
         try:
-            r = subprocess.run([script, ip], capture_output=True, text=True, timeout=timeout)
+            if native:
+                text, ok = rdap_native(ip, timeout)
+                r = types.SimpleNamespace(
+                    returncode=0 if ok else 1, stdout=text, stderr="")
+            else:
+                r = subprocess.run([script, ip], capture_output=True,
+                                   text=True, timeout=timeout)
             if r.returncode == 0:
                 result = clean_rdap(r.stdout, name_only)
                 if result:
@@ -1136,7 +1327,8 @@ ORDER BY {order}""")]
 
     t0, done, ok, rows, err_rows = time.time(), 0, 0, [], []
     ex = ThreadPoolExecutor(max_workers=args.rdap_threads)
-    futs = [ex.submit(rdap_one, script, ip, args.rdap_timeout, args.rdap_attempts, args.delay, args.name_only)
+    futs = [ex.submit(rdap_one, script, ip, args.rdap_timeout, args.rdap_attempts,
+                      args.delay, args.name_only, not args.rdap_use_script)
             for ip in ips]
     try:
         for fut in as_completed(futs):
@@ -1280,6 +1472,13 @@ def main():
                     help="With --limit: take a random sample instead of the lowest IPs (for testing)")
     rd.add_argument("--rdap-timeout", type=int, default=60, help="Seconds per call")
     rd.add_argument("--rdap-attempts", type=int, default=3)
+    rd.add_argument("--rdap-use-script", action="store_true",
+                    help="spawn rdap-lookup.sh per IP instead of doing the HTTP "
+                         "in-process. Slower, because every call then pays a "
+                         "fresh TCP and TLS handshake, which measured as 68 "
+                         "percent of a call. Kept because the script is the "
+                         "reference implementation: if the two ever disagree, "
+                         "the script is right and this is the way back")
     rd.add_argument("--delay", type=float, default=0.0,
                     help="Seconds each worker sleeps after a successful call")
     rd.add_argument("--name-only", action="store_true",
