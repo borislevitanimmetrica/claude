@@ -511,6 +511,48 @@ ORDER BY 2 DESC
 LIMIT 40;
 
 
+-- ---------------------------------------------------------------------------
+-- ORG-NAME VARIANTS FOUND 2026-10-31
+--
+-- Matching is exact on lower(btrim(registrant)), so one organisation holding
+-- several ARIN org records needs each string. Two slipped through.
+--
+-- HOW THEY WERE FOUND, AND WHAT THE RESIDUE ACTUALLY IS. After the onpremises
+-- step was run to completion (an earlier run had stopped partway, leaving
+-- 967,790 rows unevaluated), the only provider-like registrants remaining in
+-- onpremises = true were:
+--
+--     Google Fiber Inc.             83 addresses
+--     Microsoft Corp                 6 addresses
+--     Amazon Data Services Italy     1 address
+--
+-- Google Fiber Inc. is CORRECT and stays out of this list. It is a retail ISP
+-- serving several US regions, so its space does route subscribers, exactly as
+-- the note on Google Fiber above says. Google's hosting is a separate ARIN org:
+-- RDAP on 2026-10-31 returned 'Google LLC' for 8.8.8.8, for the GCP load
+-- balancer 34.102.136.180, for the mail edge 172.253.157.27 and for the
+-- googledomains nameserver 216.239.34.107, while 136.33.1.1 returned
+-- 'Google Fiber Inc.'. Two orgs, one excluded, one not.
+--
+-- The other two are variants of names already listed above. RDAP on 2026-10-31
+-- returned 'Microsoft Corporation' for both Azure (20.62.97.228) and Microsoft
+-- 365 mail (52.101.11.17), so 'Microsoft Corp' is a separate, older org record
+-- on other Microsoft space rather than a different company. Amazon Data
+-- Services Italy is the non-US AWS entity; a landmark in a US ZIP whose website
+-- resolves into it is not on premises by any reading.
+--
+-- KEEP THE SCALE IN VIEW. This is 7 addresses out of roughly 28,500. The 39
+-- names in this list reject 10,713,526 of 12,775,630 rows, so exact matching is
+-- not failing in any material way and does not need replacing with fuzzy
+-- matching, which would risk excluding real ISPs. These are the residue, and
+-- naming them is cheaper than changing how names are compared.
+-- ---------------------------------------------------------------------------
+INSERT INTO public.provider_names (name) VALUES
+    ('Microsoft Corp'),
+    ('Amazon Data Services Italy')
+ON CONFLICT DO NOTHING;
+
+
 DO $$
 BEGIN
     IF EXISTS (SELECT 1 FROM pg_roles WHERE rolname = 'cronuser') THEN
