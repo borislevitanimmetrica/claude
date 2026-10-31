@@ -49,6 +49,22 @@
 -- The websites filter matches the shared script: a row with no website cannot
 -- resolve to an address and so can never become a landmark.
 
+-- WHY THIS FILE REPORTS TIMINGS AND REFUSES TO WAIT FOR LOCKS
+--
+-- A load of this data ran for 45 minutes with no output and looked hung. Two
+-- causes, both removable. psql printed nothing because no statement reported
+-- its duration, and a writer waiting on a lock waits for ever by default. A
+-- psql session left at a pager prompt inside a transaction holds its locks,
+-- and the next writer queues behind it silently.
+--
+-- \timing on makes every statement announce how long it took. lock_timeout
+-- makes a blocked statement fail in 30 seconds with a clear error instead of
+-- hanging. Neither limits how long legitimate work may run: statement_timeout
+-- is deliberately NOT set, because a large insert is allowed to be slow.
+
+\timing on
+SET lock_timeout = '30s';
+
 \echo '=== ca_cde rows available in lm_places_usa ==='
 SELECT count(*) AS total,
        count(*) FILTER (WHERE websites IS NOT NULL AND btrim(websites) <> '') AS with_website,
@@ -73,7 +89,11 @@ WHERE l.source = 'ca_cde'
   AND btrim(l.websites) <> ''
 ON CONFLICT (source, source_id) WHERE source_id IS NOT NULL DO NOTHING;
 
-ANALYZE landmarks_usa;
+-- No ANALYZE here, deliberately. ANALYZE on landmarks_usa reads a sample of a
+-- 15.2-million-row table, and adding roughly 8,800 rows to it does not shift
+-- the planner's statistics enough to matter. The chain's own steps ANALYZE when
+-- they need to. Running it here only lengthens a step whose purpose is to
+-- insert a few thousand rows and report what happened.
 
 \echo '=== ca_cde rows in landmarks_usa, after ==='
 SELECT count(*)                                                   AS after_rows,
@@ -83,10 +103,17 @@ SELECT count(*)                                                   AS after_rows,
 FROM landmarks_usa
 WHERE source = 'ca_cde';
 
-\echo '=== every other source is untouched, counts for comparison ==='
-SELECT source, count(*) AS rows,
-       count(*) FILTER (WHERE lookup_status IS NOT NULL) AS have_rdap,
-       count(*) FILTER (WHERE onpremises) AS onpremises_true
-FROM landmarks_usa
-GROUP BY source
-ORDER BY 2 DESC;
+-- The per-source comparison that used to sit here has been removed from this
+-- file. It was
+--
+--     SELECT source, count(*), count(*) FILTER (WHERE lookup_status IS NOT NULL),
+--            count(*) FILTER (WHERE onpremises)
+--     FROM landmarks_usa GROUP BY source;
+--
+-- which is a sequential scan of every one of the 15.2 million rows, attached to
+-- a step that otherwise touches a few thousand. Reassurance that other sources
+-- were untouched does not need to be bought at that price on every run, and it
+-- made this script look like the slow part when it was not.
+--
+-- Run it separately when you actually want it. It is in
+-- geo/landmarks/landmarks_per_source.sql.

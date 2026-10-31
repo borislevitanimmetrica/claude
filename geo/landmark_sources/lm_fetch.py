@@ -112,14 +112,64 @@ COLUMNS = ["source", "source_id", "source_release", "name", "address", "locality
 # database
 # --------------------------------------------------------------------------
 
-def psql(*args, stdin=None, check=True):
+# How long any statement here will wait for a LOCK before giving up.
+#
+# Not a statement timeout. A legitimate load of this size can run for many
+# minutes and must not be interrupted. This bounds only the time spent waiting
+# for another session to release a lock, which is the one failure mode that is
+# both unbounded and invisible.
+#
+# WHY. A merge into lm_places_usa took 45 minutes with no output and looked
+# hung. psql() captured all output and passed no timeout, so every database
+# call from this script was a black box of unbounded duration: nothing to see
+# and nothing to stop it. A psql session left sitting at a pager prompt inside
+# a transaction holds its locks, and the next writer waits behind it forever.
+# With lock_timeout the writer fails in seconds and names the problem instead.
+LOCK_TIMEOUT = os.environ.get("LM_LOCK_TIMEOUT", "30s")
+
+
+def _psql_env():
+    """Environment for psql, carrying lock_timeout through PGOPTIONS.
+
+    An existing PGOPTIONS is preserved and appended to rather than replaced, so
+    a caller who has set something deliberately keeps it.
+    """
+    env = dict(os.environ)
+    opt = f"-c lock_timeout={LOCK_TIMEOUT}"
+    existing = env.get("PGOPTIONS", "").strip()
+    if "lock_timeout" not in existing:
+        env["PGOPTIONS"] = f"{existing} {opt}".strip()
+    return env
+
+
+def psql(*args, stdin=None, check=True, stream=False):
+    """Run psql. stream=True lets its output reach the terminal as it happens.
+
+    The default captures output, which is right for the small queries whose
+    result this function returns. It is wrong for anything long: a captured
+    psql prints nothing until it exits, so a slow statement is
+    indistinguishable from a hang. Long operations pass stream=True and get
+    \\timing so each statement reports its own duration.
+    """
     cmd = ["psql", "-X", "-v", "ON_ERROR_STOP=1", *args]
     try:
+        if stream:
+            r = subprocess.run(cmd, input=stdin, text=True, check=check,
+                               env=_psql_env())
+            return ""
         r = subprocess.run(cmd, input=stdin, capture_output=True, text=True,
-                           check=check)
+                           check=check, env=_psql_env())
         return r.stdout
     except (OSError, subprocess.CalledProcessError) as exc:
         detail = getattr(exc, "stderr", "") or exc
+        if "lock_timeout" in str(detail) or "canceling statement" in str(detail):
+            sys.exit(f"psql failed waiting for a lock after {LOCK_TIMEOUT}: {detail}\n"
+                     f"Another session is holding a lock on the table. The usual cause "
+                     f"is a psql left at a pager prompt inside a transaction. Find it "
+                     f"with:\n"
+                     f"  psql -d postgres -c \"SELECT pid, state, wait_event_type, "
+                     f"left(query, 60) FROM pg_stat_activity WHERE state <> 'idle' "
+                     f"OR xact_start IS NOT NULL ORDER BY xact_start\"")
         sys.exit(f"psql failed: {detail}")
 
 
@@ -215,7 +265,12 @@ def load_rows(source, rows, replace=False):
     try:
         with os.fdopen(fd, "w", encoding="utf-8", newline="") as fh:
             fh.write(buf.getvalue())
+        # \timing on so each statement reports its own duration, and the run is
+        # streamed rather than captured. Without both, this block printed
+        # nothing from the moment it started until it finished, which is how a
+        # 45-minute lock wait came to look like a hang.
         script = (
+            "\\timing on\n"
             "BEGIN;\n"
             "CREATE TEMP TABLE lm_stage (LIKE lm_places_usa) ON COMMIT DROP;\n"
             f"\\copy lm_stage ({cols}) FROM '{path}' WITH (FORMAT csv)\n"
@@ -224,7 +279,11 @@ def load_rows(source, rows, replace=False):
             f"ON CONFLICT (source, source_id) DO UPDATE SET {updates};\n"
             "COMMIT;\n"
         )
-        psql("-q", "-f", "-", stdin=script)
+        print(f"  merging {written:,} rows into lm_places_usa "
+              f"(lock wait capped at {LOCK_TIMEOUT}) ...", flush=True)
+        started = time.time()
+        psql("-f", "-", stdin=script, stream=True)
+        print(f"  merge finished in {time.time() - started:.1f}s", flush=True)
     finally:
         try:
             os.unlink(path)
@@ -786,7 +845,12 @@ def cmd_ca_cde(args):
     Regional ESD serving many small districts, and a landmark built from it
     would place every member school at the ESD.
     """
-    require_table()
+    # --dry-run must not touch the database at all, so the table check is
+    # skipped too. The point is to separate a file or parsing problem from a
+    # database problem, which is impossible if the first thing it does is
+    # connect.
+    if not args.dry_run:
+        require_table()
     release = args.release or time.strftime("%Y-%m-%d")
 
     try:
@@ -887,6 +951,11 @@ def cmd_ca_cde(args):
     print(f"  distinct 5-digit ZIPs       {len(zips):>8,}")
     print(f"  rows on a shared host       {shared_rows:>8,}  "
           f"({100.0 * shared_rows / len(rows):.1f}% of usable)")
+
+    if args.dry_run:
+        print(f"\nDry run: nothing written, no database connection made.\n"
+              f"Re-run without --dry-run to load these {len(rows):,} rows.")
+        return
 
     load_rows("ca_cde", rows, replace=args.replace)
 
@@ -1092,6 +1161,12 @@ def main():
                         "only StatusType = Active is loaded")
     c.add_argument("--replace", action="store_true",
                    help="delete existing ca_cde rows first")
+    c.add_argument("--dry-run", action="store_true",
+                   help="parse the file and print the counts and the shared-host "
+                        "analysis without touching the database at all. Run this "
+                        "first: it validates the file and shows the yield with no "
+                        "connection, so a database problem cannot be confused with "
+                        "a parsing problem")
 
     sub.add_parser("status", help="per-source row, host and ZIP counts")
 
