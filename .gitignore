@@ -4,3 +4,9 @@
 # matched no commit, which made stale-binary failures very hard to diagnose.
 geo/*/bin/
 geo/dma_export/*/bin/
+
+
+# Run artifacts written into the checkout by the pipeline steps. They are
+# outputs, not source, and tracking them would make every run dirty the tree.
+geo/*_rdap_errors.csv
+geo/landmark_sources/*.geojsonseq

@@ -1276,15 +1276,51 @@ INSERT INTO {adj_t} SELECT a, b FROM (
 WHERE a IS NOT NULL AND b IS NOT NULL;
 ANALYZE {isps_t};
 ANALYZE {adj_t};""")
+    # WHY HOSTING ROWS ARE HELD BACK.
+    #
+    # geo/landmarks/onpremises_hosting_rule.sql sets onpremises = false for an
+    # address whose traces fan out into disjoint ZIP clusters, and records that
+    # in onpremises_reason as 'hosting: ...'. That decision is made from
+    # measured fan-out, which this step cannot see: it reads only the registrant
+    # and the ZIPs. So the base rule here would happily set such a row back to
+    # true, silently reverting the hosting rule and putting provider-hosted
+    # addresses back into the landmark set.
+    #
+    # The hosting rule already guards itself on the way in. Nothing guarded it
+    # on the way back out, which made the order of these two steps load-bearing
+    # and undocumented. Excluding hosting rows from base closes that: the two
+    # steps now commute, and re-running this one is safe at any time.
+    #
+    # The column is optional because this script also targets ovt_places_usa,
+    # which predates it. A missing column leaves the previous behaviour intact.
+    have_reason = int(query_csv(f"""SELECT count(*) FROM information_schema.columns
+                                    WHERE table_schema = {lit(args.pg_schema)}
+                                      AND table_name = {lit(args.table)}
+                                      AND column_name = 'onpremises_reason'""")[0][0]) > 0
+    keep_hosting = ""
+    if have_reason:
+        keep_hosting = (" AND (t.onpremises_reason IS NULL"
+                        " OR t.onpremises_reason NOT LIKE 'hosting:%')")
+        n_keep = int(query_csv(f"""SELECT count(*) FROM {ctx.target} t
+                                   WHERE t.lookup_status = {lit(STATUS_OK)}
+                                     AND t.onpremises_reason LIKE 'hosting:%'""")[0][0])
+        print(f"{n_keep:,} rows carry a 'hosting:' reason from the hosting rule and are left "
+              f"untouched, so this step cannot revert it", flush=True)
+    else:
+        print(f"note: {args.pg_schema}.{args.table} has no onpremises_reason column, so hosting "
+              f"decisions cannot be preserved; run this step BEFORE the hosting rule, never after.",
+              file=sys.stderr)
+
+    base = f"t.lookup_status = {lit(STATUS_OK)}{keep_hosting}"
+
     try:
         if args.dry_run:
-            print("Dry run: which rule decides each row with lookup_status = 'true':")
+            print("Dry run: which rule decides each row this step would consider:")
             print(run_script(f"""SELECT {rule} AS rule, count(*) FROM {ctx.target} t
-WHERE t.lookup_status = {lit(STATUS_OK)} GROUP BY 1 ORDER BY 1;
+WHERE {base} GROUP BY 1 ORDER BY 1;
 SELECT {mix} AS registrants, {case} AS onpremises, count(*) FROM {ctx.target} t
-WHERE t.lookup_status = {lit(STATUS_OK)} GROUP BY 1, 2 ORDER BY 1, 2;"""))
+WHERE {base} GROUP BY 1, 2 ORDER BY 1, 2;"""))
             return
-        base = f"t.lookup_status = {lit(STATUS_OK)}"
         chunks = ip_chunks(ctx, base, args.chunk_rows)
         changed = run_chunks(ctx, args, "onpremises", chunks, lambda cond: f"""
 WITH u AS (UPDATE {ctx.target} t SET onpremises = {case}
