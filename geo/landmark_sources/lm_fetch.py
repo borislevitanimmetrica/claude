@@ -112,14 +112,64 @@ COLUMNS = ["source", "source_id", "source_release", "name", "address", "locality
 # database
 # --------------------------------------------------------------------------
 
-def psql(*args, stdin=None, check=True):
+# How long any statement here will wait for a LOCK before giving up.
+#
+# Not a statement timeout. A legitimate load of this size can run for many
+# minutes and must not be interrupted. This bounds only the time spent waiting
+# for another session to release a lock, which is the one failure mode that is
+# both unbounded and invisible.
+#
+# WHY. A merge into lm_places_usa took 45 minutes with no output and looked
+# hung. psql() captured all output and passed no timeout, so every database
+# call from this script was a black box of unbounded duration: nothing to see
+# and nothing to stop it. A psql session left sitting at a pager prompt inside
+# a transaction holds its locks, and the next writer waits behind it forever.
+# With lock_timeout the writer fails in seconds and names the problem instead.
+LOCK_TIMEOUT = os.environ.get("LM_LOCK_TIMEOUT", "30s")
+
+
+def _psql_env():
+    """Environment for psql, carrying lock_timeout through PGOPTIONS.
+
+    An existing PGOPTIONS is preserved and appended to rather than replaced, so
+    a caller who has set something deliberately keeps it.
+    """
+    env = dict(os.environ)
+    opt = f"-c lock_timeout={LOCK_TIMEOUT}"
+    existing = env.get("PGOPTIONS", "").strip()
+    if "lock_timeout" not in existing:
+        env["PGOPTIONS"] = f"{existing} {opt}".strip()
+    return env
+
+
+def psql(*args, stdin=None, check=True, stream=False):
+    """Run psql. stream=True lets its output reach the terminal as it happens.
+
+    The default captures output, which is right for the small queries whose
+    result this function returns. It is wrong for anything long: a captured
+    psql prints nothing until it exits, so a slow statement is
+    indistinguishable from a hang. Long operations pass stream=True and get
+    \\timing so each statement reports its own duration.
+    """
     cmd = ["psql", "-X", "-v", "ON_ERROR_STOP=1", *args]
     try:
+        if stream:
+            r = subprocess.run(cmd, input=stdin, text=True, check=check,
+                               env=_psql_env())
+            return ""
         r = subprocess.run(cmd, input=stdin, capture_output=True, text=True,
-                           check=check)
+                           check=check, env=_psql_env())
         return r.stdout
     except (OSError, subprocess.CalledProcessError) as exc:
         detail = getattr(exc, "stderr", "") or exc
+        if "lock_timeout" in str(detail) or "canceling statement" in str(detail):
+            sys.exit(f"psql failed waiting for a lock after {LOCK_TIMEOUT}: {detail}\n"
+                     f"Another session is holding a lock on the table. The usual cause "
+                     f"is a psql left at a pager prompt inside a transaction. Find it "
+                     f"with:\n"
+                     f"  psql -d postgres -c \"SELECT pid, state, wait_event_type, "
+                     f"left(query, 60) FROM pg_stat_activity WHERE state <> 'idle' "
+                     f"OR xact_start IS NOT NULL ORDER BY xact_start\"")
         sys.exit(f"psql failed: {detail}")
 
 
@@ -215,7 +265,12 @@ def load_rows(source, rows, replace=False):
     try:
         with os.fdopen(fd, "w", encoding="utf-8", newline="") as fh:
             fh.write(buf.getvalue())
+        # \timing on so each statement reports its own duration, and the run is
+        # streamed rather than captured. Without both, this block printed
+        # nothing from the moment it started until it finished, which is how a
+        # 45-minute lock wait came to look like a hang.
         script = (
+            "\\timing on\n"
             "BEGIN;\n"
             "CREATE TEMP TABLE lm_stage (LIKE lm_places_usa) ON COMMIT DROP;\n"
             f"\\copy lm_stage ({cols}) FROM '{path}' WITH (FORMAT csv)\n"
@@ -224,7 +279,11 @@ def load_rows(source, rows, replace=False):
             f"ON CONFLICT (source, source_id) DO UPDATE SET {updates};\n"
             "COMMIT;\n"
         )
-        psql("-q", "-f", "-", stdin=script)
+        print(f"  merging {written:,} rows into lm_places_usa "
+              f"(lock wait capped at {LOCK_TIMEOUT}) ...", flush=True)
+        started = time.time()
+        psql("-f", "-", stdin=script, stream=True)
+        print(f"  merge finished in {time.time() - started:.1f}s", flush=True)
     finally:
         try:
             os.unlink(path)
@@ -735,6 +794,184 @@ def cmd_nps(args):
 
 
 # --------------------------------------------------------------------------
+# California public schools
+# --------------------------------------------------------------------------
+
+# The state directory, for reference. It is NOT fetched by this loader.
+#
+# One request succeeded and returned 8,796,076 bytes of tab-delimited data with
+# the 46 documented fields. Every request after that returned a 15,080-byte
+# Radware captcha page with HTTP 200, including with a browser User-Agent, so a
+# datacenter address cannot be relied on to download it. Worse, the captcha
+# comes back as 200 with text/html, so a naive loader would parse the captcha
+# page as data and quietly load nothing. --input is therefore required and the
+# content is validated before use.
+CA_CDE_URL = "https://www.cde.ca.gov/schooldirectory/report?rid=dl1&tp=txt"
+
+# CDE writes this literal string instead of leaving a field empty.
+CDE_NULL = {"", "no data", "n/a", "none", "null"}
+
+
+def _cde_clean(value):
+    v = (value or "").strip()
+    return "" if v.lower() in CDE_NULL else v
+
+
+def cmd_ca_cde(args):
+    """Load California public schools from the CDE directory export.
+
+    WHY A STATE FILE RATHER THAN THE FEDERAL ONE. States fund their own public
+    schools, so the state directory is maintained on a budget cycle while the
+    federal CCD release lags a year. The CDE file also carries NCESDist and
+    NCESSchool, so CCD remains available as a clean key-join for coverage
+    checking without any name matching. Decisive practical difference: CDE
+    publishes a WebSite column beside the address and ZIP, and CCD does not
+    publish a website at all, so CCD cannot anchor a landmark by itself.
+
+    THE SHARED-HOST PROBLEM, WHICH IS THE WHOLE RISK HERE. Schools very often
+    publish their district's website rather than their own. Fifty schools in
+    fifty ZIPs then resolve to ONE address at the district office. That address
+    is genuinely on premises, but it is on the DISTRICT's premises, so treating
+    each school as a landmark would assign one building's address to fifty
+    different ZIPs. node_fanout.sql already catches exactly this: an address
+    whose landmark places occupy disjoint ZIP clusters is called hosting and
+    rejected. The consequence is that shared-website schools cost RDAP and
+    trace budget and are then thrown away, correctly.
+
+    So this loader reports, BEFORE anything is spent on them, how many rows
+    have a host of their own and how many share one. The second number is the
+    expected waste, and it is printed rather than discovered later. The same
+    hazard applies to regional service agencies: nwresd.k12.or.us is Northwest
+    Regional ESD serving many small districts, and a landmark built from it
+    would place every member school at the ESD.
+    """
+    # --dry-run must not touch the database at all, so the table check is
+    # skipped too. The point is to separate a file or parsing problem from a
+    # database problem, which is impossible if the first thing it does is
+    # connect.
+    if not args.dry_run:
+        require_table()
+    release = args.release or time.strftime("%Y-%m-%d")
+
+    try:
+        with open(args.input, "rb") as fh:
+            raw = fh.read()
+    except OSError as exc:
+        sys.exit(f"cannot read {args.input}: {exc}\n"
+                 f"Download it on a machine with a residential address:\n"
+                 f"  curl -sS -L -o pubschls.txt \"{CA_CDE_URL}\"")
+
+    # Validate before parsing. The captcha page is served with HTTP 200 and
+    # text/html, so a file that looks like a successful download can contain no
+    # data at all. Checking for the header is the cheap way to refuse it.
+    head = raw[:4096].decode("utf-8", errors="replace")
+    if "CDSCode" not in head:
+        hint = ("it looks like the Radware captcha page, not the data"
+                if "captcha" in head.lower() or "<html" in head.lower()
+                else "the first line does not contain CDSCode")
+        sys.exit(f"{args.input} is not the CDE directory export: {hint}.\n"
+                 f"Expected a tab-delimited file whose header starts with CDSCode. "
+                 f"Size was {len(raw):,} bytes; the real export is about 8.8 MB.")
+
+    text = raw.decode("utf-8-sig", errors="replace")
+    # QUOTE_NONE is required. The file is tab-delimited and NOT quoted, but
+    # individual fields do contain bare double quotes in school names. With the
+    # default dialect csv treats those as field quoting and swallows the
+    # following newlines, which collapsed this 8.8 MB file to 73 parsed rows in
+    # testing. That failure is silent and loses almost everything.
+    reader = csv.DictReader(io.StringIO(text), delimiter="\t",
+                            quoting=csv.QUOTE_NONE)
+    if not reader.fieldnames or "CDSCode" not in reader.fieldnames:
+        sys.exit(f"{args.input}: header parsed but has no CDSCode column; "
+                 f"found {len(reader.fieldnames or [])} fields.")
+
+    total = 0
+    counts = {"not active": 0, "no website": 0, "no zip": 0,
+              "unusable website": 0, "no cds code": 0}
+    rows, meta = [], []
+    for d in reader:
+        total += 1
+        status = _cde_clean(d.get("StatusType"))
+        if not args.all_status and status != "Active":
+            counts["not active"] += 1
+            continue
+        cds = _cde_clean(d.get("CDSCode"))
+        if not cds:
+            counts["no cds code"] += 1
+            continue
+        site = _cde_clean(d.get("WebSite"))
+        if not site:
+            counts["no website"] += 1
+            continue
+        zp = _cde_clean(d.get("Zip"))
+        if not zp:
+            counts["no zip"] += 1
+            continue
+        url = normalise_url(site)
+        if not url:
+            counts["unusable website"] += 1
+            continue
+
+        # A district-level record carries no School name, so fall back to the
+        # district. Without this those rows load with an empty name.
+        name = _cde_clean(d.get("School")) or _cde_clean(d.get("District"))
+        lat = _cde_clean(d.get("Latitude")) or None
+        lon = _cde_clean(d.get("Longitude")) or None
+        # SOCType is the specific kind of school; EILName is the grade band.
+        category = (_cde_clean(d.get("SOCType"))
+                    or _cde_clean(d.get("EILName")) or "public school")
+        rows.append(build_row(
+            "ca_cde", cds, release, name,
+            _cde_clean(d.get("Street")), _cde_clean(d.get("City")),
+            _cde_clean(d.get("State")) or "CA", zp, url, lat, lon, category))
+        meta.append((urllib.parse.urlsplit(url).hostname or "").lower())
+
+    print(f"{total:,} rows in {args.input}")
+    for reason, n in sorted(counts.items(), key=lambda kv: -kv[1]):
+        if n:
+            print(f"  skipped, {reason:<18}{n:>8,}")
+    print(f"  usable                      {len(rows):>8,}")
+    if not rows:
+        sys.exit("Nothing usable to load.")
+
+    # The yield analysis. zips_per_host is what decides whether a row survives
+    # node_fanout.sql, so it is reported here rather than discovered after the
+    # RDAP and trace budget has been spent.
+    by_host = {}
+    for row, host in zip(rows, meta):
+        by_host.setdefault(host, set()).add(row[7])
+    one_zip = sum(1 for z in by_host.values() if len(z) == 1)
+    many_zip = len(by_host) - one_zip
+    shared_rows = sum(1 for h in meta if len(by_host[h]) > 1)
+    zips = {r[7] for r in rows if r[7]}
+
+    print(f"\n  distinct website hosts      {len(by_host):>8,}")
+    print(f"    hosts serving ONE ZIP     {one_zip:>8,}")
+    print(f"    hosts serving many ZIPs   {many_zip:>8,}")
+    print(f"  distinct 5-digit ZIPs       {len(zips):>8,}")
+    print(f"  rows on a shared host       {shared_rows:>8,}  "
+          f"({100.0 * shared_rows / len(rows):.1f}% of usable)")
+
+    if args.dry_run:
+        print(f"\nDry run: nothing written, no database connection made.\n"
+              f"Re-run without --dry-run to load these {len(rows):,} rows.")
+        return
+
+    load_rows("ca_cde", rows, replace=args.replace)
+
+    print("\nWhat to expect from these rows, in order:")
+    print("  The hosts serving many ZIPs are mostly district or county sites. "
+          "One address\n  cannot be on the premises of schools in several ZIPs, "
+          "so node_fanout.sql will\n  call those addresses hosting and reject "
+          "them. That is correct, and it is why the\n  shared-host count above "
+          "is the expected waste rather than a surprise.")
+    print("  The hosts serving one ZIP are the real candidates. Run the chain's "
+          "resolve,\n  rdap, registrants, overture-zip and onpremises steps on "
+          "landmarks_usa next; the\n  ZIP already comes from the file, so the "
+          "locality fallback is not needed here.")
+
+
+# --------------------------------------------------------------------------
 # status
 # --------------------------------------------------------------------------
 
@@ -912,12 +1149,32 @@ def main():
     s = common(sub.add_parser("nps", help="National Park Service (needs a key; low value)"))
     s.add_argument("--api-key")
 
+    c = common(sub.add_parser("ca-cde", help="California public schools from the "
+                                            "CDE directory export (local file)"))
+    c.add_argument("--input", required=True,
+                   help="path to the tab-delimited CDE export, e.g. "
+                        "/home/boris/geo/pubschls.txt. Required because the CDE "
+                        "endpoint answers a datacenter address with a captcha "
+                        "page served as HTTP 200")
+    c.add_argument("--all-status", action="store_true",
+                   help="include closed, merged and pending schools; by default "
+                        "only StatusType = Active is loaded")
+    c.add_argument("--replace", action="store_true",
+                   help="delete existing ca_cde rows first")
+    c.add_argument("--dry-run", action="store_true",
+                   help="parse the file and print the counts and the shared-host "
+                        "analysis without touching the database at all. Run this "
+                        "first: it validates the file and shows the yield with no "
+                        "connection, so a database problem cannot be confused with "
+                        "a parsing problem")
+
     sub.add_parser("status", help="per-source row, host and ZIP counts")
 
     args = p.parse_args()
     {"osm-overpass": cmd_osm_overpass, "osm-pbf": cmd_osm_pbf,
      "nces-ipeds": cmd_nces_ipeds, "wikidata": cmd_wikidata,
-     "dotgov": cmd_dotgov, "nps": cmd_nps, "status": cmd_status}[args.cmd](args)
+     "dotgov": cmd_dotgov, "nps": cmd_nps, "ca-cde": cmd_ca_cde,
+     "status": cmd_status}[args.cmd](args)
 
 
 if __name__ == "__main__":
