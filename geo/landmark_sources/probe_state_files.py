@@ -163,23 +163,72 @@ def probe(state, raw, ctype, source):
         print(f"  headers: {', '.join(list(headers)[:24])}")
         return None
 
-    # The decisive count. Everything above is structure; this is yield.
-    both = sum(1 for r in rows
-               if looks_like_url(r.get(have_web)) and looks_like_zip(r.get(have_zip)))
-    zips = {re.search(r"\b(\d{5})\b", r.get(have_zip) or "").group(1)
-            for r in rows if looks_like_zip(r.get(have_zip))}
-    hosts = set()
-    for r in rows:
+    # ONE POPULATION FOR EVERY NUMBER BELOW.
+    #
+    # The first version of this counted each figure over a different set of
+    # rows: rows-with-both over rows carrying a ZIP and a website, distinct ZIPs
+    # over every row with a ZIP, and distinct hosts over every row with a
+    # website. Nothing said so, and a reader would reasonably assume the three
+    # described the same schools.
+    #
+    # On California that produced 8,940 / 1,673 / 5,237 against the loader's
+    # 8,816 / 1,367 / 5,165. The 124-row gap was closed schools, which the
+    # loader excludes and this did not. The 306-ZIP gap was the different
+    # denominator. Both numbers were defensible in isolation and misleading
+    # together, which is worse than being wrong, because it looks like
+    # corroboration.
+    usable = [r for r in rows
+              if looks_like_url(r.get(have_web)) and looks_like_zip(r.get(have_zip))]
+
+    def zip_of(r):
+        m = re.search(r"\b(\d{5})\b", r.get(have_zip) or "")
+        return m.group(1) if m else None
+
+    def host_of(r):
         v = (r.get(have_web) or "").strip().strip('"').lower()
-        if looks_like_url(v):
-            hosts.add(v.split("://")[-1].split("/")[0].split(":")[0])
-    print(f"  rows with ZIP and website   {both:>8,}")
+        return v.split("://")[-1].split("/")[0].split(":")[0]
+
+    zips = {zip_of(r) for r in usable} - {None}
+    hosts = {host_of(r) for r in usable}
+    print(f"\n  rows with ZIP and website   {len(usable):>8,}")
     print(f"  distinct 5-digit ZIPs       {len(zips):>8,}")
     print(f"  distinct website hosts      {len(hosts):>8,}")
-    print(f"  VERDICT        USABLE")
-    return {"state": state, "rows": len(rows), "usable": both,
+
+    # THE STATUS VOCABULARY, WHICH DIFFERS IN EVERY STATE.
+    #
+    # The probe detects a status column and then cannot know which of its values
+    # means "in operation": California writes Active, others write Open, O, or 1.
+    # Guessing would reintroduce the 124-row error in a less visible form. So the
+    # values are printed with their usable counts and the operator decides, and
+    # that decision is exactly what the per-state loader config has to record.
+    status_col = roles.get("status")
+    status_breakdown = {}
+    if status_col:
+        for r in usable:
+            v = (r.get(status_col) or "").strip() or "(blank)"
+            status_breakdown[v] = status_breakdown.get(v, 0) + 1
+        print(f"\n  usable rows by {status_col}, pick the operating values for the "
+              f"loader config:")
+        for v, n in sorted(status_breakdown.items(), key=lambda kv: -kv[1])[:12]:
+            sub = {zip_of(r) for r in usable
+                   if ((r.get(status_col) or "").strip() or "(blank)") == v} - {None}
+            print(f"    {v[:24]:<26}{n:>8,} rows{len(sub):>8,} ZIPs")
+    else:
+        print("\n  no status column detected, so closed schools cannot be excluded "
+              "here.")
+
+    # ZIPs are the figure to judge a state on, not hosts. California resolved
+    # 5,165 distinct hosts to 556 addresses, and only 379 of those served a
+    # single ZIP, so a host count overstates landmark potential about ninefold.
+    # The host number is kept only because a host-to-ZIP ratio near 1 is a hint
+    # that schools publish their own sites rather than the district's.
+    print(f"\n  VERDICT        USABLE")
+    print(f"  Judge the state on ZIPs, not hosts. In California 5,165 hosts "
+          f"resolved to 556\n  addresses, of which 379 served one ZIP, so a host "
+          f"count overstates the\n  landmark yield by roughly nine times.")
+    return {"state": state, "rows": len(rows), "usable": len(usable),
             "zips": len(zips), "hosts": len(hosts),
-            "delimiter": dname, "roles": roles}
+            "delimiter": dname, "roles": roles, "status": status_breakdown}
 
 
 def main():
