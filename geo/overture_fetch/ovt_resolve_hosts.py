@@ -822,11 +822,29 @@ def store_direct(ctx, rows):
     every row with that ip_address."""
     if not rows:
         return
+    # ANALYZE stage BEFORE THE UPDATE. This is the whole cost of the rdap step.
+    #
+    # A freshly created temp table has no statistics, so the planner has no
+    # estimate of how many rows are in stage. Against a 12.8-million-row target
+    # it then reliably prefers a hash join, which means a sequential scan of the
+    # target on EVERY flush, rather than one index lookup per staged address.
+    #
+    # Measured on 2026-10-31: 556 addresses at the default --batch 100 is six
+    # flushes, and the step took 1,862 seconds. The RDAP lookups themselves were
+    # a few seconds; essentially all of that time was the six writes, about five
+    # minutes each, which is the signature of a full scan rather than 100 index
+    # probes. ANALYZE gives the planner the true row count so it can use the
+    # ip_address index, and the index on stage makes the join side cheap too.
+    #
+    # This is the difference between a 50-state ingest costing hours of writes
+    # and costing minutes.
     run_script(f"""
 CREATE TEMP TABLE stage (ip inet, status text, result text, r1 text, r1z text, r2 text, r2z text)
     ON COMMIT DROP;
 COPY stage FROM STDIN WITH CSV;
 {csv_text(rows)}\\.
+CREATE INDEX ON stage (ip);
+ANALYZE stage;
 UPDATE {ctx.target} t SET lookup_status = s.status,
        url_location = COALESCE(s.result, t.url_location),
        registrant_1 = CASE WHEN s.result IS NULL THEN t.registrant_1 ELSE s.r1 END,
@@ -1068,6 +1086,37 @@ def cmd_overture_zip(args):
     loc = f"lower(btrim(substring({a} from {lit(OV_LOCALITY_RE)})))"
     reg = f"upper(btrim(substring({a} from {lit(OV_REGION_RE)})))"
     loc_t = f"{q(args.pg_schema)}.{q(args.table + '_tmp_loc_zip')}"
+
+    # CHECK FOR WORK BEFORE THE WHOLE-TABLE SCAN.
+    #
+    # The locality/ZIP evidence scan below reads every row and took 600 seconds
+    # on 12.8 million rows. It ran unconditionally, so an invocation with
+    # nothing to do spent those ten minutes and then printed "0 candidate rows".
+    # That was observed twice in one session on 2026-10-31.
+    #
+    # Counting candidates first still scans the table, but it aggregates one
+    # column instead of extracting four regex captures from the address JSON of
+    # every row, and it skips building and indexing the locality table. With
+    # fifty state directories to ingest, a step that takes ten minutes to
+    # discover it has no work is ten minutes wasted per run.
+    #
+    # On a first run the columns do not exist yet, so there is certainly work to
+    # do and the check is skipped. --dry-run reports rather than updates, so it
+    # keeps the full scan.
+    have_zip_cols = all(c in ctx.cols for c in ("overture_zip", "overture_zip_source"))
+    if have_zip_cols and not args.dry_run:
+        todo_probe = ("(t.overture_zip_source IS NULL OR t.overture_zip_source = 'none')"
+                      if args.retry_none else "t.overture_zip_source IS NULL")
+        pending = int(query_csv(
+            f"""SELECT count(*) FROM {ctx.target} t
+                WHERE t.lookup_status = {lit(STATUS_OK)} AND {todo_probe}""",
+            label="overture-zip candidate count")[0][0])
+        if not pending:
+            print("overture-zip: no rows need a ZIP, so the whole-table locality "
+                  "scan is skipped.", flush=True)
+            return
+        print(f"overture-zip: {pending:,} rows need a ZIP", flush=True)
+
     print("Collecting locality/ZIP evidence (scans the whole table) ...", flush=True)
     run_script(label="locality/ZIP evidence scan", script=f"""
 DROP TABLE IF EXISTS {loc_t};
