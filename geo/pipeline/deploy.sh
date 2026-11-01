@@ -83,14 +83,36 @@ say "go is $(go version)"
 
 cd "$REPO_ROOT"
 REVISION=$(git rev-parse --short HEAD 2>/dev/null || echo unknown)
-if [ -n "$(git status --porcelain 2>/dev/null)" ]; then
+# A build corresponds to a commit when every TRACKED file matches that commit.
+# Untracked files are a different case: they cannot change what "go build"
+# produces unless Go would compile them, so only untracked Go sources and
+# module files are disqualifying. Blocking on any untracked file at all meant a
+# data artifact dropped into the checkout aborted the deploy, which is what
+# happened with the CSV the rdap step writes next to the scripts it runs from.
+DIRTY_TRACKED=$(git status --porcelain --untracked-files=no 2>/dev/null)
+UNTRACKED=$(git ls-files --others --exclude-standard 2>/dev/null)
+DIRTY_BUILDABLE=$(printf '%s\n' "$UNTRACKED" | grep -E '\.go$|go\.mod$|go\.sum$' || true)
+DIRTY_HARMLESS=$(printf '%s\n' "$UNTRACKED" | grep -vE '\.go$|go\.mod$|go\.sum$' | grep -v '^$' || true)
+
+if [ -n "$DIRTY_HARMLESS" ]; then
+  say "untracked files that cannot affect the build, ignoring:"
+  printf '%s\n' "$DIRTY_HARMLESS" | sed 's/^/deploy:   /'
+fi
+
+if [ -n "$DIRTY_TRACKED" ] || [ -n "$DIRTY_BUILDABLE" ]; then
   if [ "${ALLOW_DIRTY:-0}" = "1" ]; then
     say "WARNING: working tree is modified and ALLOW_DIRTY=1, binaries will report vcs.modified=true"
   else
-    echo "deploy: FATAL: working tree is modified, so the build would not correspond to any commit." >&2
+    echo "deploy: FATAL: the source tree would not correspond to any commit." >&2
     echo "Commit or stash first, or set ALLOW_DIRTY=1 if you really mean it." >&2
-    echo "Modified paths:" >&2
-    git status --porcelain >&2
+    if [ -n "$DIRTY_TRACKED" ]; then
+      echo "Modified tracked paths:" >&2
+      printf '%s\n' "$DIRTY_TRACKED" >&2
+    fi
+    if [ -n "$DIRTY_BUILDABLE" ]; then
+      echo "Untracked Go sources or module files, which the build would compile in:" >&2
+      printf '%s\n' "$DIRTY_BUILDABLE" >&2
+    fi
     exit 1
   fi
 fi
