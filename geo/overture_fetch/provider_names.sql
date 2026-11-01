@@ -511,6 +511,89 @@ ORDER BY 2 DESC
 LIMIT 40;
 
 
+-- ---------------------------------------------------------------------------
+-- ORG-NAME VARIANTS FOUND 2026-10-31
+--
+-- Matching is exact on lower(btrim(registrant)), so one organisation holding
+-- several ARIN org records needs each string. Two slipped through.
+--
+-- HOW THEY WERE FOUND, AND WHAT THE RESIDUE ACTUALLY IS. After the onpremises
+-- step was run to completion (an earlier run had stopped partway, leaving
+-- 967,790 rows unevaluated), the only provider-like registrants remaining in
+-- onpremises = true were:
+--
+--     Google Fiber Inc.             83 addresses
+--     Microsoft Corp                 6 addresses
+--     Amazon Data Services Italy     1 address
+--
+-- Google Fiber Inc. is CORRECT and stays out of this list. It is a retail ISP
+-- serving several US regions, so its space does route subscribers, exactly as
+-- the note on Google Fiber above says. Google's hosting is a separate ARIN org:
+-- RDAP on 2026-10-31 returned 'Google LLC' for 8.8.8.8, for the GCP load
+-- balancer 34.102.136.180, for the mail edge 172.253.157.27 and for the
+-- googledomains nameserver 216.239.34.107, while 136.33.1.1 returned
+-- 'Google Fiber Inc.'. Two orgs, one excluded, one not.
+--
+-- The other two are variants of names already listed above. RDAP on 2026-10-31
+-- returned 'Microsoft Corporation' for both Azure (20.62.97.228) and Microsoft
+-- 365 mail (52.101.11.17), so 'Microsoft Corp' is a separate, older org record
+-- on other Microsoft space rather than a different company. Amazon Data
+-- Services Italy is the non-US AWS entity; a landmark in a US ZIP whose website
+-- resolves into it is not on premises by any reading.
+--
+-- KEEP THE SCALE IN VIEW. This is 7 addresses out of roughly 28,500. The 39
+-- names in this list reject 10,713,526 of 12,775,630 rows, so exact matching is
+-- not failing in any material way and does not need replacing with fuzzy
+-- matching, which would risk excluding real ISPs. These are the residue, and
+-- naming them is cheaper than changing how names are compared.
+-- ---------------------------------------------------------------------------
+INSERT INTO public.provider_names (name) VALUES
+    ('Microsoft Corp'),
+    ('Amazon Data Services Italy')
+ON CONFLICT DO NOTHING;
+
+
+-- ---------------------------------------------------------------------------
+-- A SCHOOL-WEBSITE VENDOR, FOUND 2026-10-31 BY THE CALIFORNIA PASS
+--
+-- Interactive Educational Services, Inc., Bakersfield 93309.
+--
+-- The California CDE load resolved 8,816 schools to 556 distinct addresses.
+-- Ranking those addresses by how many ZIPs each one serves put nine at the
+-- top, and RDAP on 2026-10-31 identified eight of them as registrants already
+-- listed above:
+--
+--     104.16.43.42     276 ZIPs   838 schools   Cloudflare, Inc.
+--     104.17.165.123   188 ZIPs   493 schools   Cloudflare, Inc.
+--     18.233.124.95    129 ZIPs   325 schools   Amazon Technologies Inc.
+--     54.221.139.169   115 ZIPs   293 schools   Amazon Data Services Northern Virginia
+--     199.232.134.37    72 ZIPs   209 schools   Fastly, Inc.
+--     151.101.46.37     65 ZIPs   187 schools   Fastly, Inc.
+--     34.210.195.109    53 ZIPs   166 schools   Amazon Technologies Inc.
+--     141.193.213.10    30 ZIPs    59 schools   WPEngine, Inc.
+--
+-- The ninth, 104.232.38.112, serves 54 ZIPs and 125 schools from one address
+-- and belongs to Interactive Educational Services, Inc. It is a school-website
+-- vendor rather than a CDN, which is why no existing entry covered it.
+--
+-- WHY NAME IT WHEN THE FAN-OUT RULE WOULD CATCH IT ANYWAY. node_fanout.sql
+-- would score 54 disjoint ZIP clusters and reject the address without help.
+-- But reaching that verdict costs an RDAP lookup and an mtr trace per address
+-- first, and the same vendors serve schools in every state. Naming it rejects
+-- those rows at rule 2 in the other 49 states before any budget is spent on
+-- them. The name list and the fan-out rule are complements here exactly as the
+-- header describes: the list covers what is known in advance, the fan-out rule
+-- covers what is not.
+--
+-- This entry meets the standing requirement that no company serving customers
+-- from part of its holdings may be excluded wholesale: the business is hosting
+-- school websites, not supplying access circuits to subscribers.
+-- ---------------------------------------------------------------------------
+INSERT INTO public.provider_names (name) VALUES
+    ('Interactive Educational Services, Inc.')
+ON CONFLICT DO NOTHING;
+
+
 DO $$
 BEGIN
     IF EXISTS (SELECT 1 FROM pg_roles WHERE rolname = 'cronuser') THEN
