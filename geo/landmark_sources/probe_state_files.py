@@ -50,35 +50,92 @@ UA = ("Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) "
 
 # Header-name patterns, most specific first. These are matched against the
 # lower-cased header, so 'SchoolWebsite' and 'WEB_ADDRESS' both land on website.
+
+# WHY THESE ARE SUBSTRING PATTERNS AND WHY EVERY MATCH IS REPORTED.
+#
+# The first version anchored most patterns at the start of the header, which
+# worked on California, whose columns are bare: Zip, WebSite, School, City.
+# Texas publishes the same information as "School Zip", "School Web Page
+# Address", "District Zip" and "District Web Page Address", none of which match
+# an anchored pattern. The probe would have declared the larger and better of
+# the two files unusable.
+#
+# Two consequences. The patterns match anywhere in the header, not just at the
+# start. And every matching column is reported rather than only the first,
+# because Texas carries BOTH a district level and a school level in one row:
+# silently taking whichever appeared first would have read the district's ZIP
+# against the school's website. A file with two candidates per role is a
+# structural fact the loader config has to record, so the probe has to show it.
 ROLE_PATTERNS = [
-    ("zip",     [r"^zip", r"zip ?code", r"postal", r"^phys.*zip", r"^mail.*zip"]),
-    ("website", [r"web ?site", r"^web$", r"^url$", r"web ?address", r"homepage",
-                 r"^site$", r"school ?url"]),
-    ("name",    [r"^school ?name$", r"^school$", r"^institution", r"^site ?name",
-                 r"^facility", r"^name$"]),
-    ("city",    [r"^city", r"^phys.*city", r"^town", r"locality"]),
-    ("street",  [r"^street", r"^address", r"^addr", r"^phys.*address", r"^location ?address"]),
-    ("status",  [r"^status", r"^active", r"open ?closed", r"^oper"]),
-    ("district",[r"^district", r"^lea", r"^agency"]),
-    ("ncesid",  [r"nces"]),
+    ("zip",     [r"\bzips?\b", r"zip ?code", r"\bpostal", r"\bpostcode"]),
+    ("website", [r"web ?site", r"\bweb\b", r"web ?page", r"\burl\b", r"homepage",
+                 r"web ?address"]),
+    ("name",    [r"school ?name", r"\bschool\b", r"institution", r"site ?name",
+                 r"facility ?name", r"^name$"]),
+    ("city",    [r"\bcity\b", r"\btown\b", r"locality"]),
+    ("street",  [r"street ?address", r"\bstreet\b", r"^address", r"\baddr\b",
+                 r"location ?address"]),
+    ("status",  [r"school ?status", r"district ?status", r"\bstatus ?type",
+                 r"\bstatus", r"open ?closed", r"\boperational", r"\bactive\b"]),
+    ("district",[r"district ?name", r"\bdistrict\b", r"\blea\b", r"\bagency\b"]),
+    ("ncesid",  [r"\bnces\b"]),
 ]
+# PATTERNS ARE TRIED IN ORDER AND THE FIRST PRODUCTIVE ONE WINS.
+#
+# Collecting every column that matched any pattern for a role treats a precise
+# match and a loose one as equals. On the Texas file at district level that
+# chose "Magnet Status" as the status column, because it matched the same loose
+# r"\bstatus" as "School Status" did and happened to come first in the file.
+#
+# Trying patterns in specificity order instead means "School Status" is found by
+# an earlier pattern and "Magnet Status" is never considered.
+#
+# The status patterns also had to lose their trailing word boundary. r"\bstatus\b"
+# does not match California's "StatusType", because there is no boundary between
+# the two words, so the column that distinguishes open from closed schools went
+# undetected and the 124 closed-school rows came back.
 
 CAPTCHA_HINTS = ("captcha", "are you a human", "incapsula", "radware",
                  "cloudflare", "access denied", "bot detection")
 
 
 def classify_headers(headers):
-    """-> {role: header} using the first header that matches each role's patterns."""
+    """-> {role: [header, ...]} with EVERY matching column, in file order.
+
+    Returning all matches rather than the first is deliberate: see the note on
+    ROLE_PATTERNS. A file offering both a district and a school column for the
+    same role must not be reduced to one silently.
+    """
     found = {}
     for role, pats in ROLE_PATTERNS:
-        for h in headers:
-            hl = (h or "").strip().lower()
-            if not hl:
-                continue
-            if any(re.search(p, hl) for p in pats):
-                found.setdefault(role, h)
+        for pat in pats:
+            hits = [h for h in headers
+                    if (h or "").strip() and re.search(pat, h.strip().lower())]
+            if hits:
+                found[role] = hits
                 break
     return found
+
+
+def prefer(cands, level):
+    """Choose among several columns for one role, favouring the requested level.
+
+    'school' prefers a school-scoped column, 'district' a district-scoped one.
+    With no match on level, the first column in file order is used, which is
+    what a single-level file like California's gives anyway.
+    """
+    if not cands:
+        return None
+    want = "school" if level == "school" else "district"
+    other = "district" if level == "school" else "school"
+    for c in cands:
+        cl = c.lower()
+        if want in cl and other not in cl:
+            return c
+    for c in cands:
+        if other not in c.lower():
+            return c
+    return cands[0]
 
 
 def sniff_delimiter(sample):
@@ -117,7 +174,7 @@ def fetch(url, timeout):
         return r.status, r.headers.get("Content-Type", ""), r.read()
 
 
-def probe(state, raw, ctype, source):
+def probe(state, raw, ctype, source, level="school"):
     print(f"\n{'=' * 72}")
     print(f"{state}  from {source}")
     print(f"{'=' * 72}")
@@ -151,12 +208,19 @@ def probe(state, raw, ctype, source):
         return None
 
     roles = classify_headers(list(headers))
-    print("  column roles detected:")
+    print(f"  column roles detected (level = {level}, chosen column marked ->):")
     for role, _ in ROLE_PATTERNS:
-        print(f"    {role:<10}{roles.get(role, '(none)')}")
+        cands = roles.get(role) or []
+        if not cands:
+            print(f"    {role:<10}(none)")
+            continue
+        chosen = prefer(cands, level)
+        for c in cands:
+            mark = "->" if c == chosen else "  "
+            print(f"    {role if c == cands[0] else '':<10}{mark} {c}")
 
-    have_zip = roles.get("zip")
-    have_web = roles.get("website")
+    have_zip = prefer(roles.get("zip"), level)
+    have_web = prefer(roles.get("website"), level)
     if not have_zip or not have_web:
         missing = [r for r in ("zip", "website") if not roles.get(r)]
         print(f"  VERDICT        UNUSABLE, no {' and no '.join(missing)} column")
@@ -201,7 +265,7 @@ def probe(state, raw, ctype, source):
     # Guessing would reintroduce the 124-row error in a less visible form. So the
     # values are printed with their usable counts and the operator decides, and
     # that decision is exactly what the per-state loader config has to record.
-    status_col = roles.get("status")
+    status_col = prefer(roles.get("status"), level)
     status_breakdown = {}
     if status_col:
         for r in usable:
@@ -238,6 +302,9 @@ def main():
     p.add_argument("--input", help="local copy, for sites that serve a captcha to servers")
     p.add_argument("--state", default="??", help="two-letter state code, for the report")
     p.add_argument("--config", help="JSON list of objects with state and url or input")
+    p.add_argument("--level", choices=["school", "district"], default="school",
+                   help="which level to measure when a file carries both, as Texas does "
+                        "(default school)")
     p.add_argument("--timeout", type=int, default=90)
     args = p.parse_args()
 
@@ -257,10 +324,10 @@ def main():
             if j.get("input"):
                 with open(j["input"], "rb") as fh:
                     raw = fh.read()
-                r = probe(state, raw, "(local file)", j["input"])
+                r = probe(state, raw, "(local file)", j["input"], args.level)
             else:
                 status, ctype, raw = fetch(j["url"], args.timeout)
-                r = probe(state, raw, ctype, j["url"])
+                r = probe(state, raw, ctype, j["url"], args.level)
         except (urllib.error.HTTPError, urllib.error.URLError, OSError) as exc:
             print(f"\n{state}: fetch failed: {exc}")
             r = None
