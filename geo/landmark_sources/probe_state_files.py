@@ -48,8 +48,28 @@ import urllib.request
 UA = ("Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) "
       "Chrome/140.0 Safari/537.36")
 
-# Header-name patterns, most specific first. These are matched against the
-# lower-cased header, so 'SchoolWebsite' and 'WEB_ADDRESS' both land on website.
+# Header-name patterns, most specific first. They are matched against the
+# NORMALISED header: lower-cased, with underscores, hyphens and dots turned into
+# single spaces.
+
+# WHY THE HEADER IS NORMALISED BEFORE MATCHING.
+#
+# A comment here used to claim that 'SchoolWebsite' and 'WEB_ADDRESS' both land
+# on website. Florida disproves the second half. Its Master School ID export
+# names every column with underscores -- WEB_ADDRESS, PHYSICAL_ZIP,
+# PHYSICAL_CITY, SCHOOL_NAME_LONG -- and in a regular expression the underscore
+# is a WORD character, so there is no \b boundary between 'web' and 'address'.
+# Measured on the real 2,902,438-byte file: r"\bweb\b" missed WEB_ADDRESS,
+# r"\bzips?\b" missed PHYSICAL_ZIP, r"\bcity\b" missed PHYSICAL_CITY, and the
+# probe returned 'UNUSABLE, no zip and no website column' for a file that in
+# fact carries 4,427 schools with both.
+#
+# That made the word-boundary patterns a REGRESSION for underscore-delimited
+# files: the previous anchored version at least found PHYSICAL_ZIP through
+# r"^phys.*zip". Rather than add a separator alternative to every pattern, the
+# separator is removed from the header once, in one place, so that
+# 'WEB_ADDRESS', 'Web Address', 'web-address' and 'web.address' are all the
+# string 'web address' by the time any pattern sees them.
 
 # WHY THESE ARE SUBSTRING PATTERNS AND WHY EVERY MATCH IS REPORTED.
 #
@@ -73,12 +93,14 @@ ROLE_PATTERNS = [
     ("name",    [r"school ?name", r"\bschool\b", r"institution", r"site ?name",
                  r"facility ?name", r"^name$"]),
     ("city",    [r"\bcity\b", r"\btown\b", r"locality"]),
-    ("street",  [r"street ?address", r"\bstreet\b", r"^address", r"\baddr\b",
-                 r"location ?address"]),
+    ("street",  [r"physical ?address", r"street ?address", r"\bstreet\b",
+                 r"^address", r"\baddr\b", r"location ?address",
+                 r"mailing ?address"]),
     ("status",  [r"school ?status", r"district ?status", r"\bstatus ?type",
-                 r"\bstatus", r"open ?closed", r"\boperational", r"\bactive\b"]),
+                 r"activity ?code", r"\bstatus", r"open ?closed",
+                 r"\boperational", r"\bactive\b"]),
     ("district",[r"district ?name", r"\bdistrict\b", r"\blea\b", r"\bagency\b"]),
-    ("ncesid",  [r"\bnces\b"]),
+    ("ncesid",  [r"\bnces", r"federal ?(dist|schl|school)"]),
 ]
 # PATTERNS ARE TRIED IN ORDER AND THE FIRST PRODUCTIVE ONE WINS.
 #
@@ -94,9 +116,51 @@ ROLE_PATTERNS = [
 # does not match California's "StatusType", because there is no boundary between
 # the two words, so the column that distinguishes open from closed schools went
 # undetected and the 124 closed-school rows came back.
+#
+# r"activity ?code" sits ahead of the loose r"\bstatus" for the same reason that
+# r"school ?status" does. Florida has no status column at all: whether a school
+# is open is carried by ACTIVITY_CODE, whose values are A, C and F. The only
+# headers there that match r"\bstatus" are MAGNET_STATUS and
+# SI_TURNAROUND_STATUS, neither of which says anything about whether the school
+# exists. Without this pattern the probe reports a magnet breakdown and the
+# operator chooses operating values from it, which is the Texas "Magnet Status"
+# error in a form that looks like a sensible answer.
+#
+# r"physical ?address" leads the street list because Florida publishes
+# PHYSICAL_ADDRESS and MAILING_ADDRESS1 side by side, and for a landmark the
+# building is the physical one. See prefer() for the same distinction applied to
+# ZIP, where it changes the result rather than only the label.
+#
+# r"\bnces" lost its trailing boundary for exactly the StatusType reason above.
+# California names the columns NCESDist and NCESSchool, with no separator, so
+# r"\bnces\b" matched neither and the probe reported no NCES id for the one file
+# we have already loaded. The NCES ids are what make the federal CCD release
+# usable as a key-join for coverage checking with no name matching, so losing
+# them silently costs a cross-check rather than a landmark.
+#
+# r"federal ?(dist|schl|school)" is there for Florida, which carries the same
+# ids under FEDERAL_DIST_NO and FEDERAL_SCHL_NO. Checked rather than assumed:
+# FEDERAL_DIST_NO is 7 digits beginning 12, which is Florida's state FIPS code
+# and the documented shape of an NCES LEA id. The pattern is kept narrow so it
+# cannot reach California's unrelated FederalDODistrictID, where 'federal' is
+# followed by 'do' rather than 'dist'.
 
 CAPTCHA_HINTS = ("captcha", "are you a human", "incapsula", "radware",
                  "cloudflare", "access denied", "bot detection")
+
+
+def norm_header(h):
+    """Lower-case a header and turn separator punctuation into single spaces.
+
+    Underscores, hyphens and dots all separate words in real state exports, and
+    all three are invisible to a \\b word boundary or a ' ?' literal space. One
+    normalisation here is what lets every pattern be written in the readable
+    'web address' form. See the note above ROLE_PATTERNS for what Florida did
+    without it.
+    """
+    s = (h or "").strip().lower()
+    s = re.sub(r"[_\-.]+", " ", s)
+    return re.sub(r"\s+", " ", s).strip()
 
 
 def classify_headers(headers):
@@ -105,16 +169,24 @@ def classify_headers(headers):
     Returning all matches rather than the first is deliberate: see the note on
     ROLE_PATTERNS. A file offering both a district and a school column for the
     same role must not be reduced to one silently.
+
+    Patterns match the NORMALISED header; the ORIGINAL header is returned, since
+    that is the string a loader has to read the column by.
     """
     found = {}
     for role, pats in ROLE_PATTERNS:
         for pat in pats:
             hits = [h for h in headers
-                    if (h or "").strip() and re.search(pat, h.strip().lower())]
+                    if norm_header(h) and re.search(pat, norm_header(h))]
             if hits:
                 found[role] = hits
                 break
     return found
+
+
+def is_mailing(header):
+    """True if the header names a mailing address rather than a physical one."""
+    return bool(re.search(r"\bmail", norm_header(header)))
 
 
 def prefer(cands, level):
@@ -123,17 +195,33 @@ def prefer(cands, level):
     'school' prefers a school-scoped column, 'district' a district-scoped one.
     With no match on level, the first column in file order is used, which is
     what a single-level file like California's gives anyway.
+
+    A MAILING COLUMN LOSES TO A PHYSICAL ONE, and this one changes an answer
+    rather than a label. Florida carries PHYSICAL_ZIP and MAILING_ZIP, and both
+    match the same r"\\bzips?\\b" once the header is normalised, so without this
+    the choice would fall to file order. A landmark is a building: its physical
+    ZIP is the claim we are making, while a mailing ZIP is frequently the
+    district office or a post-office box in another ZIP entirely. Taking the
+    mailing column would not look like an error -- it would produce a full set
+    of plausible ZIPs that quietly point at the wrong places.
+
+    Level scope still dominates: a school-scoped mailing column beats a
+    district-scoped physical one, because reading the district's ZIP against the
+    school's website is the worse of the two mistakes.
     """
     if not cands:
         return None
+    # Stable, so this only breaks ties: with no mailing candidate the order and
+    # therefore every existing result is unchanged.
+    cands = sorted(cands, key=is_mailing)
     want = "school" if level == "school" else "district"
     other = "district" if level == "school" else "school"
     for c in cands:
-        cl = c.lower()
+        cl = norm_header(c)
         if want in cl and other not in cl:
             return c
     for c in cands:
-        if other not in c.lower():
+        if other not in norm_header(c):
             return c
     return cands[0]
 
