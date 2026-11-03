@@ -20,10 +20,26 @@ any database and makes no claim it has not checked.
 WHAT IT REPORTS, PER FILE
 -------------------------
   the HTTP status, size and content type, or that the body is a captcha page
-  the delimiter it detected and the number of data rows
+  the format as determined FROM THE BYTES, never from the name or content type
+  for delimited text, both quoting dialects with their misaligned-row counts,
+    so the parse that was chosen is auditable rather than asserted
+  for an xlsx, the sheet list and which sheet was read
   which columns look like a school name, street, city, ZIP, website and status
+  a full row accounting that must balance against the parsed row count
   how many rows actually carry both a ZIP and a website, which is the only
   number that decides whether the state is worth loading
+  and, when no column is NAMED for the ZIP or the website, whether any column
+    CONTAINS that data anyway -- because "no column called website" and "no
+    websites in this file" are different claims, and only the second one
+    justifies going to look for the domains somewhere else
+
+FORMATS IT READS
+----------------
+Delimited text, real xlsx (through zipfile and ElementTree, so no third-party
+dependency), and HTML tables, which several states serve under an Excel content
+type and an .xls filename. Legacy OLE2/BIFF .xls is detected and refused with a
+clear message rather than parsed badly; Kansas and Montana are the two states
+that need a manual conversion for that reason.
 
 A FILE THAT CANNOT BE FETCHED HERE IS NOT A DEAD END. Several state sites
 answer a datacenter address with a captcha and a residential address with the
@@ -87,18 +103,31 @@ UA = ("Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) "
 # against the school's website. A file with two candidates per role is a
 # structural fact the loader config has to record, so the probe has to show it.
 ROLE_PATTERNS = [
-    ("zip",     [r"\bzips?\b", r"zip ?code", r"\bpostal", r"\bpostcode"]),
+    ("zip",     [r"\bzips?\b", r"zip ?code", r"\bzip ?5\b", r"\bpostal",
+                 r"\bpostcode", r"\bzip"]),
     ("website", [r"web ?site", r"\bweb\b", r"web ?page", r"\burl\b", r"homepage",
-                 r"web ?address"]),
-    ("name",    [r"school ?name", r"\bschool\b", r"institution", r"site ?name",
-                 r"facility ?name", r"^name$"]),
-    ("city",    [r"\bcity\b", r"\btown\b", r"locality"]),
+                 r"web ?address", r"\bweb"]),
+    # Specificity order matters more here than anywhere else, because a file
+    # typically has MANY headers containing the word 'school'. Nevada picked
+    # 'School Year' and Louisiana picked 'NcesSchoolIdCd' when the loose
+    # r"\bschool\b" came early; both have a perfectly good name column ('Name'
+    # and 'SiteName'). So every qualified '<something> name' form is tried
+    # before the bare word.
+    ("name",    [r"school ?name", r"sch ?name", r"name ?of ?institution",
+                 r"building ?name", r"facility ?name", r"site ?name",
+                 r"lea ?name", r"^name$", r"\borganization\b", r"\bschool\b",
+                 r"institution"]),
+    ("city",    [r"\bcity\b", r"\btown\b", r"locality", r"city\b"]),
     ("street",  [r"physical ?address", r"street ?address", r"\bstreet\b",
                  r"^address", r"\baddr\b", r"location ?address",
                  r"mailing ?address"]),
+    # r"\boperational" moved ahead of the loose r"\bstatus" for the Magnet
+    # Status reason again: Nevada carries both 'Charter Status' and 'Operational
+    # Status', both match r"\bstatus", and file order handed back the charter
+    # flag -- which says nothing about whether the school is open.
     ("status",  [r"school ?status", r"district ?status", r"\bstatus ?type",
-                 r"activity ?code", r"\bstatus", r"open ?closed",
-                 r"\boperational", r"\bactive\b"]),
+                 r"activity ?code", r"\boperational", r"open ?closed",
+                 r"\bstatus", r"\bactive\b"]),
     ("district",[r"district ?name", r"\bdistrict\b", r"\blea\b", r"\bagency\b"]),
     ("ncesid",  [r"\bnces", r"federal ?(dist|schl|school)"]),
 ]
@@ -150,17 +179,58 @@ CAPTCHA_HINTS = ("captcha", "are you a human", "incapsula", "radware",
 
 
 def norm_header(h):
-    """Lower-case a header and turn separator punctuation into single spaces.
+    """Lower-case a header and reduce every word separator to a single space.
 
-    Underscores, hyphens and dots all separate words in real state exports, and
-    all three are invisible to a \\b word boundary or a ' ?' literal space. One
-    normalisation here is what lets every pattern be written in the readable
-    'web address' form. See the note above ROLE_PATTERNS for what Florida did
-    without it.
+    Three separator conventions appear in real state exports and ALL THREE are
+    invisible to a \\b word boundary or a ' ?' literal space:
+
+      underscores and hyphens   WEB_ADDRESS, PHYSICAL_ZIP      (Florida)
+      no separator at all       EntityPhysicalZip4, NCESDist   (Michigan, California)
+      a digit fused to a word   ZIP5, ZIP4                     (Arizona)
+
+    Michigan is the clearest case. Its header is EntityPhysicalZip4, which holds
+    the ZIP, and r"\\bzip" cannot match it because the character before 'zip' is
+    'l', a word character, so there is no boundary. The probe reported "no zip
+    and no website column" for a file that has the ZIP.
+
+    So camel case is split where an upper-case letter follows a lower-case one,
+    and also at an acronym-to-word boundary so NCESDist becomes 'nces dist'
+    rather than 'ncesdis t'. A digit run after a letter is separated too, which
+    is what turns ZIP5 into 'zip 5'.
+
+    Doing it once here is what lets every pattern stay in the readable
+    'web address' form instead of growing a separator alternative each time a
+    new state is added.
     """
-    s = (h or "").strip().lower()
+    s = (h or "").strip()
     s = re.sub(r"[_\-.]+", " ", s)
-    return re.sub(r"\s+", " ", s).strip()
+    # fooBar -> foo Bar
+    s = re.sub(r"(?<=[a-z])(?=[A-Z])", " ", s)
+    # NCESDist -> NCES Dist, i.e. keep the acronym whole
+    s = re.sub(r"(?<=[A-Z])(?=[A-Z][a-z])", " ", s)
+    # zip5 -> zip 5
+    s = re.sub(r"(?<=[A-Za-z])(?=\d)", " ", s)
+    s = re.sub(r"\s+", " ", s).strip().lower()
+    return s
+
+
+def winnow(cands, rows, test):
+    """Drop candidate columns in which NOT ONE value passes the role's test.
+
+    Naming alone cannot separate Arizona's ZIP5 from its ZIP4: both normalise to
+    something containing 'zip', and ZIP4 is the four-digit add-on while ZIP5 is
+    the real ZIP. Michigan muddies it further by calling its genuine ZIP column
+    EntityPhysicalZip4. So the name does not decide -- the contents do.
+
+    A column in which no value anywhere looks like a ZIP is not the ZIP column,
+    and that is a measurement rather than a guess. If no candidate passes,
+    everything is kept so the report still shows what was considered instead of
+    silently reporting none.
+    """
+    if not cands or not rows:
+        return cands
+    kept = [c for c in cands if any(test(r.get(c)) for r in rows)]
+    return kept or cands
 
 
 def classify_headers(headers):
@@ -240,12 +310,356 @@ def sniff_delimiter(sample):
     return best if counts[best] > 0 else ","
 
 
+# WHY THE QUOTING DIALECT IS MEASURED RATHER THAN FIXED.
+#
+# This used to parse every file with QUOTE_NONE. That is correct for California,
+# whose export is tab-delimited and NOT quoted yet contains bare double quotes
+# inside school names: the default dialect treats those as field quoting,
+# swallows the following newlines, and silently turned an 8.8 MB file into 73
+# rows. So QUOTE_NONE was not an arbitrary choice.
+#
+# But it is catastrophically wrong for a properly quoted CSV whose values
+# contain the delimiter, which is most ArcGIS and Socrata exports. Measured
+# counts of rows whose field count disagrees with the header:
+#
+#     file        QUOTE_NONE              default dialect
+#     az.csv      4,775 of 5,559 ragged   0 ragged
+#     ga.csv      18,089 of 19,920        0
+#     ct.csv      2,487                   0
+#     tx.csv      0                       0
+#
+# Arizona reported 205 usable rows against a true 3,970, and Michigan reported
+# "no zip and no website column" for a file carrying EntityPhysicalZip4, because
+# the HEADER itself had gone out of alignment. Both look like a state publishing
+# bad data and are in fact this parser destroying good data.
+#
+# Neither dialect is right in general, so the file decides. Both are tried, the
+# rows whose field count disagrees with the header are counted, and the dialect
+# with fewer wins. A tie goes to QUOTE_NONE, which keeps California and Texas on
+# exactly the parse that produced their verified numbers.
+#
+# Note that the correct dialect sometimes yields FEWER rows, not more: on
+# Connecticut, QUOTE_NONE reports 3,678 rows and the default reports 1,232. The
+# extra 2,446 were never rows. QUOTE_NONE was splitting single records on
+# newlines held inside quoted fields, so the old count was inventing records.
+DIALECTS = (("unquoted", csv.QUOTE_NONE), ("quoted", csv.QUOTE_MINIMAL))
+
+
+def parse_delimited(text, delim):
+    """-> (rows_as_lists, dialect_name, ragged, tried) choosing the dialect by measurement.
+
+    'ragged' is the number of data rows whose field count differs from the
+    header's. It is reported, not silently discarded: a nonzero value on the
+    winning dialect means the file is genuinely irregular and the operator needs
+    to know before a loader reads it.
+    """
+    tried = {}
+    for name, quoting in DIALECTS:
+        try:
+            rows = list(csv.reader(io.StringIO(text), delimiter=delim,
+                                   quoting=quoting))
+        except csv.Error as exc:
+            tried[name] = (None, None, f"csv error: {exc}")
+            continue
+        rows = [r for r in rows if r and any((c or "").strip() for c in r)]
+        if not rows:
+            tried[name] = (None, None, "no rows")
+            continue
+        width = len(rows[0])
+        ragged = sum(1 for r in rows[1:] if len(r) != width)
+        tried[name] = (rows, ragged, None)
+
+    usable = {k: v for k, v in tried.items() if v[0] is not None}
+    if not usable:
+        return [], "none", 0, tried
+    # Fewest ragged rows wins; a tie goes to the first dialect in DIALECTS,
+    # which is QUOTE_NONE, preserving California's and Texas's verified parse.
+    best = min(usable.items(), key=lambda kv: (kv[1][1], [n for n, _ in DIALECTS].index(kv[0])))
+    return best[1][0], best[0], best[1][1], tried
+
+
+def dedupe_headers(raw_headers):
+    """Give every column a usable, unique key WITHOUT discarding any.
+
+    csv.DictReader keyed rows by the header text, which loses data two ways that
+    both occurred in real state files. Florida's 77th column header is EMPTY, so
+    it keyed on '' and printing the header list raised TypeError, which killed
+    the probe immediately after the verdict on Maryland and Massachusetts.
+    Arkansas carries 'Phone Number' and 'Fax Number' TWICE each, and DictReader
+    keeps only the last of a repeated key, so a column silently vanished.
+
+    Blank headers become col_<n> and repeats get a __<n> suffix, so the column
+    count out always equals the column count in.
+    """
+    out, seen = [], {}
+    for i, h in enumerate(raw_headers, start=1):
+        name = (h or "").strip() or f"col_{i}"
+        if name in seen:
+            seen[name] += 1
+            name = f"{name}__{seen[name]}"
+        else:
+            seen[name] = 1
+        out.append(name)
+    return out
+
+
+def rows_to_dicts(rows):
+    """-> (headers, list_of_dicts) padding short rows and keeping long ones.
+
+    A short row is padded with empty strings rather than dropped, and a row
+    longer than the header keeps its overflow under col_<n> keys, so no cell in
+    the file is thrown away without being counted.
+    """
+    headers = dedupe_headers(rows[0])
+    out = []
+    for r in rows[1:]:
+        if len(r) < len(headers):
+            r = list(r) + [""] * (len(headers) - len(r))
+        d = dict(zip(headers, r))
+        for j, extra in enumerate(r[len(headers):], start=len(headers) + 1):
+            d[f"col_{j}"] = extra
+        out.append(d)
+    return headers, out
+
+
+XLSX_MAGIC = b"PK\x03\x04"
+OLE2_MAGIC = b"\xd0\xcf\x11\xe0"
+_NS_MAIN = "{http://schemas.openxmlformats.org/spreadsheetml/2006/main}"
+_NS_REL = "{http://schemas.openxmlformats.org/officeDocument/2006/relationships}"
+_NS_PKGREL = "{http://schemas.openxmlformats.org/package/2006/relationships}"
+
+
+def _col_index(ref):
+    """'BC12' -> 54, the zero-based column number. Blank cells have no element,
+    so the reference is the only way to keep columns aligned."""
+    n = 0
+    for ch in ref:
+        if ch.isalpha():
+            n = n * 26 + (ord(ch.upper()) - 64)
+        else:
+            break
+    return n - 1
+
+
+def read_xlsx(raw, want_sheet=None):
+    """-> (sheet_names, chosen_name, rows_as_lists) using only the standard library.
+
+    Five of the states that DO publish a website column publish it only as a
+    real xlsx: Arkansas, Illinois, Indiana, Nevada and Mississippi. Requiring a
+    manual conversion step for those invites exactly the kind of undocumented
+    hand-editing that makes a number impossible to reproduce, so the probe reads
+    the format directly. An xlsx is a zip of XML, and zipfile plus ElementTree
+    are enough; this module has no third-party dependency and openpyxl is not
+    installed here anyway.
+    """
+    import zipfile
+    import xml.etree.ElementTree as ET
+
+    zf = zipfile.ZipFile(io.BytesIO(raw))
+
+    rels = {}
+    try:
+        for rel in ET.fromstring(zf.read("xl/_rels/workbook.xml.rels")):
+            rels[rel.get("Id")] = rel.get("Target")
+    except KeyError:
+        pass
+
+    sheets = []
+    for sh in ET.fromstring(zf.read("xl/workbook.xml")).iter(f"{_NS_MAIN}sheet"):
+        target = rels.get(sh.get(f"{_NS_REL}id"), "")
+        if target and not target.startswith("/"):
+            target = "xl/" + target.lstrip("/")
+        sheets.append((sh.get("name"), target.lstrip("/")))
+    if not sheets:
+        return [], None, []
+
+    shared = []
+    try:
+        for si in ET.fromstring(zf.read("xl/sharedStrings.xml")).iter(f"{_NS_MAIN}si"):
+            shared.append("".join(t.text or "" for t in si.iter(f"{_NS_MAIN}t")))
+    except KeyError:
+        pass
+
+    names = [n for n, _ in sheets]
+    chosen = None
+    if want_sheet:
+        for n, t in sheets:
+            if n == want_sheet or n.lower() == want_sheet.lower():
+                chosen = (n, t)
+                break
+        if chosen is None:
+            raise SystemExit(f"no sheet named {want_sheet!r}; sheets are: "
+                             + ", ".join(names))
+    else:
+        # Default to the sheet with the most rows rather than the first. Several
+        # of these workbooks open on a title or legend sheet: Nevada's first
+        # sheet is a 21-row banner and the data is on the second.
+        best, best_rows = None, -1
+        for n, t in sheets:
+            try:
+                blob = zf.read(t)
+            except KeyError:
+                continue
+            count = blob.count(b"<row ")
+            if count > best_rows:
+                best, best_rows = (n, t), count
+        chosen = best
+    if chosen is None:
+        return names, None, []
+
+    rows = []
+    for row in ET.fromstring(zf.read(chosen[1])).iter(f"{_NS_MAIN}row"):
+        cells = {}
+        for c in row.iter(f"{_NS_MAIN}c"):
+            ref = c.get("r") or ""
+            idx = _col_index(ref) if ref and ref[0].isalpha() else len(cells)
+            ctype = c.get("t")
+            if ctype == "inlineStr":
+                val = "".join(t.text or "" for t in c.iter(f"{_NS_MAIN}t"))
+            else:
+                v = c.find(f"{_NS_MAIN}v")
+                val = v.text if v is not None and v.text is not None else ""
+                if ctype == "s":
+                    try:
+                        val = shared[int(val)]
+                    except (ValueError, IndexError):
+                        val = ""
+            cells[idx] = (val or "").strip()
+        if cells:
+            width = max(cells) + 1
+            rows.append([cells.get(i, "") for i in range(width)])
+        else:
+            rows.append([])
+    return names, chosen[0], rows
+
+
+def read_html_table(text):
+    """-> rows_as_lists from the largest <table> in an HTML document.
+
+    Massachusetts and Maine both serve their directory as content-type
+    application/excel with a .xls filename, and the bytes are an HTML table.
+    This is the same class of mislabelling as Florida's tab-delimited .xls, and
+    it is common enough to handle rather than refuse.
+    """
+    from html.parser import HTMLParser
+    from html import unescape
+
+    class Tables(HTMLParser):
+        def __init__(self):
+            super().__init__(convert_charrefs=True)
+            self.tables, self.cur, self.row, self.cell = [], None, None, None
+
+        def handle_starttag(self, tag, attrs):
+            if tag == "table":
+                self.cur = []
+            elif tag == "tr" and self.cur is not None:
+                self.row = []
+            elif tag in ("td", "th") and self.row is not None:
+                self.cell = []
+
+        def handle_endtag(self, tag):
+            if tag == "table" and self.cur is not None:
+                self.tables.append(self.cur)
+                self.cur = None
+            elif tag == "tr" and self.row is not None:
+                if self.cur is not None:
+                    self.cur.append(self.row)
+                self.row = None
+            elif tag in ("td", "th") and self.cell is not None:
+                if self.row is not None:
+                    self.row.append(unescape("".join(self.cell)).strip())
+                self.cell = None
+
+        def handle_data(self, data):
+            if self.cell is not None:
+                self.cell.append(data)
+
+    p = Tables()
+    p.feed(text)
+    if not p.tables:
+        return []
+    best = max(p.tables, key=len)
+    return [r for r in best if any((c or "").strip() for c in r)]
+
+
+def rectangularize(rows):
+    """Pad every row to the widest row. For xlsx only.
+
+    A spreadsheet omits trailing empty cells entirely, so a row whose last
+    column is blank is physically shorter. Measuring raggedness against that is
+    meaningless -- Indiana showed 147 'misaligned' rows that were simply schools
+    with no homepage in the last column. Padding first makes the width uniform
+    so that the misalignment count means what it says for delimited text, where
+    it is a real signal.
+    """
+    if not rows:
+        return rows, 0
+    width = max(len(r) for r in rows)
+    return [list(r) + [""] * (width - len(r)) for r in rows], width
+
+
+def strip_banner_rows(rows):
+    """-> (rows, dropped) discarding leading title rows that precede the header.
+
+    Colorado prefixes SIX title rows, Iowa three, Nevada and Mississippi and
+    Kansas one each. The header is not row 0 in any of them.
+
+    The rule is relative to the body of the file rather than to the next row.
+    An earlier version compared each row only with its successor and required
+    two or fewer populated cells, which stripped Nevada's one-cell banner but
+    left Colorado reporting 3 columns and 1,885 misaligned rows, and Iowa
+    reporting its own title as the school-name column.
+
+    So the modal populated-cell count over the first 50 rows is taken as what a
+    real row looks like, and leading rows carrying fewer than half that many are
+    dropped. A banner is short by nature and a header is not, which makes this
+    the one measurable difference between them. Florida's header is 76 populated
+    cells of 77 and California's is 44 of 44, so both are comfortably kept.
+
+    Dropped rows are COUNTED and reported, never silently removed.
+    """
+    if len(rows) < 2:
+        return rows, 0
+    counts = [sum(1 for c in r if (c or "").strip()) for r in rows[:50]]
+    if not counts:
+        return rows, 0
+    mode = max(set(counts), key=counts.count)
+    floor = max(2, mode // 2)
+    dropped = 0
+    while len(rows) > 1 and sum(1 for c in rows[0] if (c or "").strip()) < floor:
+        rows = rows[1:]
+        dropped += 1
+    return rows, dropped
+
+
 def looks_like_url(value):
     v = (value or "").strip().strip('"').lower()
     if not v or v in ("no data", "n/a", "none", "null", "-"):
         return False
     v = v.split("://")[-1].split("/")[0]
     return "." in v and " " not in v and not v.endswith(".")
+
+
+def looks_like_hostname(value):
+    """Stricter than looks_like_url: the host must end in an alphabetic TLD.
+
+    Used ONLY by the blind content scan, never for the usable-row count.
+    looks_like_url asks for a dot and no spaces, which is right for a column
+    already identified as the website by name, and far too loose for a scan of
+    every column in the file: it accepted a latitude of '30.123456' and so
+    reported Louisiana's Latitude column as containing url-shaped values, and
+    Missouri's Teachers count likewise.
+
+    Deliberately NOT substituted for looks_like_url in the main test. Doing that
+    would alter the usable counts for California, Texas and Florida, which are
+    the numbers every other state is being judged against, and it would do so to
+    fix a problem those files do not have.
+    """
+    v = (value or "").strip().strip('"').lower()
+    if not v or v in ("no data", "n/a", "none", "null", "-"):
+        return False
+    v = v.split("://")[-1].split("/")[0].split("?")[0].split(":")[0]
+    return bool(re.match(r"^(?=.*\.)[a-z0-9][a-z0-9.-]*\.[a-z]{2,}$", v))
 
 
 def looks_like_zip(value):
@@ -262,40 +676,108 @@ def fetch(url, timeout):
         return r.status, r.headers.get("Content-Type", ""), r.read()
 
 
-def probe(state, raw, ctype, source, level="school"):
+def probe(state, raw, ctype, source, level="school", sheet=None):
     print(f"\n{'=' * 72}")
     print(f"{state}  from {source}")
     print(f"{'=' * 72}")
     print(f"  bytes          {len(raw):,}")
     print(f"  content-type   {ctype or '(none)'}")
 
-    head = raw[:6000].decode("utf-8", errors="replace")
-    low = head.lower()
-    if "<html" in low or "<!doctype" in low:
-        hint = next((h for h in CAPTCHA_HINTS if h in low), None)
-        print(f"  VERDICT        HTML, not data"
-              f"{' -- looks like a ' + hint + ' page' if hint else ''}")
-        print(f"  Download it in a browser and re-run with --input.")
+    # FORMAT IS DECIDED BY THE BYTES, NEVER BY THE NAME OR THE CONTENT TYPE.
+    #
+    # Florida serves tab-delimited text as filename=MSID_all_schools.xls with
+    # content-type application/msexcel. Massachusetts and Maine serve an HTML
+    # table as application/excel. Montana serves a legacy OLE2 workbook under an
+    # xlsx content type. Of the formats encountered across the states, the only
+    # reliable discriminator is the leading magic number.
+    dname = "n/a"
+    ragged = 0
+    tried = {}
+    banner = 0
+    if raw[:4] == XLSX_MAGIC:
+        names, chosen_sheet, grid = read_xlsx(raw, sheet)
+        if not grid:
+            print(f"  format         xlsx, sheets: {', '.join(names) or '(none)'}")
+            print("  VERDICT        xlsx read but the chosen sheet has no rows")
+            return None
+        print(f"  format         xlsx, {len(names)} sheet(s): {', '.join(names)}")
+        print(f"  sheet read     {chosen_sheet}")
+        sheet_rows = len(grid)
+        grid, _ = rectangularize(grid)
+        grid, banner = strip_banner_rows(grid)
+        headers, rows = rows_to_dicts(grid)
+        print(f"  sheet rows     {sheet_rows:,} read from the sheet")
+    elif raw[:4] == OLE2_MAGIC:
+        print("  format         legacy OLE2/BIFF .xls, which this does not read")
+        print("  VERDICT        UNREADABLE HERE, convert the sheet to CSV or TSV "
+              "and re-run")
         return None
+    else:
+        text = raw.decode("utf-8-sig", errors="replace")
+        low = text[:6000].lower()
+        if "<html" in low or "<!doctype" in low:
+            hint = next((h for h in CAPTCHA_HINTS if h in low), None)
+            if hint:
+                print(f"  VERDICT        HTML -- looks like a {hint} page")
+                print("  Download it in a browser and re-run with --input.")
+                return None
+            grid = read_html_table(text)
+            if len(grid) < 2:
+                print("  VERDICT        HTML, and no table in it to read")
+                print("  Download it in a browser and re-run with --input.")
+                return None
+            print(f"  format         HTML table served under a non-HTML name")
+            table_rows = len(grid)
+            grid, _ = rectangularize(grid)
+            grid, banner = strip_banner_rows(grid)
+            headers, rows = rows_to_dicts(grid)
+            print(f"  table rows     {table_rows:,} read from the largest table")
+        else:
+            delim = sniff_delimiter(text[:6000])
+            dname = {"\t": "tab", ",": "comma", "|": "pipe",
+                     ";": "semicolon"}[delim]
+            grid, chosen_dialect, ragged, tried = parse_delimited(text, delim)
+            if len(grid) < 2:
+                print(f"  delimiter      {dname}")
+                print("  VERDICT        no data rows parsed")
+                return None
+            print(f"  format         delimited text, {dname}-separated, "
+                  f"{chosen_dialect} dialect")
+            # Show the losing dialect so the choice is auditable rather than
+            # asserted. This is the number that would have been wrong before.
+            for name, (r, rg, err) in sorted(tried.items()):
+                if err:
+                    print(f"    dialect {name:<9} rejected: {err}")
+                else:
+                    mark = "chosen" if name == chosen_dialect else "      "
+                    print(f"    dialect {name:<9} {len(r) - 1:>8,} rows, "
+                          f"{rg:>8,} misaligned  {mark}")
+            grid, banner = strip_banner_rows(grid)
+            headers, rows = rows_to_dicts(grid)
 
-    text = raw.decode("utf-8-sig", errors="replace")
-    delim = sniff_delimiter(text[:6000])
-    # QUOTE_NONE because these files are frequently unquoted yet contain bare
-    # double quotes in school names. With the default dialect, csv treats those
-    # as quoting and swallows newlines; on the California file that turned 8.8MB
-    # into 73 rows with no error.
-    rows = list(csv.DictReader(io.StringIO(text), delimiter=delim,
-                               quoting=csv.QUOTE_NONE))
-    headers = rows[0].keys() if rows else []
-    dname = {"\t": "tab", ",": "comma", "|": "pipe", ";": "semicolon"}[delim]
-    print(f"  delimiter      {dname}")
-    print(f"  columns        {len(list(headers))}")
+    # ROW ACCOUNTING. Every physical record is placed somewhere and the total is
+    # shown, so a silent loss of the ArcGIS or Connecticut kind cannot recur
+    # without the arithmetic visibly failing to add up.
+    print(f"  columns        {len(headers)}")
     print(f"  data rows      {len(rows):,}")
+    if banner:
+        print(f"  banner rows    {banner} leading title row(s) dropped before the header")
+    if ragged:
+        print(f"  MISALIGNED     {ragged:,} row(s) whose field count differs from "
+              f"the header")
+        print(f"                 these are padded or kept, not dropped, but the "
+              f"file is irregular")
     if not rows:
         print("  VERDICT        no data rows parsed")
         return None
 
     roles = classify_headers(list(headers))
+    # Only the two roles that decide usability are winnowed by content. Doing it
+    # to name or city would be pointless, since any non-empty string passes.
+    if roles.get("zip"):
+        roles["zip"] = winnow(roles["zip"], rows, looks_like_zip)
+    if roles.get("website"):
+        roles["website"] = winnow(roles["website"], rows, looks_like_url)
     print(f"  column roles detected (level = {level}, chosen column marked ->):")
     for role, _ in ROLE_PATTERNS:
         cands = roles.get(role) or []
@@ -307,12 +789,82 @@ def probe(state, raw, ctype, source, level="school"):
             mark = "->" if c == chosen else "  "
             print(f"    {role if c == cands[0] else '':<10}{mark} {c}")
 
+    # CONTENT FALLBACK: when no column is NAMED for a role, look for one that
+    # CONTAINS the role's data anyway.
+    #
+    # This exists because a name-only verdict was wrong twice in opposite
+    # directions. Iowa was written off as having no website column; its
+    # directory carries a 'Website' header and 538 www values, and the earlier
+    # reading simply missed it. Minnesota genuinely has no ZIP column, and also
+    # has every ZIP, sitting inside a free-text address field
+    # ('19455 Kenwood Tr, Lakeville, MN 55044') -- 4,152 usable rows that a
+    # name-only probe discards.
+    #
+    # So "no column called website" and "no websites in this file" are different
+    # claims, and only the second one justifies going to look for the data
+    # somewhere else. The scan makes the probe able to assert the second.
+    #
+    # A content match is reported as such and never silently promoted to the
+    # same standing as a named column, because the hit rate is what tells the
+    # operator whether it is the real thing or a coincidence.
+    def content_scan(test, exclude):
+        found = []
+        for h in headers:
+            if h in exclude:
+                continue
+            hits = sum(1 for r in rows if test(r.get(h)))
+            if hits:
+                found.append((h, hits))
+        return sorted(found, key=lambda kv: -kv[1])
+
     have_zip = prefer(roles.get("zip"), level)
     have_web = prefer(roles.get("website"), level)
+    zip_from_content = False
+
     if not have_zip or not have_web:
-        missing = [r for r in ("zip", "website") if not roles.get(r)]
+        if not have_zip:
+            cz = content_scan(looks_like_zip, set())
+            if cz:
+                print(f"\n  no column is NAMED for a ZIP, but these CONTAIN "
+                      f"5-digit ZIPs:")
+                for h, n in cz[:5]:
+                    print(f"    {h:<34}{n:>8,} of {len(rows):,} rows")
+                print(f"    Reading the ZIP out of {cz[0][0]!r} needs a regex in "
+                      f"the loader config,")
+                print(f"    so this is a usable state but not a drop-in one.")
+                print(f"    Note the ranking is by hit count alone, so a column "
+                      f"of 5-digit codes can")
+                print(f"    appear here innocently. Minnesota's 'countycode' "
+                      f"does. Check the choice.")
+                have_zip = cz[0][0]
+                zip_from_content = True
+        if not have_web:
+            cw = content_scan(looks_like_hostname, set())
+            if cw:
+                print(f"\n  no column is NAMED for a website, but these CONTAIN "
+                      f"url-shaped values:")
+                for h, n in cw[:5]:
+                    print(f"    {h:<34}{n:>8,} of {len(rows):,} rows")
+                have_web = cw[0][0]
+            else:
+                print(f"\n  NO url-shaped value appears in ANY of the "
+                      f"{len(headers)} columns, over all {len(rows):,} rows.")
+                print(f"  This state does not publish school websites in this "
+                      f"file at all, so the")
+                print(f"  domains have to come from somewhere else.")
+
+    if not have_zip or not have_web:
+        missing = [r for r in ("zip", "website")
+                   if not (have_zip if r == "zip" else have_web)]
         print(f"  VERDICT        UNUSABLE, no {' and no '.join(missing)} column")
-        print(f"  headers: {', '.join(list(headers)[:24])}")
+        # str() on each header because a blank or duplicate column used to leave
+        # a None in this list, and join() then raised TypeError AFTER the verdict
+        # had printed, which read as a crash rather than a result. dedupe_headers
+        # removes the cause; this keeps it impossible.
+        print(f"  headers: {', '.join(str(h) for h in list(headers)[:24])}")
+        if len(headers) > 24:
+            print(f"  ... and {len(headers) - 24} more: "
+                  f"{', '.join(str(h) for h in list(headers)[24:48])}")
         return None
 
     # ONE POPULATION FOR EVERY NUMBER BELOW.
@@ -333,8 +885,18 @@ def probe(state, raw, ctype, source, level="school"):
               if looks_like_url(r.get(have_web)) and looks_like_zip(r.get(have_zip))]
 
     def zip_of(r):
-        m = re.search(r"\b(\d{5})\b", r.get(have_zip) or "")
-        return m.group(1) if m else None
+        # FIRST match for a named ZIP column, LAST match for one found by
+        # content. In a dedicated ZIP column the first five-digit group is the
+        # ZIP, and '94501-3634' and '62360 1041' both give 94501 and 62360
+        # correctly. In a free-text address the first group is the STREET
+        # NUMBER: '19455 Kenwood Tr, Lakeville, MN 55044' yields 19455, which is
+        # not a ZIP and is not even in the right range. Minnesota is entirely
+        # this shape, and taking the first match there reported 793 distinct
+        # ZIPs that were mostly house numbers.
+        hits = re.findall(r"\b(\d{5})\b", r.get(have_zip) or "")
+        if not hits:
+            return None
+        return hits[-1] if zip_from_content else hits[0]
 
     def host_of(r):
         v = (r.get(have_web) or "").strip().strip('"').lower()
@@ -342,6 +904,27 @@ def probe(state, raw, ctype, source, level="school"):
 
     zips = {zip_of(r) for r in usable} - {None}
     hosts = {host_of(r) for r in usable}
+
+    # EVERY ROW IS ACCOUNTED FOR. The four reject reasons plus the usable count
+    # must sum to the parsed row count. Printing the sum is the cheap check that
+    # no population has quietly changed under one of these figures, which is the
+    # error that produced 8,940 / 1,673 / 5,237 against a true 8,816 / 1,367 /
+    # 5,165 on California.
+    no_web = sum(1 for r in rows if not looks_like_url(r.get(have_web))
+                 and looks_like_zip(r.get(have_zip)))
+    no_zip = sum(1 for r in rows if looks_like_url(r.get(have_web))
+                 and not looks_like_zip(r.get(have_zip)))
+    neither = sum(1 for r in rows if not looks_like_url(r.get(have_web))
+                  and not looks_like_zip(r.get(have_zip)))
+    print(f"\n  row accounting, over the {len(rows):,} parsed rows:")
+    print(f"    usable, ZIP and website   {len(usable):>8,}")
+    print(f"    rejected, no website      {no_web:>8,}")
+    print(f"    rejected, no ZIP          {no_zip:>8,}")
+    print(f"    rejected, neither         {neither:>8,}")
+    total = len(usable) + no_web + no_zip + neither
+    print(f"    sum                       {total:>8,}  "
+          f"{'balances' if total == len(rows) else 'DOES NOT BALANCE'}")
+
     print(f"\n  rows with ZIP and website   {len(usable):>8,}")
     print(f"  distinct 5-digit ZIPs       {len(zips):>8,}")
     print(f"  distinct website hosts      {len(hosts):>8,}")
@@ -393,6 +976,9 @@ def main():
     p.add_argument("--level", choices=["school", "district"], default="school",
                    help="which level to measure when a file carries both, as Texas does "
                         "(default school)")
+    p.add_argument("--sheet", help="for an xlsx, the sheet to read; default is the "
+                                   "sheet with the most rows, since several of these "
+                                   "workbooks open on a title page")
     p.add_argument("--timeout", type=int, default=90)
     args = p.parse_args()
 
@@ -412,10 +998,12 @@ def main():
             if j.get("input"):
                 with open(j["input"], "rb") as fh:
                     raw = fh.read()
-                r = probe(state, raw, "(local file)", j["input"], args.level)
+                r = probe(state, raw, "(local file)", j["input"], args.level,
+                          j.get("sheet") or args.sheet)
             else:
                 status, ctype, raw = fetch(j["url"], args.timeout)
-                r = probe(state, raw, ctype, j["url"], args.level)
+                r = probe(state, raw, ctype, j["url"], args.level,
+                          j.get("sheet") or args.sheet)
         except (urllib.error.HTTPError, urllib.error.URLError, OSError) as exc:
             print(f"\n{state}: fetch failed: {exc}")
             r = None
