@@ -65,12 +65,26 @@ UA = ("Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) "
       "Chrome/156.0 Safari/537.36")
 
 
-def fetch(url, timeout=300):
-    req = urllib.request.Request(url, headers={
+def fetch(url, timeout=300, body=None, content_type=None, referer=None):
+    """GET, or POST when body is given.
+
+    An EMPTY body still has to be sent explicitly, as the empty string rather
+    than None, because several of these endpoints answer a bodyless POST with
+    HTTP 411 Length Required. Florida's download is exactly that case.
+    """
+    headers = {
         "User-Agent": UA,
         "Accept": "text/csv,text/plain,application/json,application/octet-stream,*/*;q=0.5",
         "Accept-Language": "en-US,en;q=0.9",
-    })
+    }
+    data = None
+    if body is not None:
+        data = body.encode("utf-8")
+        headers["Content-Type"] = content_type or "application/x-www-form-urlencoded"
+        headers["Content-Length"] = str(len(data))
+    if referer:
+        headers["Referer"] = referer
+    req = urllib.request.Request(url, data=data, headers=headers)
     with urllib.request.urlopen(req, timeout=timeout) as r:
         return r.read()
 
@@ -141,6 +155,210 @@ def fetch_arcgis_all(url, page_size):
     return json.dumps({"features": feats}).encode("utf-8")
 
 
+def _dx_serialize_args(args):
+    """DevExpress SerializeCallbackArgs: each item becomes <len>|<item>.
+
+    Read out of the page's own DXR.axd bundle rather than inferred. This is the
+    function that makes an export argument the literal string 6|EXPORT3|Csv,
+    which is the piece a long sequence of plausible guesses never produced.
+    """
+    out = []
+    for a in args:
+        s = "" if a is None else str(a)
+        out += [str(len(s)), "|", s]
+    return "".join(out)
+
+
+def _dx_callback_param(params):
+    """DevExpress FormatCallbackState: each pair becomes <KEY>|<len>;<value>;
+
+    The grid's rows are fetched by a CLIENT CALLBACK, not by the page load, so
+    a freshly loaded page has no rows on the server to export and the export
+    succeeds with one header row. This builds the callback that populates it.
+    """
+    gb = _dx_serialize_args(["CUSTOMCALLBACK",
+                             json.dumps(params, separators=(",", ":"))])
+    return "c0:" + "".join(["GB", "|", str(len(gb)), ";", gb, ";"])
+
+
+def fetch_viewstate_post(cfg):
+    """GET an ASP.NET page, harvest its form, and post an event back to it.
+
+    Two states export only this way, and both looked like they needed a human
+    with a browser until the request was reproduced properly.
+
+    Alabama's directory is a DevExpress grid. Its export runs through an
+    ordinary __doPostBack, and the argument format comes from the DevExpress
+    bundle: SerializeCallbackArgs emits a length-prefixed <len>|<item> per item,
+    so an export is the literal string 6|EXPORT3|Csv. An earlier attempt had the
+    right event target and got HTTP 411, which was a missing Content-Length
+    header rather than a wrong target.
+
+    EVERY field on the page is posted back, not just __VIEWSTATE. Alabama's page
+    carries 73 of them and the server validates the set; sending a subset
+    returns the page again, which parses as HTML rather than data and would be
+    reported as a captcha.
+    """
+    from html.parser import HTMLParser
+    import http.cookiejar
+
+    jar = http.cookiejar.CookieJar()
+    opener = urllib.request.build_opener(
+        urllib.request.HTTPCookieProcessor(jar))
+    opener.addheaders = [("User-Agent", UA)]
+
+    page_url = cfg["viewstate_post"]["page_url"]
+    with opener.open(urllib.request.Request(page_url), timeout=180) as r:
+        html_text = r.read().decode("utf-8", errors="replace")
+    print(f"  page GET       {len(html_text):,} chars, {len(jar)} cookie(s)")
+
+    class Fields(HTMLParser):
+        def __init__(self):
+            super().__init__(convert_charrefs=True)
+            self.fields = []
+            self._select = None
+
+        def handle_starttag(self, tag, attrs):
+            a = dict(attrs)
+            if tag == "input":
+                name = a.get("name")
+                if not name:
+                    return
+                itype = (a.get("type") or "text").lower()
+                if itype in ("submit", "button", "image", "reset"):
+                    return
+                if itype in ("checkbox", "radio") and "checked" not in a:
+                    return
+                self.fields.append((name, a.get("value") or ""))
+            elif tag == "select":
+                self._select = a.get("name")
+            elif tag == "option" and self._select and "selected" in a:
+                self.fields.append((self._select, a.get("value") or ""))
+            elif tag == "textarea" and a.get("name"):
+                self.fields.append((a["name"], ""))
+
+        def handle_endtag(self, tag):
+            if tag == "select":
+                self._select = None
+
+    def harvest(text):
+        fp = Fields()
+        fp.feed(text)
+        return dict(fp.fields)
+
+    def post(form, note, extra_headers=None):
+        body = urllib.parse.urlencode(form).encode("utf-8")
+        headers = {
+            "User-Agent": UA,
+            "Content-Type": "application/x-www-form-urlencoded",
+            "Content-Length": str(len(body)),
+            "Referer": page_url,
+            "Origin": "{0.scheme}://{0.netloc}".format(
+                urllib.parse.urlsplit(page_url)),
+        }
+        if extra_headers:
+            headers.update(extra_headers)
+        req = urllib.request.Request(
+            cfg["viewstate_post"].get("post_url", page_url), data=body,
+            headers=headers)
+        with opener.open(req, timeout=300) as r:
+            blob = r.read()
+            disp = r.headers.get("Content-Disposition", "")
+            ctype = r.headers.get("Content-Type", "")
+        print(f"  {note:<14} {len(blob):,} bytes, {ctype}"
+              + (f", {disp.split(';')[0]}" if disp else ""))
+        return blob, ctype, disp
+
+    form = harvest(html_text)
+    print(f"  form fields    {len(form)} harvested")
+    if "__VIEWSTATE" not in form:
+        sys.exit("No __VIEWSTATE on the page, so this is not the ASP.NET form "
+                 "the config expects. The page may have changed.")
+
+    # PRIME STEPS. A DevExpress grid is EMPTY until something populates it, and
+    # exporting an empty grid succeeds: Alabama returned text/csv with the right
+    # attachment filename and 307 bytes, one header row and no data. That is the
+    # worst kind of success, because the content type and filename both say the
+    # export worked.
+    #
+    # So the config can name postbacks to run first, in order, each one's
+    # response re-harvested for the fresh __VIEWSTATE the next needs. Alabama
+    # needs one: the View Information button, ctl00$MainContent$btnViewSites.
+    base = dict(form)
+    for i, step in enumerate(cfg["viewstate_post"].get("prime") or [], start=1):
+        pf = dict(form)
+        pf["__EVENTTARGET"] = step.get("event_target", "")
+        pf["__EVENTARGUMENT"] = step.get("event_argument", "")
+        cb = step.get("devexpress_callback")
+        hdrs = None
+        if cb:
+            pf["__CALLBACKID"] = cb["control"]
+            pf["__CALLBACKPARAM"] = _dx_callback_param(cb["params"])
+            hdrs = {"X-Requested-With": "XMLHttpRequest",
+                    "X-MicrosoftAjax": "Delta=true"}
+        pf.update(step.get("extra_fields") or {})
+        blob, _, _ = post(pf, f"prime {i}", hdrs)
+        text = blob.decode("utf-8", errors="replace")
+        print(f"  prime {i} rows   {text.count('dxgvDataRow'):,} grid rows in the "
+              f"response")
+        # The form is NOT re-harvested unless asked. What populates the grid is
+        # SERVER-SIDE state keyed by the session cookie, and the sequence that
+        # works on Alabama posts the ORIGINAL form every time. Re-harvesting
+        # replaced the grid's filter state and brought the export back to a
+        # single header row.
+        if step.get("reharvest"):
+            fresh = harvest(text)
+            if "__VIEWSTATE" in fresh:
+                form = fresh
+                print(f"  prime {i} fields {len(form)} re-harvested")
+        else:
+            form = dict(base)
+
+    form["__EVENTTARGET"] = cfg["viewstate_post"]["event_target"]
+    form["__EVENTARGUMENT"] = cfg["viewstate_post"].get("event_argument", "")
+    form.update(cfg["viewstate_post"].get("extra_fields") or {})
+    raw, ctype, disp = post(form, "export")
+
+    if b"<html" in raw[:4000].lower() or b"<!doctype" in raw[:4000].lower():
+        sys.exit("The postback returned the PAGE rather than a file. The event "
+                 "target or argument is wrong for this build. states.json "
+                 "records the verified values.")
+    min_bytes = cfg["viewstate_post"].get("min_bytes")
+    if min_bytes and len(raw) < min_bytes:
+        sys.exit(f"The export returned only {len(raw):,} bytes against a "
+                 f"configured minimum of {min_bytes:,}. An empty DevExpress "
+                 f"grid exports successfully with the right content type and "
+                 f"filename and no data, so a short file here means the grid "
+                 f"was not populated, not that the state has no schools.")
+    return raw
+
+
+def fetch_pages(cfg, pages):
+    """Page a URL carrying a literal PAGE token, for APIs with no offset.
+
+    Tennessee's directory is a Dataverse portal whose FetchXML takes a page
+    NUMBER rather than a row offset, so the ArcGIS count-then-offset approach
+    does not apply. Paging stops early on an empty page, and the records are
+    concatenated under the configured key so the reader sees one document.
+    """
+    rec_key = cfg.get("json_records_key", "value")
+    out = []
+    for page in range(1, pages + 1):
+        url = cfg["url"].replace("PAGENUMBER", str(page))
+        raw = fetch(url, body=cfg.get("post_body"),
+                    content_type=cfg.get("post_content_type"),
+                    referer=cfg.get("referer"))
+        doc = json.loads(raw.decode("utf-8", errors="replace"))
+        got = (doc.get(rec_key) if isinstance(doc, dict) else doc) or []
+        out.extend(got)
+        print(f"  page {page:<3}      +{len(got):,} records, {len(out):,} so far")
+        if not got:
+            break
+    if not out:
+        sys.exit("No records returned across any page.")
+    return json.dumps({rec_key: out}).encode("utf-8")
+
+
 def rows_from_bytes(raw, cfg):
     """-> (headers, rows) using the probe's own readers.
 
@@ -161,21 +379,29 @@ def rows_from_bytes(raw, cfg):
 
     if raw.lstrip()[:1] in (b"{", b"["):
         doc = json.loads(raw.decode("utf-8", errors="replace"))
-        feats = doc.get("features") or []
-        if not feats:
-            sys.exit("JSON parsed but carries no features. For an ArcGIS "
-                     "endpoint check the where clause, returnGeometry=false "
-                     "and f=json.")
+        # ArcGIS nests each record's fields under "attributes" inside
+        # "features"; Dataverse and OData put flat records under "value". The
+        # config names both so a new shape needs no code.
+        rec_key = cfg.get("json_records_key", "features")
+        attr_key = cfg.get("json_attrs_key", "attributes")
+        recs = doc.get(rec_key) if isinstance(doc, dict) else doc
+        recs = recs or []
+        if not recs:
+            sys.exit(f"JSON parsed but carries no {rec_key!r}. For an ArcGIS "
+                     f"endpoint check the where clause, returnGeometry=false "
+                     f"and f=json.")
+        def attrs(rec):
+            return (rec.get(attr_key) or {}) if attr_key else rec
         keys = []
-        for f in feats:
-            for k in (f.get("attributes") or {}):
-                if k not in keys:
+        for rec in recs:
+            for k in attrs(rec):
+                if k not in keys and not k.startswith("@"):
                     keys.append(k)
         grid = [keys]
-        for f in feats:
-            a = f.get("attributes") or {}
+        for rec in recs:
+            a = attrs(rec)
             grid.append(["" if a.get(k) is None else str(a.get(k)) for k in keys])
-        print("  format         ArcGIS FeatureServer JSON, attributes only")
+        print(f"  format         JSON, {len(recs):,} records under {rec_key!r}")
         return probe.rows_to_dicts(grid)
 
     if raw[:4] == probe.XLSX_MAGIC:
@@ -222,7 +448,7 @@ def rows_from_bytes(raw, cfg):
     return probe.rows_to_dicts(grid)
 
 
-def resolve_columns(headers, cfg):
+def resolve_columns(headers, cfg, rows):
     """Config names win; the probe's detection fills the rest.
 
     A config name that is not in the file is FATAL. Ignoring it silently would
@@ -246,8 +472,45 @@ def resolve_columns(headers, cfg):
             out[role] = want
         else:
             cands = roles.get("ncesid" if role == "id" else role)
+            if cands and role in ("zip", "website"):
+                test = (probe.looks_like_zip if role == "zip"
+                        else probe.looks_like_url)
+                cands = probe.winnow(cands, rows, test)
             out[role] = probe.prefer(cands, "school") if cands else None
     return out
+
+
+def content_fallback(headers, rows, role, out):
+    """Find a column by CONTENT when no column is NAMED for the role.
+
+    Alabama's export has a two-level header: row 2 names the groups and row 3
+    names the sub-columns under 'Physical Address', so the ZIP column's own
+    header cell is EMPTY and becomes col_13. No naming pattern can reach it,
+    and the state is otherwise one of the better ones at 467 ZIPs.
+
+    The chosen column and its hit rate are printed, because a content match is
+    weaker evidence than a named one and the operator should see which column
+    was taken. Ranking is by hit count alone, so a column of unrelated 5-digit
+    codes can win: Minnesota's countycode does.
+    """
+    test = probe.looks_like_zip if role == "zip" else probe.looks_like_hostname
+    scored = []
+    for h in headers:
+        if h in out.values():
+            continue
+        n = sum(1 for r in rows if test(r.get(h)))
+        if n:
+            scored.append((h, n))
+    if not scored:
+        return None
+    scored.sort(key=lambda kv: -kv[1])
+    best, n = scored[0]
+    print(f"  {role:<14} {best} (BY CONTENT, {n:,} of {len(rows):,} rows; "
+          f"no column is named for it)")
+    if len(scored) > 1:
+        print(f"                 runners up: "
+              + ", ".join(f"{h} {c:,}" for h, c in scored[1:4]))
+    return best
 
 
 def zip_of(value, mode):
@@ -328,7 +591,14 @@ def main():
         for k, v in cfgs.items():
             if k.startswith("_"):
                 continue
-            how = "url" if v.get("url") else "needs --input"
+            if v.get("viewstate_post"):
+                how = "ASP.NET postback"
+            elif v.get("post_body") is not None:
+                how = "POST"
+            elif v.get("url"):
+                how = "GET"
+            else:
+                how = "needs --input"
             print(f"  {k:<6}{v['source']:<16}{how}")
         return
 
@@ -337,10 +607,12 @@ def main():
         # take the rest down, and so a partial run leaves a readable record of
         # which states did load rather than an exception part way through.
         import subprocess
+        def auto(v):
+            return bool(v.get("url") or v.get("viewstate_post"))
         fetchable = [k for k, v in cfgs.items()
-                     if not k.startswith("_") and v.get("url")]
+                     if not k.startswith("_") and auto(v)]
         needs_file = [k for k, v in cfgs.items()
-                      if not k.startswith("_") and not v.get("url")]
+                      if not k.startswith("_") and not auto(v)]
         print(f"Running {len(fetchable)} fetchable jurisdictions: "
               + " ".join(fetchable))
         print(f"Skipping {len(needs_file)} that need a local file: "
@@ -379,7 +651,7 @@ def main():
         bad = [k for k, st, _, _ in results if st != "ok"]
         if bad:
             print(f"\n{len(bad)} FAILED: " + " ".join(bad))
-        print(f"\nThe six needing a local file: " + " ".join(needs_file))
+        print(f"\n{len(needs_file)} needing a local file: " + " ".join(needs_file))
         return
 
     key = args.state if args.state in cfgs else args.state.upper()
@@ -398,14 +670,25 @@ def main():
     if args.input:
         raw = open(args.input, "rb").read()
         print(f"  input          {args.input}, {len(raw):,} bytes")
+    elif cfg.get("viewstate_post"):
+        print(f"  postback       {cfg['viewstate_post']['page_url'][:90]}")
+        try:
+            raw = fetch_viewstate_post(cfg)
+        except (urllib.error.HTTPError, urllib.error.URLError, OSError) as exc:
+            sys.exit(f"postback failed: {exc}\nPass a local copy with --input.")
     elif cfg.get("url"):
         print(f"  fetching       {cfg['url'][:96]}")
         try:
             page_size = (cfg.get("paginate") or {}).get("page_size")
+            pages = (cfg.get("paginate") or {}).get("pages")
             if page_size:
                 raw = fetch_arcgis_all(cfg["url"], page_size)
+            elif pages:
+                raw = fetch_pages(cfg, pages)
             else:
-                raw = fetch(cfg["url"])
+                raw = fetch(cfg["url"], body=cfg.get("post_body"),
+                            content_type=cfg.get("post_content_type"),
+                            referer=cfg.get("referer"))
         except (urllib.error.HTTPError, urllib.error.URLError, OSError) as exc:
             sys.exit(f"fetch failed: {exc}\nPass a local copy with --input.")
         print(f"  fetched        {len(raw):,} bytes")
@@ -418,9 +701,13 @@ def main():
     print(f"  columns        {len(headers)}")
     print(f"  data rows      {len(rows):,}")
 
-    cols = resolve_columns(headers, cfg)
+    cols = resolve_columns(headers, cfg, rows)
     for role in ("name", "zip", "website", "status"):
-        print(f"  {role:<14} {cols.get(role) or '(none)'}")
+        if cols.get(role):
+            print(f"  {role:<14} {cols[role]}")
+    for role in ("zip", "website"):
+        if not cols.get(role):
+            cols[role] = content_fallback(headers, rows, role, cols)
     if not cols.get("zip") or not cols.get("website"):
         sys.exit("No ZIP or no website column, so this jurisdiction is not "
                  "loadable from this file. See _EXCLUDED in states.json.")

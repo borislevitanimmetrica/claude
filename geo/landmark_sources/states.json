@@ -70,12 +70,59 @@
     "row_filter": [
       {
         "column": "Site Type",
-        "in": [
-          "Public Regular School"
+        "not_in": [
+          "Private School",
+          "Religious School",
+          "Religious Diocese - Birmingham",
+          "Religious Diocese - Mobile",
+          "Special Education - Private Services",
+          "Virtual Program",
+          "Public Virtual School",
+          "Summer School",
+          "Intranet",
+          "Sharepoint External Users",
+          "AIM Application Access",
+          "Vendor",
+          "Vendor - Transportation",
+          "Alabama State Government",
+          "State Agency",
+          "State Board District",
+          "Community or Technical College",
+          "College or University",
+          "State Supported School Special Education School",
+          "State Supported School Other Facility",
+          ""
         ]
       }
     ],
-    "notes": "No url: the DevExpress grid exports only through an ASP.NET postback. POST to https://eddir.alsde.edu/siteinfo/ with the session cookies and all 73 harvested form fields, __EVENTTARGET=ctl00$MainContent$pcResults$gridSiteInfo and __EVENTARGUMENT=6|EXPORT3|Csv, which is the length-prefixed form DevExpress SerializeCallbackArgs emits. The earlier HTTP 411 was a missing Content-Length header. The ZIP sits under a two-level header so its own header cell is blank and the probe finds it by content as col_13. www.nonesupplied.com on 135 rows is a sentinel."
+    "notes": "Fetchable: the DevExpress grid exports through an ordinary ASP.NET __doPostBack. The argument is the length-prefixed string 6|EXPORT3|Csv, which is what the bundle's SerializeCallbackArgs emits for an EXPORT of Csv; 6|EXPORT4|Xlsx returns the xlsx. An earlier attempt had the right event target and got HTTP 411, which was a missing Content-Length header. EVERY one of the page's 73 form fields must be posted back, not just __VIEWSTATE, or the server returns the page instead of the file. Default filters on the page are year 2026-2027 and status Open. The ZIP sits under a two-level header so its own header cell is blank and the probe finds it by content. www.nonesupplied.com on 135 rows is a sentinel. SITE TYPE IS FILTERED BY EXCLUSION, NOT INCLUSION. An earlier include-list of Public Regular School alone discarded 2,225 career-technical rows and 157 central-office rows, and cut the state from 467 ZIPs to 421. Excluded instead: private and religious schools, because this source is public schools; virtual programs and virtual schools, because they have no premises; summer school, because it is co-located with its host school and duplicates that host and ZIP; and the IT artifacts Intranet, Sharepoint External Users and AIM Application Access, which are access records rather than buildings. Unseen Public types are therefore kept by default, which is the right direction when landmarks are scarce. Central Office and Public Board of Education rows ARE kept: a district office is a real building, and where the district's web server physically sits there the office row is the only row that maps that host to ONE ZIP, which is exactly what node_fanout needs.",
+    "viewstate_post": {
+      "page_url": "https://eddir.alsde.edu/siteinfo/",
+      "event_target": "ctl00$MainContent$pcResults$gridSiteInfo",
+      "event_argument": "6|EXPORT3|Csv",
+      "prime": [
+        {
+          "extra_fields": {
+            "ctl00$MainContent$btnViewSites": "View Information"
+          }
+        },
+        {
+          "devexpress_callback": {
+            "control": "ctl00$MainContent$pcResults$gridSiteInfo",
+            "params": {
+              "Year": "2027",
+              "SiteType": null,
+              "SiteGroupViewKey": null,
+              "Status": "O",
+              "SystemCode": "All",
+              "SiteId": null
+            }
+          }
+        }
+      ],
+      "min_bytes": 500000,
+      "notes": "Year 2027 in the callback params is the school year and WILL go stale. If the export comes back near the min_bytes floor, check the year selector on the page and update it here."
+    }
   },
   "AZ": {
     "source": "az_azgeo",
@@ -110,7 +157,10 @@
     "status_operating": [
       "A"
     ],
-    "notes": "Two curl calls, documented in state_public_schools/readme.md: the first establishes the ColdFusion session, the second POSTs an explicit empty body because the endpoint answers a bodyless POST with 411. Served as filename=MSID_all_schools.xls with content-type application/msexcel and the bytes are tab-delimited text. ACTIVITY_CODE A means active, corroborated against DATE_CLOSED: 3,706 of 3,707 A rows have no closed date, and 707 of 710 C rows do. Use PHYSICAL_ZIP, not MAILING_ZIP."
+    "notes": "Fetchable with no browser and no cookie: a POST carrying an EXPLICIT EMPTY BODY, with the Downloads.cfm referer. The empty body must be sent as the empty string rather than omitted, because the endpoint answers a bodyless POST with HTTP 411 Length Required. Served as filename=MSID_all_schools.xls with content-type application/msexcel and the bytes are tab-delimited text, which is what blocked the project. ACTIVITY_CODE A means active, corroborated against DATE_CLOSED: 3,706 of 3,707 A rows have no closed date and 707 of 710 C rows do. Use PHYSICAL_ZIP, not MAILING_ZIP.",
+    "url": "https://eds.fldoe.org/EDS/MasterSchoolID/Downloads/All_schools.cfm",
+    "post_body": "",
+    "referer": "https://eds.fldoe.org/EDS/MasterSchoolID/Downloads.cfm"
   },
   "GA": {
     "source": "ga_gosa",
@@ -272,7 +322,13 @@
       "street": "Street",
       "district": "DistrictName"
     },
-    "notes": "No url: an ASP.NET postback to https://insights.nd.gov/Data whose __VIEWSTATE is about 518 KB and will not fit on a command line, so post it from a script. 454 of the 504 website values match a host that also appears in the district file, so treat North Dakota as roughly 50 real per-school sites rather than 504. The data dictionary describes ZipCode as the MAILING ZIP."
+    "notes": "No url: an ASP.NET postback to https://insights.nd.gov/Data whose __VIEWSTATE is about 518 KB and will not fit on a command line, so post it from a script. 454 of the 504 website values match a host that also appears in the district file, so treat North Dakota as roughly 50 real per-school sites rather than 504. The data dictionary describes ZipCode as the MAILING ZIP.",
+    "viewstate_post": {
+      "page_url": "https://insights.nd.gov/Data",
+      "event_target": "ctl00$ContentPlaceHolderNoSideNav$rptGroups$ctl33$rptFiles$ctl12$rptYearFiles$ctl00$lnkFile",
+      "event_argument": "",
+      "min_bytes": 50000
+    }
   },
   "NV": {
     "source": "nv_nde",
@@ -305,7 +361,10 @@
     "status_operating": [
       "Open"
     ],
-    "notes": "No url: POST to https://oeds.education.ohio.gov/DataExtract/GetRequestOrgExtract with one urlencoded jsonData field selecting OrgTypes 7,6,60,45,46,48 and OrgCats 2 and including Web URL among Selected. No ZIP column: it is inside ORG MAILING ADDRESS, free text, so zip_mode last. Ohio's own geocoded layer at https://maps.ohio.gov/arcgis/rest/services/Hosted/schools2526_Geocoded/FeatureServer/0 carries a physical postal code and joins on IRN with 4,170 overlapping, if a physical ZIP is wanted later."
+    "notes": "Fetchable: a POST with one urlencoded jsonData field selecting OrgTypes 7,6,60,45,46,48 and OrgCats 2 (School), with Web URL among Selected. Verified 1,906,820 bytes. The extract begins with a one-cell banner line, Generated on <date>, which the probe strips before choosing the quoting dialect; measuring raggedness before stripping it made both dialects tie and produced 2,035 usable rows against a true 2,522. No ZIP column at all: it is inside ORG MAILING ADDRESS as free text, so zip_mode last. Ohio's own geocoded layer at https://maps.ohio.gov/arcgis/rest/services/Hosted/schools2526_Geocoded/FeatureServer/0 carries a physical postal code and joins on IRN with 4,170 overlapping, if a physical ZIP is wanted.",
+    "url": "https://oeds.education.ohio.gov/DataExtract/GetRequestOrgExtract",
+    "post_content_type": "application/x-www-form-urlencoded",
+    "post_body": "jsonData=%7B%22OrgTypes%22%3A%20%5B7%2C%206%2C%2060%2C%2045%2C%2046%2C%2048%5D%2C%20%22OrgCats%22%3A%20%5B2%5D%2C%20%22Selected%22%3A%20%5B%22IRN%22%2C%20%22ORGANIZATION%20NAME%22%2C%20%22ORGANIZATION%20TYPE%22%2C%20%22ORGANIZATION%20CATEGORY%22%2C%20%22STATUS%22%2C%20%22ORG%20MAILING%20ADDRESS%22%2C%20%22ORG%20PHONE%22%2C%20%22WEB%20URL%22%2C%20%22PARENT%20ORGANIZATION%20NAME%22%5D%7D"
   },
   "PA": {
     "source": "pa_edna",
@@ -373,13 +432,18 @@
       "city": "address1_city",
       "street": "address1_line1",
       "status": "statuscode",
-      "id": "sde_ncesnumber",
       "district": "sde_schooldistrictname"
     },
     "status_operating": [
       "1"
     ],
-    "notes": "No url field here because the query is long: GET https://tnschooldirectory.tnedu.gov/_api/accounts with a fetchXml selecting customertypecode 100000001 for School, statecode 0, and explicitly requesting websiteurl, which the portal's own query omits but which is readable. Six pages of 500. statuscode 1 is Active. Genuinely per-school: 1,193 hosts over 1,685 active public schools. 727 nonpublic rows are separable by a 9xxx district number."
+    "notes": "Fetchable: the portal is Power Pages over Dataverse and its _api/accounts endpoint answers anonymously. websiteurl IS readable even though the portal's own query omits it. customertypecode 100000001 is School and statecode 0 is active; statuscode 1 is Active. Paged by PAGE NUMBER rather than row offset, 500 per page, so the ArcGIS count-then-offset approach does not apply. Genuinely per-school: 1,193 hosts over 1,685 active public schools. 727 nonpublic rows are separable by a 9xxx district number.",
+    "url": "https://tnschooldirectory.tnedu.gov/_api/accounts?fetchXml=%3Cfetch%20count%3D%27500%27%20page%3D%27PAGENUMBER%27%3E%3Centity%20name%3D%27account%27%3E%3Cattribute%20name%3D%27name%27%2F%3E%3Cattribute%20name%3D%27address1_postalcode%27%2F%3E%3Cattribute%20name%3D%27websiteurl%27%2F%3E%3Cattribute%20name%3D%27address1_city%27%2F%3E%3Cattribute%20name%3D%27address1_line1%27%2F%3E%3Cattribute%20name%3D%27statuscode%27%2F%3E%3Cattribute%20name%3D%27sde_ncesnumber%27%2F%3E%3Cattribute%20name%3D%27sde_schooldistrictname%27%2F%3E%3Cfilter%20type%3D%27and%27%3E%3Ccondition%20attribute%3D%27customertypecode%27%20operator%3D%27eq%27%20value%3D%27100000001%27%2F%3E%3Ccondition%20attribute%3D%27statecode%27%20operator%3D%27eq%27%20value%3D%270%27%2F%3E%3C%2Ffilter%3E%3C%2Fentity%3E%3C%2Ffetch%3E",
+    "paginate": {
+      "pages": 8
+    },
+    "json_records_key": "value",
+    "json_attrs_key": null
   },
   "TX": {
     "source": "tx_askted",
