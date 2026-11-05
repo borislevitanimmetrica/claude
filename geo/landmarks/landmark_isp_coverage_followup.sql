@@ -170,21 +170,39 @@ FROM demand_pairs d LEFT JOIN supply_clean s ON s.zip = d.zip AND s.isp = d.isp;
 -- ---------------------------------------------------------------------------
 -- 3. THE WORK QUEUE, SPLIT BY WHAT THE REGISTRANT ACTUALLY IS.
 --
--- The first run's top uncovered registrants by address count were Ford Motor
--- Company, Amazon, Microsoft, JPMorgan Chase, Eli Lilly, Merck, Procter and
--- Gamble, Xerox, Bank of America, the US Courts, the IRS and the Postal
--- Service. Those are enterprise allocations. No landmark will ever help them
--- and their addresses do not appear in a consumer bid request, which is
--- exactly the dedicated-and-private-access case Boris raised.
+-- CORRECTED. An earlier version of this comment dismissed enterprise
+-- allocations -- Ford Motor Company, Eli Lilly, Merck, Xerox, JPMorgan Chase,
+-- Bank of America, the IRS -- as addresses that would never appear in a
+-- consumer bid request. That is wrong, and Boris corrected it: THERE IS
+-- AT-WORK MEDIA USE AND IT HAS TO BE CAPTURED. A registrant being a business
+-- rather than a consumer ISP does NOT disqualify it. It is also the standing
+-- rule already recorded for the exclusion lists: people at work at the listed
+-- organisations are appropriate targets.
 --
--- RDAP cannot tell them apart, but THIS PROJECT ALREADY HAS the lists that
--- can: isp_names, built to 1,101 entries, and provider_names, built to 42.
--- Membership is matched EXACTLY, which is how those lists are used elsewhere
--- and the reason they reject 10.7M rows with only 7 known leaks.
+-- Enterprise space is in fact the LARGEST block in this queue, at 54.1M
+-- addresses over 1,047 pairs against the known ISPs' 47.3M over 7,574, so
+-- dismissing it would have discarded the bigger half of the work.
+--
+-- It is also reachable by the same method. An enterprise allocation is routed
+-- to that enterprise's own premises, so the landmark that anchors it has to be
+-- a site inside that allocation -- a company location whose own website is
+-- served on premises. That is precisely what the Overture business source
+-- provides, which is why these pairs are a work queue and not a write-off.
+--
+-- ONLY ONE CATEGORY IS GENUINELY UNREACHABLE: a CDN, cloud or web host from
+-- provider_names. The reason is rule 2's, not a preference. The method depends
+-- on a landmark and nearby retail customers sharing a carrier node, and a
+-- provider's adjacent node is an edge router that routes content and never
+-- subscribers, so retail routing can never converge through it.
+--
+-- So the split below is three ways and TWO OF THE THREE ARE IN SCOPE.
+-- Membership is matched EXACTLY against isp_names and provider_names, which is
+-- how those lists are used everywhere else in the project.
 -- ---------------------------------------------------------------------------
-SELECT CASE WHEN i.name IS NOT NULL THEN '1 known ISP'
-            WHEN p.name IS NOT NULL THEN '2 known hosting provider'
-            ELSE                         '3 unclassified' END       AS kind,
+SELECT CASE WHEN p.name IS NOT NULL THEN '3 hosting provider, OUT of scope'
+            WHEN i.name IS NOT NULL THEN '1 known ISP, in scope'
+            ELSE                         '2 enterprise or unclassified, IN SCOPE'
+       END                                                          AS kind,
        count(*)                                                     AS uncovered_pairs,
        count(DISTINCT d.isp)                                        AS registrants,
        sum(d.ranges)                                                AS ranges,
@@ -197,19 +215,25 @@ WHERE s.zip IS NULL
 GROUP BY 1
 ORDER BY 1;
 
--- The queue that is actually worth working: uncovered pairs on a registrant
--- the project has already classified as an ISP.
+-- The queue worth working: every uncovered pair EXCEPT the hosting providers.
+-- Both known ISPs and enterprises are listed, with which one each is, because
+-- the landmark that anchors them differs: a school or civic building for an
+-- ISP's retail space, a company location for an enterprise's own allocation.
 SELECT d.isp,
+       CASE WHEN i.name IS NOT NULL THEN 'ISP' ELSE 'enterprise/unclassified' END
+                                AS kind,
        count(*)                 AS uncovered_zips,
        sum(d.ranges)            AS ranges,
        sum(d.addresses)::bigint AS addresses
 FROM demand_pairs d
-LEFT JOIN supply_clean s ON s.zip = d.zip AND s.isp = d.isp
-JOIN isp_names i ON btrim(i.name) = d.isp
+LEFT JOIN supply_clean  s ON s.zip = d.zip AND s.isp = d.isp
+LEFT JOIN isp_names     i ON btrim(i.name) = d.isp
+LEFT JOIN provider_names p ON btrim(p.name) = d.isp
 WHERE s.zip IS NULL
-GROUP BY 1
+  AND p.name IS NULL
+GROUP BY 1, 2
 ORDER BY addresses DESC
-LIMIT 30;
+LIMIT 40;
 
 -- ---------------------------------------------------------------------------
 -- 4. HOW MANY CARRIERS REALLY SERVE A ZIP.
