@@ -41,24 +41,65 @@
 
 \timing on
 
--- ---------------------------------------------------------------------------
--- 0. What the tables actually contain.
+-- TWO CORRECTIONS AFTER THE FIRST RUN
 --
--- Printed first because the ZIP-to-city mapping lives in city2zip_tbl and this
--- file does NOT join to it: its column names were not verified when this was
--- written, and a join written against assumed names would silently produce a
--- wrong denominator rather than an error. Section 6 measures the same thing at
--- city level, which needs no such join. Run this section, then the join can be
--- written against the real names.
+-- The table is rdap_registrant_tbl. The first version of this file said
+-- rdap_registrant, which is the FILENAME, not the relation, and every section
+-- from 2 onward failed with "relation does not exist". Taking a table name from
+-- a filename is guessing, and the DDL was in the repository the whole time.
+--
+-- The containment join is now a LATERAL taking the MOST SPECIFIC allocation,
+-- not a BETWEEN join. RDAP allocations NEST: ARIN publishes reassignments and
+-- reallocations beneath a parent, so a /8 and a /16 inside it both contain the
+-- same address and a BETWEEN join returns a row for each. That would have
+-- multiplied the demand pairs by the nesting depth and inflated the
+-- denominator, which is a wrong answer rather than an error. Ordering by
+-- start_ip DESC and taking one row uses the (start_ip, end_ip) index and
+-- returns the narrowest containing allocation, which is the operator.
+
+-- ---------------------------------------------------------------------------
+-- 0a. DOES EVERY RELATION THIS FILE NEEDS ACTUALLY EXIST.
+--
+-- Run first so that a missing one is reported ONCE, here, instead of as ten
+-- cascading "relation does not exist" errors from every later section, which
+-- is what the first run produced.
+--
+-- rdap_registrant_tbl is in the repository's DDL and the Session 3 transcript
+-- shows it being filled, but I have NOT verified it exists in this database.
+-- This is how that gets checked rather than assumed.
+-- ---------------------------------------------------------------------------
+SELECT r.needed,
+       CASE WHEN c.oid IS NULL THEN 'MISSING' ELSE 'present' END AS status,
+       CASE WHEN c.oid IS NULL THEN NULL
+            ELSE pg_size_pretty(pg_total_relation_size(c.oid)) END AS size
+FROM (VALUES ('landmarks_usa'),
+             ('ip2city_dbiplite_probe_tbl'),
+             ('rdap_registrant_tbl'),
+             ('city2zip_tbl')) AS r(needed)
+LEFT JOIN pg_class c
+       ON c.relname = r.needed
+      AND c.relnamespace = 'public'::regnamespace
+ORDER BY 2, 1;
+
+-- ---------------------------------------------------------------------------
+-- 0b. What the tables actually contain.
+--
+-- Kept because it is how the two corrections above were found, and because
+-- this file still does NOT join to city2zip_tbl. Its real columns are state,
+-- state_code, census_placename and zip, so a city-to-ZIP expansion is now
+-- possible; it is deliberately not done here because one city maps to many
+-- ZIPs and every range in that city would then match all of them, which is the
+-- large false-positive expansion the ZIP service design already rejected.
 -- ---------------------------------------------------------------------------
 SELECT table_name, ordinal_position AS pos, column_name, data_type
 FROM information_schema.columns
 WHERE table_schema = 'public'
   AND table_name IN ('city2zip_tbl', 'ip2city_dbiplite_probe_tbl',
-                     'rdap_registrant', 'landmarks_usa')
+                     'rdap_registrant_tbl', 'landmarks_usa')
   AND (table_name <> 'landmarks_usa'
        OR column_name IN ('overture_zip', 'registrant_1', 'registrant_2',
-                          'onpremises', 'ip_address', 'ip_last_carrier_node'))
+                          'onpremises', 'onpremises_reason', 'ip_address',
+                          'ip_last_carrier_node', 'source'))
 ORDER BY table_name, ordinal_position;
 
 -- ---------------------------------------------------------------------------
@@ -82,18 +123,70 @@ SELECT count(*)                AS supply_pairs,
        count(DISTINCT isp)     AS isps_with_any_landmark
 FROM supply_pairs;
 
+-- 1b. WHY THAT ZIP COUNT MAY NOT BE THE ONE YOU REMEMBER.
+--
+-- The first run of this file reported 16,114 ZIPs with a landmark. The Session
+-- 3 notes record 9,728, measured after node_fanout.sql and
+-- onpremises_hosting_rule.sql, and 15,954 measured before them. I do not know
+-- which of those this 16,114 is comparable to, and I am not going to assert
+-- one. These three breakdowns distinguish the possibilities with data:
+--
+--   if onpremises_reason is populated on few or no rows, the hosting rule has
+--   not been applied to the current set, which the Session 3 notes list as an
+--   open item, and 16,114 is a PRE-hosting-rule figure comparable to 15,954
+--
+--   if it is populated broadly, the rule has run and the set has grown since
+--
+-- The per-source counts show what has been loaded, which is the other way the
+-- number could have moved.
+SELECT count(*)                                                   AS onpremises_rows,
+       count(*) FILTER (WHERE btrim(coalesce(onpremises_reason,'')) <> '')
+                                                                  AS with_reason,
+       count(*) FILTER (WHERE btrim(coalesce(onpremises_reason,'')) =  '')
+                                                                  AS without_reason
+FROM landmarks_usa
+WHERE onpremises;
+
+SELECT coalesce(onpremises_reason, '(null)') AS onpremises_reason,
+       count(*) AS rows
+FROM landmarks_usa
+WHERE onpremises
+GROUP BY 1
+ORDER BY rows DESC
+LIMIT 15;
+
+SELECT source,
+       count(*)                                        AS rows,
+       count(*) FILTER (WHERE onpremises)              AS onpremises_rows,
+       count(DISTINCT left(lpad(btrim(overture_zip),5,'0'),5))
+         FILTER (WHERE onpremises AND overture_zip IS NOT NULL) AS onprem_zips
+FROM landmarks_usa
+GROUP BY 1
+ORDER BY onpremises_rows DESC;
+
 -- ---------------------------------------------------------------------------
 -- 2. DEMAND. The (ZIP, ISP) pairs that carry addresses.
 --
--- The containment join is on start_ip and end_ip rather than on a cidr because
--- an RDAP allocation is not required to be a single CIDR block, which is why
--- rdap_registrant stores boundaries. The probe range's first address is used as
--- the probe point into the allocation.
+-- The containment lookup is on start_ip and end_ip rather than on a cidr
+-- because an RDAP allocation is not required to be a single CIDR block, which
+-- is why rdap_registrant_tbl stores boundaries. The probe range's first address
+-- is the probe point into the allocation.
 --
--- Ranges with no ZIP are counted separately rather than dropped silently: the
--- probe table's ZIP is known to be sparse, and a denominator built only from
--- rows that happen to have one would be a different population from the one
--- the percentages below are about.
+-- IT IS A LATERAL TAKING ONE ROW, NOT A JOIN. RDAP allocations nest, because
+-- ARIN publishes reassignments and reallocations beneath a parent, so a /8 and
+-- a /16 inside it both contain the same address. A BETWEEN join returns a row
+-- for each and would multiply the demand pairs by the nesting depth, inflating
+-- the denominator. ORDER BY start_ip DESC LIMIT 1 walks the
+-- (start_ip, end_ip) index backwards and stops at the narrowest containing
+-- allocation, which is the operator rather than the parent holder.
+--
+-- The first run measured 2,097,870 probe ranges, of which 1,010,244 carry a
+-- ZIP. Expect this to take minutes, not seconds: it is a million index
+-- lookups.
+--
+-- Ranges with no ZIP are counted separately rather than dropped silently,
+-- because a denominator built only from rows that happen to have one is a
+-- different population from the one the percentages below describe.
 -- ---------------------------------------------------------------------------
 SELECT count(*)                                              AS probe_ranges,
        count(*) FILTER (WHERE btrim(coalesce(zip, '')) <> '') AS with_zip,
@@ -108,8 +201,14 @@ SELECT left(lpad(btrim(p.zip), 5, '0'), 5)  AS zip,
        count(*)                             AS ranges,
        sum((2::numeric) ^ (32 - masklen(p.network))) AS addresses
 FROM ip2city_dbiplite_probe_tbl p
-JOIN rdap_registrant r
-  ON inet(host(network(p.network))) BETWEEN r.start_ip AND r.end_ip
+CROSS JOIN LATERAL (
+    SELECT r.registrant
+    FROM rdap_registrant_tbl r
+    WHERE r.start_ip <= (host(network(p.network)))::inet
+      AND r.end_ip   >= (host(network(p.network)))::inet
+    ORDER BY r.start_ip DESC
+    LIMIT 1
+) r
 WHERE btrim(coalesce(p.zip, '')) <> ''
   AND btrim(coalesce(r.registrant, '')) <> ''
 GROUP BY 1, 2;
@@ -188,11 +287,20 @@ LIMIT 40;
 -- ---------------------------------------------------------------------------
 -- 6. THE SAME MEASUREMENT AT CITY LEVEL, which needs no ZIP mapping.
 --
--- The probe table's ZIP is sparse, so sections 2 to 5 describe only the subset
--- of ranges carrying one. City and state_code are populated for every probed
--- range, so this is the same question asked over the whole table, and the two
--- answers bracket the truth.
+-- The probe table's ZIP is populated on 1,010,244 of 2,097,870 ranges, so
+-- sections 2 to 5 describe only 48.2 percent of the table. This asks the same
+-- question over all of it, and the two answers bracket the truth.
+--
+-- I have NOT verified that city and state_code are populated on every probed
+-- range; the first query below reports how many carry them, so the coverage of
+-- this section is visible rather than assumed. This is the slowest section:
+-- roughly two million index lookups.
 -- ---------------------------------------------------------------------------
+SELECT count(*)                                                     AS probe_ranges,
+       count(*) FILTER (WHERE btrim(coalesce(city, '')) <> '')       AS with_city,
+       count(*) FILTER (WHERE btrim(coalesce(state_code, '')) <> '') AS with_state_code
+FROM ip2city_dbiplite_probe_tbl;
+
 CREATE TEMP TABLE demand_city AS
 SELECT btrim(p.city)       AS city,
        btrim(p.state_code) AS state_code,
@@ -200,16 +308,22 @@ SELECT btrim(p.city)       AS city,
        count(*)            AS ranges,
        sum((2::numeric) ^ (32 - masklen(p.network))) AS addresses
 FROM ip2city_dbiplite_probe_tbl p
-JOIN rdap_registrant r
-  ON inet(host(network(p.network))) BETWEEN r.start_ip AND r.end_ip
+CROSS JOIN LATERAL (
+    SELECT r.registrant
+    FROM rdap_registrant_tbl r
+    WHERE r.start_ip <= (host(network(p.network)))::inet
+      AND r.end_ip   >= (host(network(p.network)))::inet
+    ORDER BY r.start_ip DESC
+    LIMIT 1
+) r
 WHERE btrim(coalesce(p.city, '')) <> ''
   AND btrim(coalesce(r.registrant, '')) <> ''
 GROUP BY 1, 2, 3;
 
 SELECT count(*)                                  AS city_isp_pairs,
-       count(DISTINCT (city, state_code))        AS cities,
+       count(DISTINCT city || '|' || state_code) AS cities,
        round(count(*)::numeric
-             / greatest(count(DISTINCT (city, state_code)), 1), 2)
+             / greatest(count(DISTINCT city || '|' || state_code), 1), 2)
                                                  AS mean_isps_per_city
 FROM demand_city;
 
