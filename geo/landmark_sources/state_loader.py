@@ -75,6 +75,72 @@ def fetch(url, timeout=300):
         return r.read()
 
 
+def _with_params(url, **params):
+    parts = urllib.parse.urlsplit(url)
+    q = dict(urllib.parse.parse_qsl(parts.query, keep_blank_values=True))
+    q.update({k: str(v) for k, v in params.items()})
+    return urllib.parse.urlunsplit(
+        (parts.scheme, parts.netloc, parts.path,
+         urllib.parse.urlencode(q), parts.fragment))
+
+
+def fetch_arcgis_all(url, page_size):
+    """Page an ArcGIS FeatureServer query to completion, or fail loudly.
+
+    AN ARCGIS QUERY SILENTLY RETURNS A PAGE, NOT A LAYER. Arizona's layer holds
+    5,559 schools and the unpaginated query returned exactly 2,000, which is the
+    server's maxRecordCount. Nothing in the response says "truncated" unless you
+    look for exceededTransferLimit, and the loader would have reported 1,697
+    usable rows and 256 ZIPs as though that were Arizona. It is 36 percent of
+    Arizona.
+
+    So the authoritative count is asked for FIRST, with returnCountOnly, and the
+    pages are then collected until that many features are in hand. Ending up
+    with fewer is fatal rather than quietly short, because a partial state load
+    is indistinguishable from a complete one once the rows are in the table.
+    """
+    total = None
+    try:
+        doc = json.loads(fetch(_with_params(
+            url, returnCountOnly="true", returnGeometry="false",
+            f="json")).decode("utf-8", errors="replace"))
+        total = doc.get("count")
+    except (ValueError, urllib.error.HTTPError, urllib.error.URLError,
+            OSError) as exc:
+        print(f"  WARNING: could not get an authoritative count ({exc}). "
+              f"Pagination will stop on the server's own signal, which is "
+              f"weaker evidence of completeness.")
+    if total is not None:
+        print(f"  layer count    {total:,} features, authoritative")
+
+    feats, offset, pages = [], 0, 0
+    while True:
+        page = json.loads(fetch(_with_params(
+            url, resultOffset=offset, resultRecordCount=page_size,
+            returnGeometry="false", f="json")).decode("utf-8", errors="replace"))
+        got = page.get("features") or []
+        feats.extend(got)
+        pages += 1
+        print(f"  page {pages:<3}      offset {offset:>7,}  +{len(got):,} "
+              f"features, {len(feats):,} so far")
+        if not got:
+            break
+        offset += len(got)
+        if total is not None and len(feats) >= total:
+            break
+        if total is None and not page.get("exceededTransferLimit"):
+            break
+        if pages > 200:
+            sys.exit("more than 200 pages; refusing to loop further")
+
+    if total is not None and len(feats) != total:
+        sys.exit(f"TRUNCATED: the layer reports {total:,} features and "
+                 f"pagination produced {len(feats):,}. Refusing to load a "
+                 f"partial state, because once the rows are in the table a "
+                 f"partial load is indistinguishable from a complete one.")
+    return json.dumps({"features": feats}).encode("utf-8")
+
+
 def rows_from_bytes(raw, cfg):
     """-> (headers, rows) using the probe's own readers.
 
@@ -241,6 +307,11 @@ def main():
                    help="for the CCD entry, load one state's rows only, by ST")
     p.add_argument("--list", action="store_true",
                    help="list the configured jurisdictions and exit")
+    p.add_argument("--all", action="store_true",
+                   help="run every jurisdiction that can be fetched without a "
+                        "local file, continuing past failures and printing a "
+                        "summary. The six needing --input are listed and "
+                        "skipped")
     p.add_argument("--dry-run", action="store_true",
                    help="parse, count and report the expected waste without "
                         "touching the database at all. Run this first: it "
@@ -259,6 +330,56 @@ def main():
                 continue
             how = "url" if v.get("url") else "needs --input"
             print(f"  {k:<6}{v['source']:<16}{how}")
+        return
+
+    if args.all:
+        # Each jurisdiction runs in its own process so that one failure cannot
+        # take the rest down, and so a partial run leaves a readable record of
+        # which states did load rather than an exception part way through.
+        import subprocess
+        fetchable = [k for k, v in cfgs.items()
+                     if not k.startswith("_") and v.get("url")]
+        needs_file = [k for k, v in cfgs.items()
+                      if not k.startswith("_") and not v.get("url")]
+        print(f"Running {len(fetchable)} fetchable jurisdictions: "
+              + " ".join(fetchable))
+        print(f"Skipping {len(needs_file)} that need a local file: "
+              + " ".join(needs_file))
+        print("Their notes in states.json record how to obtain each one.\n")
+        results = []
+        for k in fetchable:
+            cmd = [sys.executable, os.path.abspath(__file__),
+                   "--config", args.config, "--state", k]
+            if args.dry_run:
+                cmd.append("--dry-run")
+            if args.replace:
+                cmd.append("--replace")
+            if args.release:
+                cmd += ["--release", args.release]
+            r = subprocess.run(cmd, capture_output=True, text=True)
+            sys.stdout.write(r.stdout)
+            if r.returncode != 0:
+                sys.stdout.write(r.stderr)
+            usable = zips = "-"
+            for line in r.stdout.splitlines():
+                m = re.search(r"usable\s+([0-9,]+)\s*$", line)
+                if m:
+                    usable = m.group(1)
+                m = re.search(r"distinct 5-digit ZIPs\s+([0-9,]+)", line)
+                if m:
+                    zips = m.group(1)
+            results.append((k, "ok" if r.returncode == 0 else "FAILED",
+                            usable, zips))
+        print(f"\n{'=' * 72}")
+        print(f"SUMMARY, {'dry run' if args.dry_run else 'loaded'}")
+        print(f"{'=' * 72}")
+        print(f"{'ST':<6}{'result':<10}{'usable':>10}{'ZIPs':>9}")
+        for k, st, u, z in results:
+            print(f"{k:<6}{st:<10}{u:>10}{z:>9}")
+        bad = [k for k, st, _, _ in results if st != "ok"]
+        if bad:
+            print(f"\n{len(bad)} FAILED: " + " ".join(bad))
+        print(f"\nThe six needing a local file: " + " ".join(needs_file))
         return
 
     key = args.state if args.state in cfgs else args.state.upper()
@@ -280,7 +401,11 @@ def main():
     elif cfg.get("url"):
         print(f"  fetching       {cfg['url'][:96]}")
         try:
-            raw = fetch(cfg["url"])
+            page_size = (cfg.get("paginate") or {}).get("page_size")
+            if page_size:
+                raw = fetch_arcgis_all(cfg["url"], page_size)
+            else:
+                raw = fetch(cfg["url"])
         except (urllib.error.HTTPError, urllib.error.URLError, OSError) as exc:
             sys.exit(f"fetch failed: {exc}\nPass a local copy with --input.")
         print(f"  fetched        {len(raw):,} bytes")
