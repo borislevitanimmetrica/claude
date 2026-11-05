@@ -25,6 +25,35 @@ the yield on a sample and prints it. It writes nothing to landmarks_usa. Build
 the full path only if the numbers here justify it; the 6-new-ZIP result is what
 happens when that order is reversed.
 
+PRE-MEASURED 2026-11-03, AND THE ANSWER LOOKS LIKE NO
+-----------------------------------------------------
+This script needs the database. The same question was put to a corpus that does
+not: the 8,412 distinct website hosts of the USFA fire registry, a population of
+small municipal institutions much like the ones the method depends on. DNS only,
+every record resolved, no sampling.
+
+  NS under the organisation's own apex      166 of 8,252     2.0 pct
+  MX under the organisation's own apex      656 of 8,252     7.9 pct
+  publish no MX at all                    1,620
+
+Those are UPPER bounds, and resolving the records collapses them. Of 612 hosts
+with a self-apex MX that resolves, 301 point at THE SAME ADDRESS as the website,
+and the PTR parents of the rest are bluehost.com, eigbox.net, unifiedlayer.com,
+secureserver.net, hostmonster.com: the mail bundled with a shared hosting plan,
+which rule 2 rejects for the same reason it rejects the website. On the NS side
+the self-apex addresses resolve into mn.us, af.mil, usmc.mil and army.mil, which
+ARE on-premises networks but are the STATE's or the BASE's premises, so they are
+the nwresd.k12.or.us problem again and node_fanout.sql would discard them.
+
+Concentration, for the record: 4,050 of 8,252 apexes take mail at outlook.com or
+google.com before counting Barracuda, Proofpoint and Mimecast in front of them;
+1,778 delegate DNS to GoDaddy and 1,288 to Cloudflare.
+
+So the expected newly-qualifying rate is one to two per cent, not the eight that
+the apex test suggests. Run this script once against landmarks_usa to confirm
+the same shape on the real corpus, since it writes nothing and costs one sample,
+and then close the question. Full detail in mx_ns_premeasurement.md.
+
 WHAT IT MEASURES
 ----------------
 For each sampled landmark whose website address was rejected:
