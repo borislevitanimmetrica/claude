@@ -103,8 +103,15 @@ UA = ("Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) "
 # against the school's website. A file with two candidates per role is a
 # structural fact the loader config has to record, so the probe has to show it.
 ROLE_PATTERNS = [
-    ("zip",     [r"\bzips?\b", r"zip ?code", r"\bzip ?5\b", r"\bpostal",
-                 r"\bpostcode", r"\bzip"]),
+    # The last two entries exist for the federal CCD directory, which names its
+    # columns LZIP (location, i.e. physical) and MZIP (mailing). Neither has a
+    # word boundary before 'zip' and camel-case splitting does not help, so
+    # every bounded pattern missed both and the ZIP arrived only through the
+    # content scan, which ranked them by hit count and picked the MAILING one.
+    # ^lzip$ is tried first so the physical column wins by name; the bare 'zip'
+    # catch-all then covers mzip and any other fused spelling.
+    ("zip",     [r"\bzips?\b", r"zip ?code", r"\bzip ?5\b", r"^lzip$",
+                 r"\bpostal", r"\bpostcode", r"\bzip", r"zip"]),
     ("website", [r"web ?site", r"\bweb\b", r"web ?page", r"\burl\b", r"homepage",
                  r"web ?address", r"\bweb"]),
     # Specificity order matters more here than anywhere else, because a file
@@ -113,10 +120,21 @@ ROLE_PATTERNS = [
     # r"\bschool\b" came early; both have a perfectly good name column ('Name'
     # and 'SiteName'). So every qualified '<something> name' form is tried
     # before the bare word.
-    ("name",    [r"school ?name", r"sch ?name", r"name ?of ?institution",
-                 r"building ?name", r"facility ?name", r"site ?name",
-                 r"lea ?name", r"^name$", r"\borganization\b", r"\bschool\b",
-                 r"institution"]),
+    # r"lea ?name" sits AFTER r"\bschool\b" because the same header means
+    # opposite things in two states. Arkansas's school name column IS 'LEA Name'
+    # and that file contains no header with the word school in it at all.
+    # Washington's 'LEAName' is the DISTRICT, and its school name column is
+    # plainly 'School'. Trying the school word first resolves both: Washington
+    # finds School, and Arkansas falls through to LEA Name because it has no
+    # school candidate.
+    #
+    # r"\bname\b" is the last resort, for a file whose only name column is
+    # qualified by something we have never seen. Virginia's is 'LandmkName'.
+    ("name",    [r"school ?name", r"sch ?name", r"institution ?name",
+                 r"name ?of ?institution", r"building ?name",
+                 r"facility ?name", r"site ?name", r"^name$",
+                 r"\borganization\b", r"\bschool\b", r"lea ?name",
+                 r"institution", r"\bname\b"]),
     ("city",    [r"\bcity\b", r"\btown\b", r"locality", r"city\b"]),
     ("street",  [r"physical ?address", r"street ?address", r"\bstreet\b",
                  r"^address", r"\baddr\b", r"location ?address",
@@ -173,6 +191,23 @@ ROLE_PATTERNS = [
 # and the documented shape of an NCES LEA id. The pattern is kept narrow so it
 # cannot reach California's unrelated FederalDODistrictID, where 'federal' is
 # followed by 'do' rather than 'dist'.
+
+# A NAME COLUMN IS NEVER A CODE COLUMN.
+#
+# The loose r"\bschool\b" at the end of the name list is there for California,
+# whose column is simply 'School'. Everywhere else it fires on the first header
+# that happens to contain the word, and files are full of them. Measured picks
+# before this filter: Pennsylvania 'School Number', North Dakota 'SchoolLevel',
+# Michigan 'SchoolEmphasis', Kansas 'School Days Per Week', Nevada 'School
+# Year', Louisiana 'NcesSchoolIdCd'. Every one of those files has a real name
+# column.
+#
+# None of these words can appear in a column that holds a school's name, so a
+# candidate containing one is rejected for the name role only.
+NAME_REJECT = re.compile(
+    r"\b(number|code|codes|id|ids|identifier|type|types|level|levels|year|"
+    r"years|status|count|emphasis|days|week|flag|phone|fax|email|date|"
+    r"enrollment|grade|grades|category|emphasis)\b")
 
 CAPTCHA_HINTS = ("captcha", "are you a human", "incapsula", "radware",
                  "cloudflare", "access denied", "bot detection")
@@ -248,6 +283,12 @@ def classify_headers(headers):
         for pat in pats:
             hits = [h for h in headers
                     if norm_header(h) and re.search(pat, norm_header(h))]
+            if role == "name":
+                keep = [h for h in hits if not NAME_REJECT.search(norm_header(h))]
+                # If every candidate is a code column, keep them: reporting a
+                # wrong name is better than reporting none, because the operator
+                # can see it is wrong and the name decides nothing on its own.
+                hits = keep or hits
             if hits:
                 found[role] = hits
                 break
@@ -255,8 +296,17 @@ def classify_headers(headers):
 
 
 def is_mailing(header):
-    """True if the header names a mailing address rather than a physical one."""
-    return bool(re.search(r"\bmail", norm_header(header)))
+    """True if the header names a mailing address rather than a physical one.
+
+    The second pattern is for the federal CCD, which abbreviates the pair to
+    MZIP/MCITY/MSTREET against LZIP/LCITY/LSTREET. Nothing in 'mzip' says
+    mailing to a reader or to a word-boundary pattern, and on the territory
+    extracts that silence cost real accuracy: the mailing column gave the Virgin
+    Islands 2 distinct ZIPs where the physical column gives 5, and Guam 10 where
+    the physical gives 8.
+    """
+    h = norm_header(header)
+    return bool(re.search(r"\bmail", h) or re.match(r"^m(zip|city|street|state)", h))
 
 
 def prefer(cands, level):
@@ -364,6 +414,23 @@ def parse_delimited(text, delim):
         rows = [r for r in rows if r and any((c or "").strip() for c in r)]
         if not rows:
             tried[name] = (None, None, "no rows")
+            continue
+        # BANNER ROWS MUST GO BEFORE THE WIDTH IS MEASURED, or the comparison
+        # between dialects is decided by the banner instead of by the data.
+        #
+        # Ohio's OEDS extract begins with a single one-cell line reading
+        # 'Generated on 11/4/2026 5:44:59 PM'. Measuring width from that row
+        # made BOTH dialects score 5,323 misaligned, the tie went to QUOTE_NONE
+        # per the documented tie-break, and the commas inside ORG MAILING
+        # ADDRESS then shifted every column: the probe reported the ZIP living
+        # in the SUPERINTENDENT column and 2,035 usable rows against a true
+        # 2,522 over 509 ZIPs. New Jersey has the same three-banner-row shape.
+        #
+        # So each candidate parse is stripped of its own banner first and the
+        # raggedness is measured against the real header.
+        rows, _ = strip_banner_rows(rows)
+        if not rows:
+            tried[name] = (None, None, "nothing left after banner rows")
             continue
         width = len(rows[0])
         ragged = sum(1 for r in rows[1:] if len(r) != width)
@@ -663,7 +730,16 @@ def looks_like_hostname(value):
 
 
 def looks_like_zip(value):
-    return bool(re.search(r"\b\d{5}\b", (value or "")))
+    """A bounded 5-digit group, or a fused 9-digit ZIP+4 with no separator.
+
+    Puerto Rico writes 006120000 and Louisiana writes 705784611: a ZIP+4 run
+    together. There is no 5-digit group with a word boundary on both sides
+    inside a 9-digit run, so the bounded pattern matched neither, and the probe
+    honestly reported 18 of 859 Puerto Rico rows as carrying a ZIP. The left
+    five digits are the ZIP; see zip_of for the extraction.
+    """
+    v = value or ""
+    return bool(re.search(r"\b\d{5}\b", v) or re.search(r"\b\d{9}\b", v))
 
 
 def fetch(url, timeout):
@@ -772,6 +848,17 @@ def probe(state, raw, ctype, source, level="school", sheet=None):
         return None
 
     roles = classify_headers(list(headers))
+
+    # AN NCES ID COLUMN IS NOT A NAME COLUMN. Splitting camel case makes
+    # California's 'NCESSchool' read as 'nces school', which matches the bare
+    # school word and, being earlier in the file than the real 'School' column,
+    # won the name role. The two roles are decided independently, so the overlap
+    # has to be removed explicitly.
+    if roles.get("name") and roles.get("ncesid"):
+        trimmed = [h for h in roles["name"] if h not in set(roles["ncesid"])]
+        if trimmed:
+            roles["name"] = trimmed
+
     # Only the two roles that decide usability are winnowed by content. Doing it
     # to name or city would be pointless, since any non-empty string passes.
     if roles.get("zip"):
@@ -893,10 +980,15 @@ def probe(state, raw, ctype, source, level="school", sheet=None):
         # not a ZIP and is not even in the right range. Minnesota is entirely
         # this shape, and taking the first match there reported 793 distinct
         # ZIPs that were mostly house numbers.
-        hits = re.findall(r"\b(\d{5})\b", r.get(have_zip) or "")
-        if not hits:
-            return None
-        return hits[-1] if zip_from_content else hits[0]
+        v = r.get(have_zip) or ""
+        hits = re.findall(r"\b(\d{5})\b", v)
+        if hits:
+            return hits[-1] if zip_from_content else hits[0]
+        # A fused 9-digit ZIP+4: the ZIP is the LEFT five, never the right.
+        nine = re.findall(r"\b(\d{9})\b", v)
+        if nine:
+            return (nine[-1] if zip_from_content else nine[0])[:5]
+        return None
 
     def host_of(r):
         v = (r.get(have_web) or "").strip().strip('"').lower()
@@ -928,6 +1020,44 @@ def probe(state, raw, ctype, source, level="school", sheet=None):
     print(f"\n  rows with ZIP and website   {len(usable):>8,}")
     print(f"  distinct 5-digit ZIPs       {len(zips):>8,}")
     print(f"  distinct website hosts      {len(hosts):>8,}")
+
+    # A WEBSITE COLUMN CAN BE POPULATED AND STILL BE WORTHLESS.
+    #
+    # Virginia's landmark layer carries a URL on all 2,153 of its school rows,
+    # and every one of them is the same string: the state education
+    # department's own directory landing page. The probe called that USABLE
+    # with 512 ZIPs, which is a number that would have survived into a loader
+    # config and produced 512 ZIPs pointing at one web server in Richmond.
+    # Pennsylvania does a milder version, with 1,442 rows carrying its EdNA
+    # directory app as a placeholder.
+    #
+    # One host covering most of a state is never a real answer, so the share
+    # held by the most common host is printed and called out past half. The
+    # threshold is a reporting trigger, not a rejection: the operator decides.
+    host_rows = {}
+    for r in usable:
+        host_rows[host_of(r)] = host_rows.get(host_of(r), 0) + 1
+    if host_rows:
+        top = sorted(host_rows.items(), key=lambda kv: -kv[1])
+        share = 100.0 * top[0][1] / len(usable)
+        if share >= 50.0 or len(hosts) == 1:
+            print(f"\n  SUSPECT WEBSITE COLUMN. The single most common host "
+                  f"covers {share:.1f}% of the")
+            print(f"  usable rows, which no genuine per-school website column "
+                  f"does. This is the")
+            print(f"  shape of a placeholder, usually the state's own directory "
+                  f"page:")
+            for h, n in top[:3]:
+                print(f"    {h[:52]:<54}{n:>8,} rows")
+            print(f"  Treat the ZIP count above as unearned until the column is "
+                  f"checked by eye.")
+        else:
+            print(f"\n  most common hosts, as a district-reuse check:")
+            for h, n in top[:5]:
+                print(f"    {h[:52]:<54}{n:>8,} rows")
+            single = sum(1 for n in host_rows.values() if n == 1)
+            print(f"    hosts serving exactly one row             "
+                  f"{single:>8,} of {len(hosts):,}")
 
     # THE STATUS VOCABULARY, WHICH DIFFERS IN EVERY STATE.
     #
