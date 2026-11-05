@@ -20,6 +20,7 @@ Measured, from the loads below:
 
 | source | rows | distinct hosts | pct unique | distinct ZIPs |
 |---|---|---|---|---|
+| **USFA fire registry (national)** | 8,685 | 8,408 | **99.2%** | **7,418** |
 | NCES IPEDS (national) | 6,075 | 5,411 | **89.1%** | 4,241 |
 | OSM (Rhode Island only) | 1,958 | 1,908 | **97.4%** | 76 |
 
@@ -30,6 +31,8 @@ single-domain feed or a parsing bug.
 
 | source | ZIP | website | access | verdict |
 |---|---|---|---|---|
+| **USFA fire registry** | `HQ zip`, on every row | `Website` | **open** — no key | **best host quality, 99.2% unique.** Reaches 2,277 ZIPs no school reaches. Added 2026-11-03 |
+| **NCES CCD** | `LZIP` | `WEBSITE` | **open** — direct zip | **largest.** 67,417 open schools, 16,768 ZIPs. The earlier "CCD has no website" finding was wrong |
 | **OpenStreetMap** | `addr:postcode` | `website` | **open** — Overpass or Geofabrik | **best volume.** MA 15,132, TX 52,269 features with both tags |
 | **NCES IPEDS** | `ZIP` | `WEBADDR` | **open** — direct zip, HTTP 200 | **best quality.** ~6,000 colleges, own domains, campuses self-host |
 | **Wikidata** | inside `P6375` | `P856` | **open** — SPARQL | useful; ZIP is in the address text, which the chain already parses |
@@ -74,16 +77,32 @@ unchanged. Two columns are synthesised at load:
 
 ## Run order
 
+Measure before loading. `usfa-fire` has a `--dry-run` that opens no database
+connection at all, so a connection problem can never be mistaken for a parsing
+one.
+
+```
+python3 lm_fetch.py usfa-fire --dry-run
+```
+
+Then the load, in this order. Every comment is on its own line, because a
+comment sitting after a command on the same line does not survive the paste
+path.
+
 ```
 psql -v ON_ERROR_STOP=1 -f create_table_lm_places_usa.sql
-
-python3 lm_fetch.py nces-ipeds --year 2023        # ~6,000 colleges, 1 minute
-python3 lm_fetch.py osm-overpass --states MA      # start with one state
+python3 lm_fetch.py usfa-fire
+python3 lm_fetch.py nces-ipeds --year 2023
+python3 lm_fetch.py osm-overpass --states MA
 python3 lm_fetch.py wikidata --limit 50000
 python3 lm_fetch.py status
-
 psql -v ON_ERROR_STOP=1 -f lm_crosswalk.sql
 ```
+
+- `usfa-fire` is roughly 8,685 fire departments in 7,418 ZIPs, under a minute.
+- `nces-ipeds` is roughly 6,000 colleges, about a minute.
+- `osm-overpass --states MA` starts with one state; see the PBF note below for
+  a national pass.
 
 Then the shared chain, no source-specific code:
 
@@ -103,17 +122,16 @@ states failed. For those, and for a national pass, use a Geofabrik extract.
 Sizes confirmed: `us-latest.osm.pbf` is **11.39 GB**, California 1.24 GB,
 Massachusetts 0.29 GB.
 
+Install `osmium-tool` with whichever package manager this host uses, `dnf
+install -y osmium-tool` or `apt install osmium-tool`. Then, one command per
+line, no line continuations and no trailing comments, so the whole block
+survives a paste:
+
 ```
-dnf install -y osmium-tool      # or: apt install osmium-tool
-
+sudo -v
 curl -L -O https://download.geofabrik.de/north-america/us-latest.osm.pbf
-
-osmium tags-filter us-latest.osm.pbf -o filtered.osm.pbf \
-    nwr/website nwr/contact:website
-
-osmium export filtered.osm.pbf -f geojsonseq --add-unique-id=type_id \
-    -o filtered.geojsonseq
-
+osmium tags-filter us-latest.osm.pbf -o filtered.osm.pbf nwr/website nwr/contact:website
+osmium export filtered.osm.pbf -f geojsonseq --add-unique-id=type_id -o filtered.geojsonseq
 python3 lm_fetch.py osm-pbf --input filtered.geojsonseq
 ```
 
@@ -182,5 +200,12 @@ adding a second, different one at load time.
 
 - OpenStreetMap — © OpenStreetMap contributors, ODbL 1.0
 - Wikidata — CC0 1.0
-- NCES IPEDS — US Department of Education, public domain
+- NCES IPEDS, CCD and PSS — US Department of Education, public domain
+- USFA National Fire Department Registry — US Fire Administration / FEMA, public
+  domain
+- CISA `.gov` registry — Cybersecurity and Infrastructure Security Agency,
+  public domain
 - NPS — US National Park Service, public domain
+
+See `map_poi_source_research.md` for the consumer map platforms (Google, Apple,
+Waze, Wikimapia, HERE, MapQuest, Yelp, Esri) and why none of them can be used.
