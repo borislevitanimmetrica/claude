@@ -458,9 +458,18 @@ def dedupe_headers(raw_headers):
     Blank headers become col_<n> and repeats get a __<n> suffix, so the column
     count out always equals the column count in.
     """
+    # Surrounding quotes and whitespace are stripped from the header text.
+    # West Virginia's header line is
+    #     "district_id", "location_id", "type",county,name,...
+    # with a SPACE before the second and third opening quotes, so the quoted
+    # dialect cannot treat those fields as quoted and the parsed key comes out
+    # as the five characters ' "type"'. Georgia is the same shape. A config or
+    # a filter naming the column 'type' then matches nothing, which on Georgia
+    # would silently load eight stacked school years and on West Virginia
+    # silently keep the 65 county board-of-education offices among the schools.
     out, seen = [], {}
     for i, h in enumerate(raw_headers, start=1):
-        name = (h or "").strip() or f"col_{i}"
+        name = (h or "").strip().strip('"').strip("'").strip() or f"col_{i}"
         if name in seen:
             seen[name] += 1
             name = f"{name}__{seen[name]}"

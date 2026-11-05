@@ -1,0 +1,276 @@
+{
+  "_README": [
+    "Per-jurisdiction loader config for lm_fetch.py state-file.",
+    "",
+    "Every column name, status value and filter here was MEASURED by",
+    "probe_state_files.py on the bytes actually fetched. Nothing is from",
+    "documentation. geo/landmark_sources/state_file_survey.md records the",
+    "measurement behind each entry.",
+    "",
+    "Fields:",
+    "  source        the lm_places_usa source tag. Keep it stable: the chain,",
+    "                node_fanout and the hosting rule all group by it.",
+    "  url           direct download. Absent means the file cannot be fetched",
+    "                from a datacentre address and --input is required.",
+    "  member        for a zip, the member to read.",
+    "  sheet         for an xlsx, the sheet to read. Absent means the sheet",
+    "                with the most rows, which is right everywhere measured.",
+    "  columns       explicit overrides. The probe's role detection is used for",
+    "                anything not named here, so only the columns where naming",
+    "                is ambiguous or wrong need listing.",
+    "  zip_mode      five      a bounded 5-digit group (default)",
+    "                last      the LAST 5-digit group, for a free-text address",
+    "                          where the first group is the house number",
+    "                left5     the first five characters, for a fused 9-digit",
+    "                          ZIP+4 with no separator",
+    "  status_operating  values of the status column that mean in operation.",
+    "                Absent means no status column exists and closed schools",
+    "                cannot be excluded from this file.",
+    "  row_filter    list of {column, in|not_in|equals} applied before anything",
+    "                is counted. This is where multi-year and mixed-level files",
+    "                are reduced to one population.",
+    "  skip_hosts    hosts that are sentinels rather than real sites.",
+    "  notes         why this entry looks the way it does."
+  ],
+
+  "CCD": {
+    "source": "ccd",
+    "url": "https://nces.ed.gov/ccd/Data/zip/ccd_sch_029_2324_w_1a_073124.zip",
+    "member": "ccd_sch_029_2324_w_1a_073124.csv",
+    "columns": {
+      "name": "SCH_NAME", "zip": "LZIP", "website": "WEBSITE",
+      "city": "LCITY", "street": "LSTREET1", "region": "ST",
+      "id": "NCESSCH", "status": "SY_STATUS_TEXT", "district": "LEA_NAME"
+    },
+    "status_operating": ["Open", "Reopened"],
+    "notes": "The national spine, 43 states in one download. LZIP is the physical ZIP; MZIP is the mailing one and gives the wrong answer. Measured: 99,596 open schools, 67,363 with website and physical ZIP, 16,752 distinct ZIPs, 21,921 of 30,403 hosts serving exactly one school. Carries NCESSCH so it key-joins to state files with no name matching. WEBSITE is empty for GU HI ID IN KY LA NE PR RI SC WV, which is why the state entries below exist."
+  },
+
+  "AL": {
+    "source": "al_alsde",
+    "columns": {"name": "School Name", "website": "Website", "status": "Status"},
+    "zip_mode": "five",
+    "status_operating": ["Open"],
+    "skip_hosts": ["www.nonesupplied.com"],
+    "row_filter": [{"column": "Site Type", "in": ["Public Regular School"]}],
+    "notes": "No url: the DevExpress grid exports only through an ASP.NET postback. POST to https://eddir.alsde.edu/siteinfo/ with the session cookies and all 73 harvested form fields, __EVENTTARGET=ctl00$MainContent$pcResults$gridSiteInfo and __EVENTARGUMENT=6|EXPORT3|Csv, which is the length-prefixed form DevExpress SerializeCallbackArgs emits. The earlier HTTP 411 was a missing Content-Length header. The ZIP sits under a two-level header so its own header cell is blank and the probe finds it by content as col_13. www.nonesupplied.com on 135 rows is a sentinel."
+  },
+
+  "AZ": {
+    "source": "az_azgeo",
+    "url": "https://services1.arcgis.com/MdyCMZnX1raZ7TS3/arcgis/rest/services/Schools_gdb/FeatureServer/0/query?where=1%3D1&outFields=*&returnGeometry=false&f=json",
+    "columns": {"name": "SchoolName", "zip": "ZIP5", "website": "Website",
+                "city": "PCity", "street": "PAddress", "status": "Status"},
+    "status_operating": ["Open"],
+    "notes": "ZIP5 is the clean 5-digit ZIP; ZIP4 is the add-on and is named so similarly that only content winnowing separates them. Paginated: add resultOffset and resultRecordCount=2000."
+  },
+
+  "FL": {
+    "source": "fl_msid",
+    "columns": {"name": "SCHOOL_NAME_LONG", "zip": "PHYSICAL_ZIP",
+                "website": "WEB_ADDRESS", "city": "PHYSICAL_CITY",
+                "street": "PHYSICAL_ADDRESS", "status": "ACTIVITY_CODE",
+                "district": "DISTRICT_NAME"},
+    "status_operating": ["A"],
+    "notes": "Two curl calls, documented in state_public_schools/readme.md: the first establishes the ColdFusion session, the second POSTs an explicit empty body because the endpoint answers a bodyless POST with 411. Served as filename=MSID_all_schools.xls with content-type application/msexcel and the bytes are tab-delimited text. ACTIVITY_CODE A means active, corroborated against DATE_CLOSED: 3,706 of 3,707 A rows have no closed date, and 707 of 710 C rows do. Use PHYSICAL_ZIP, not MAILING_ZIP."
+  },
+
+  "GA": {
+    "source": "ga_gosa",
+    "url": "https://download.gosa.ga.gov/SchoolGrades/2025SchoolGrades_data_20260811.zip",
+    "member": "schoolgrades_overview.csv",
+    "columns": {"name": "SCHOOLNAME", "zip": "ZIP_CODE", "website": "WEBSITE",
+                "city": "CITY", "street": "STREET"},
+    "row_filter": [{"column": "YEAR", "equals": "2025"},
+                   {"column": "Level", "in": ["SCHOOL"]}],
+    "notes": "Eight school years stacked and three levels in one Level column, so the raw 19,920 rows are not 19,920 schools. Unfiltered it reports 19,681 usable; filtered to the latest year at school level it is about 2,271. The WEBSITE value is the DISTRICT site, not the school's: three Appling County schools all carry appling.k12.ga.us, so most rows will be rejected by node_fanout and that is correct."
+  },
+
+  "HI": {
+    "source": "hi_doe",
+    "url": "https://opendata.arcgis.com/api/v3/datasets/ba92e2fc0d2d4497af7289cb4ab552a7_7/downloads/data?format=csv&spatialRefId=4326&where=1%3D1",
+    "columns": {"name": "sch_name", "zip": "zip", "website": "website",
+                "city": "city", "street": "address", "district": "district"},
+    "notes": "CCD has no website for Hawaii, so this file is the only source. The best host-to-school ratio measured anywhere: 271 hosts for 286 schools, meaning Hawaii schools publish on their own hostnames rather than the state's. No status column, so closed schools cannot be excluded here."
+  },
+
+  "IA": {
+    "source": "ia_educate",
+    "url": "https://educate.iowa.gov/media/13350/download?inline",
+    "columns": {"name": "School Name", "zip": "Physical ZIP",
+                "website": "Website", "city": "Physical City",
+                "street": "Physical Street", "district": "District Name"},
+    "notes": "Recorded in an earlier pass as having no website column anywhere. That was wrong: the file carries a Website column and 538 www values, giving 1,085 usable rows over 410 ZIPs. Five leading banner rows precede the header. Physical ZIP beats Mailing ZIP."
+  },
+
+  "IL": {
+    "source": "il_isbe",
+    "url": "https://www.isbe.net/_layouts/Download.aspx?SourceUrl=/Documents/2025-26-Directory-Ed-Entities.xlsx",
+    "sheet": "1 Public Dist & Sch",
+    "columns": {"name": "FacilityName", "zip": "Zip", "website": "Website",
+                "city": "City", "street": "Delivery Address", "id": "NCES ID"},
+    "row_filter": [{"column": "RecType", "not_in": ["Dist"]}],
+    "notes": "District and school rows share one sheet, separated by RecType, so filter it rather than trust the row count. Zip is ZIP+4 written with a SPACE not a hyphen, as in 62360 1041, which the bounded 5-digit pattern handles. Delivery Address is physical; Mailing Address is separate."
+  },
+
+  "IN": {
+    "source": "in_idoe",
+    "url": "https://www.in.gov/doe/it/data-center-and-reports/Data-Files/2026-2027-school-directory-2026-10-22.xlsx",
+    "sheet": "SCHL",
+    "columns": {"name": "SCHOOL_NAME", "zip": "ZIP",
+                "website": "SCHOOL_HOMEPAGE", "city": "CITY",
+                "street": "ADDRESS", "id": "NCES_ID",
+                "district": "CORPORATION_NAME"},
+    "notes": "CCD has no website for Indiana, so this file is the only source and it is the largest such gap at 498 ZIPs. District and school levels are in SEPARATE sheets, so the district-ZIP-against-school-website hazard does not arise. No status column."
+  },
+
+  "KS": {
+    "source": "ks_ksde",
+    "columns": {"name": "Building Name", "zip": "Physical Zip",
+                "website": "Web Address", "city": "Physical City",
+                "street": "Physical Address", "id": "NCES ID"},
+    "row_filter": [{"column": "Building Level Description", "not_in": ["Central Office"]},
+                   {"column": "Organization Type Description", "in": ["Public School Districts"]}],
+    "notes": "No url: an ASP.NET postback to https://uapps.ksde.gov/Directory_Rpts/default.aspx with district D0000, radio RadioUSD13 and format Excel, and it exports LEGACY OLE2 .xls which probe_state_files refuses by design rather than parse badly. Convert the sheet to TSV first. Not schools-only and not buildings-only: filter out Central Office and the private, co-op and community-college organization types. 45 percent of districts reuse one host, so expect heavy fan-out rejection."
+  },
+
+  "MN": {
+    "source": "mn_mde",
+    "url": "https://opendata.arcgis.com/api/v3/datasets/bf00237f2b994881ba7d950f1ad4b177_0/downloads/data?format=csv&spatialRefId=4326&where=1%3D1",
+    "columns": {"name": "mdename", "zip": "mdeaddr", "website": "web_url",
+                "district": "locdistname"},
+    "zip_mode": "last",
+    "row_filter": [{"column": "pubpriv", "in": ["Public"]}],
+    "notes": "No ZIP column at all: every ZIP sits inside the free-text mdeaddr, as in 19455 Kenwood Tr, Lakeville, MN 55044. zip_mode last is mandatory. Taking the FIRST 5-digit group gives the house number and produced 848 distinct ZIPs of which only 557 were inside Minnesota's real 55000-56999 range, against 581 of which 580 are. 588 private rows excluded by pubpriv."
+  },
+
+  "NC": {
+    "source": "nc_dpi",
+    "url": "https://services.gis.nc.gov/secure/rest/services/NC1Map_Education/FeatureServer/3/query?where=1%3D1&outFields=*&returnGeometry=false&f=json",
+    "columns": {"name": "school_nam", "zip": "phys_zip",
+                "website": "url_addres", "city": "phys_city",
+                "street": "street_lon", "district": "lea_school"},
+    "notes": "DPI's own republication of EDDIE, which itself returns 403 to this network. Genuinely per-school: 843 of 947 hosts serve exactly one school. Field names are truncated to 10 characters by the shapefile heritage. No status column the probe recognises, though accr_stat exists."
+  },
+
+  "ND": {
+    "source": "nd_insights",
+    "columns": {"name": "InstitutionName", "zip": "ZipCode",
+                "website": "Website", "city": "City", "street": "Street",
+                "district": "DistrictName"},
+    "notes": "No url: an ASP.NET postback to https://insights.nd.gov/Data whose __VIEWSTATE is about 518 KB and will not fit on a command line, so post it from a script. 454 of the 504 website values match a host that also appears in the district file, so treat North Dakota as roughly 50 real per-school sites rather than 504. The data dictionary describes ZipCode as the MAILING ZIP."
+  },
+
+  "NV": {
+    "source": "nv_nde",
+    "url": "https://webapp-strapi-paas-prod-nde-001.azurewebsites.net/uploads/school_directory_9b69a05740.xlsx",
+    "sheet": "NDE Public School List SY26-27",
+    "columns": {"name": "Name", "zip": "Physical Zip", "website": "URL",
+                "city": "Physical City", "street": "Physical Address",
+                "status": "Operational Status", "id": "NCES School ID",
+                "district": "District Name"},
+    "status_operating": ["Open"],
+    "notes": "Read Physical Zip, not Zip. Operational Status, not Charter Status: both match a loose status pattern and file order handed back the charter flag, which says nothing about whether the school is open. Only 361 of 782 rows carry a URL, and Clark County is largely blank."
+  },
+
+  "OH": {
+    "source": "oh_oeds",
+    "columns": {"name": "ORGANIZATION NAME", "zip": "ORG MAILING ADDRESS",
+                "website": "WEB URL", "status": "STATUS"},
+    "zip_mode": "last",
+    "status_operating": ["Open"],
+    "notes": "No url: POST to https://oeds.education.ohio.gov/DataExtract/GetRequestOrgExtract with one urlencoded jsonData field selecting OrgTypes 7,6,60,45,46,48 and OrgCats 2 and including Web URL among Selected. No ZIP column: it is inside ORG MAILING ADDRESS, free text, so zip_mode last. Ohio's own geocoded layer at https://maps.ohio.gov/arcgis/rest/services/Hosted/schools2526_Geocoded/FeatureServer/0 carries a physical postal code and joins on IRN with 4,170 overlapping, if a physical ZIP is wanted later."
+  },
+
+  "PA": {
+    "source": "pa_edna",
+    "url": "https://data.pa.gov/api/views/knsp-q7fv/rows.csv?accessType=DOWNLOAD",
+    "columns": {"name": "Institution Name", "zip": "Zip Code",
+                "website": "WebAddress", "city": "City", "street": "Address"},
+    "skip_hosts": ["www.edna.pa.gov"],
+    "notes": "The dataset is Education AND Library, so only about 3,109 of 5,830 rows are schools: filter on a non-zero School Number. 1,442 rows carry www.edna.pa.gov, PDE's own directory app, as a placeholder. The website is the DISTRICT site repeated per school at roughly 3.6 schools per host with no per-school path, so expect most of the 1,047 ZIPs to be rejected by fan-out."
+  },
+
+  "RI": {
+    "source": "ri_ride",
+    "columns": {"name": "school_name", "zip": "zipcode", "website": "website",
+                "city": "city", "street": "street", "status": "status",
+                "id": "nces_code", "district": "lea_name"},
+    "status_operating": ["Active"],
+    "row_filter": [{"column": "school_type", "in": ["Public School"]}],
+    "notes": "ASSEMBLED, NOT DOWNLOADED. RIDE publishes no file carrying both: the RIGIS layer has no website in any of its 19 columns and the directory listing has no address. The website and physical ZIP exist only on the per-school pages at https://datacenter.ride.ri.gov/Directory/SchoolDetail?orgid=N, and all 1,203 were fetched. Restricting to Active public schools gives 432 rows, 295 with both, 55 ZIPs. Treat its provenance as weaker than a state download."
+  },
+
+  "SC": {
+    "source": "sc_scde",
+    "url": "https://services5.arcgis.com/tMDU4iABlmKqkZWJ/arcgis/rest/services/SC_SchoolDirectory_view/FeatureServer/18/query?where=1%3D1&outFields=*&returnGeometry=false&f=json",
+    "columns": {"name": "SchoolName", "zip": "Address", "website": "chWebUrl",
+                "city": "city", "street": "Address",
+                "district": "District_Name"},
+    "zip_mode": "last",
+    "notes": "CCD has no website for South Carolina. The department's own directory page and its Excel export carry only school, district, city and phone; this layer behind its ArcGIS map carries both. No ZIP column: Address is the full one-line address, so zip_mode last. 1,446 rows hold only 1,308 distinct SIDs because a multi-level school repeats per School_Type, so dedupe on SID. The URL is a per-school PAGE on the district HOST."
+  },
+
+  "TN": {
+    "source": "tn_tnsd",
+    "columns": {"name": "name", "zip": "address1_postalcode",
+                "website": "websiteurl", "city": "address1_city",
+                "street": "address1_line1", "status": "statuscode",
+                "id": "sde_ncesnumber", "district": "sde_schooldistrictname"},
+    "status_operating": ["1"],
+    "notes": "No url field here because the query is long: GET https://tnschooldirectory.tnedu.gov/_api/accounts with a fetchXml selecting customertypecode 100000001 for School, statecode 0, and explicitly requesting websiteurl, which the portal's own query omits but which is readable. Six pages of 500. statuscode 1 is Active. Genuinely per-school: 1,193 hosts over 1,685 active public schools. 727 nonpublic rows are separable by a 9xxx district number."
+  },
+
+  "TX": {
+    "source": "tx_askted",
+    "url": "https://data.texas.gov/api/views/hzek-udky/rows.csv?accessType=DOWNLOAD",
+    "columns": {"name": "School Name", "zip": "School Zip",
+                "website": "School Web Page Address", "city": "School City",
+                "street": "School Street Address", "status": "School Status",
+                "id": "NCES School ID", "district": "District Name"},
+    "status_operating": ["Active"],
+    "notes": "Carries BOTH district and school columns in every row, so the school-scoped ones must be named explicitly: taking one column per role would read the district ZIP against the school website. Measured at school level: 7,325 rows with both, 1,392 ZIPs. Needed no manual download, which is what proved the portal survey was worth doing before asking for files."
+  },
+
+  "UT": {
+    "source": "ut_sgid",
+    "url": "https://opendata.arcgis.com/api/v3/datasets/333206ff129346e3b8660e8f6f48540e_0/downloads/data?format=csv&spatialRefId=4326&where=1%3D1",
+    "columns": {"name": "SchoolName", "zip": "ZipCode", "website": "Website",
+                "city": "City", "street": "Address", "district": "LEAName"},
+    "row_filter": [{"column": "PrivateSchool", "not_in": ["Y"]}],
+    "notes": "One row per SchoolID, no year stacking. The probe finds no status column, but DateClosed works as one: it holds the sentinel 9999/06/30 on 1,239 of 1,241 rows and a real date on 2. 177 private rows excluded. Per-school subdomains are common, as in shs.alpineschools.org."
+  },
+
+  "WI": {
+    "source": "wi_dpi",
+    "url": "https://opendata.arcgis.com/api/v3/datasets/d383fe81275e46f2a5a5c4f1a0c2eb85_20/downloads/data?format=csv&spatialRefId=4326&where=1%3D1",
+    "columns": {"name": "SCHOOL", "zip": "ZIP_CODE", "website": "SCHOOL_URL",
+                "city": "CITY", "street": "PHYS_ADDR", "id": "NCES_SCH",
+                "district": "DISTRICT"},
+    "notes": "Largely the district's site repeated: of 614 hosts over 2,188 rows with both fields, only 230 serve exactly one school, and www.milwaukee.k12.wi.us alone carries 146. The realistic yield is nearer 230 than 2,178. No level mixing and no stacked years."
+  },
+
+  "WV": {
+    "source": "wv_wveis",
+    "url": "https://wveis.k12.wv.us/school-directory/download.php?dl",
+    "columns": {"name": "name", "zip": "zip", "website": "url",
+                "city": "city", "street": "address", "district": "district_id"},
+    "row_filter": [{"column": "type", "not_in": ["BOE"]}],
+    "notes": "CCD has no website for West Virginia. The ?dl form returns the CSV; without it an HTML interstitial comes back. The file mixes county board-of-education offices with schools under type, so BOE is filtered out. The best per-school ratio of its batch: 375 of 400 hosts serve exactly one school."
+  },
+
+  "_EXCLUDED": {
+    "VA": "va.csv carries ONE VDOE directory URL on all 2,153 rows. Populated and worthless. Use CCD, which gives 295 ZIPs for Virginia.",
+    "NJ": "The school file's only URL columns are FB URL, Instagram URL and X URL. Use CCD, which gives 525 ZIPs.",
+    "OR": "22,115 institutions and no website column; the one url-shaped hit is a school whose NAME contains a domain. The Oregon School Directory is a PDF with district URLs only. Use CCD, 308 ZIPs.",
+    "PR": "855 open schools, 130 ZIPs, and no per-school website in four independent files, three territorial and one federal. A 8-school search sample recovered ZERO school-owned hostnames. Do not spend search budget here.",
+    "GU": "45 schools and 8 ZIPs. GDOE's own directory pages return an empty template and CCD is blank. A search sample found 6 of 8 with some presence but at least 3 on Weebly or Wix, so the on-premises ceiling is about 3 hosts across 8 ZIPs.",
+    "AS": "29 schools, all in ZIP 96799, so at most one ZIP mapping exists no matter what.",
+    "MP": "35 schools, 3 ZIPs, one district URL repeated on every row.",
+    "VI": "20 schools, 5 physical ZIPs. vide.vi publishes 23 per-school subdomains but they sit on one platform and may resolve to one address.",
+    "NH": "Every nh.gov host returns HTTP 403 from Akamai to this network. CCD covers it with 196 ZIPs.",
+    "WY": "fusion.edu.wyoming.gov presents a certificate for *.stage2.wyo.gov. The portal renders results in client-side script and the only file is a PDF whose footers read 2017-2018. CCD covers it with 98 ZIPs.",
+    "CA": "Radware blocks this network. Boris already holds pubschls.txt and ca_cde is loaded. Use the existing ca-cde subcommand.",
+    "no_website_anywhere": "AK CO CT DE ID KY LA MA MD ME MI MO MS MT NE SD VT WA publish no URL in their own file. CCD covers all of them except ID KY LA NE, which have no website in either source."
+  }
+}
