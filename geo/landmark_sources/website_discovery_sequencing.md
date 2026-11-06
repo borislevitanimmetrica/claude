@@ -127,15 +127,49 @@ that do not have their own, and spend the effort where the measured rate is
 high.
 
 **Chase the organisations that run their own network, not the ones that run
-their own building.** `nces_ipeds` at 5.40 per cent is the shape to look for:
-an institution large enough to hold an IP allocation in its own name at its own
-address. Hospitals, health systems, large manufacturers, utilities, research
-institutes and corporate campuses are that shape. Small municipal bodies are
-not, however many of them there are.
+their own building.** That criterion is now measured rather than argued.
+`category_yield.sql` ran on 2026-11-03 against the 1,037,757 OSM rows that
+carry a category, across 2,452 distinct categories. The institution categories,
+ranked by ZIPs actually delivered:
 
-`category_yield.sql` reads the per-category rate straight out of the 1,139,855
-OSM rows already enriched, so the next source can be chosen from measurement
-instead of from this reasoning.
+| category | rows | onpremises | rate | **ZIPs delivered** |
+|---|---|---|---|---|
+| **library** | 14,264 | 674 | 4.73% | **333** |
+| school | 46,668 | 498 | 1.07% | 155 |
+| university | 2,217 | 258 | **11.64%** | 131 |
+| place_of_worship | 47,280 | 238 | 0.50% | 123 |
+| government | 6,571 | 282 | 4.29% | 114 |
+| museum | 8,232 | 180 | 2.19% | 99 |
+| hospital | 12,222 | 177 | 1.45% | 84 |
+| college | 2,496 | 131 | 5.25% | 64 |
+| police | 2,519 | 126 | 5.00% | 64 |
+| fire_station | 5,208 | 146 | 2.80% | 62 |
+| telecommunication | 595 | 74 | **12.44%** | 47 |
+| courthouse | 1,003 | 40 | 3.99% | 21 |
+| research | 460 | 33 | 7.17% | 20 |
+| prison | 1,487 | 39 | 2.62% | 18 |
+| townhall | 2,665 | 52 | 1.95% | 28 |
+
+`telecommunication` at 12.44 per cent and `university` at 11.64 per cent confirm
+the criterion exactly: both are organisations whose business IS the network.
+`place_of_worship` at 0.50 per cent across 47,280 rows confirms the converse.
+
+**Libraries are the headline and they contradict an existing rejection.** 333
+ZIPs delivered is more than any other category, at a 4.73 per cent rate, and
+`readme.md` rejected the IMLS Public Libraries Survey because it carries no URL
+column. That rejection is correct about IMLS and wrong as a conclusion about
+libraries: the category is the best institutional performer measured, and IMLS
+has an authoritative ZIP for every outlet. The missing half is the website.
+
+LibDex is a verified-accessible lead for that half. `libdex.com` answered HTTP
+200, its `robots.txt` disallows only `/admin`, `/search`, `/api/`,
+`/edit_library/` and `/report`, so the listing pages are permitted, and it
+publishes a sitemap. Minnesota alone lists **856 libraries**, organised
+country then state then town. Two caveats before anyone builds it: the listing
+pages are town-level with no ZIP, so it would need a name-and-town join to IMLS
+to get one, and a town-level crawl is thousands of pages. Both are tractable and
+neither is free. I have NOT verified that the town pages carry a website per
+library; that is the next check.
 
 ## Police stations specifically
 
@@ -165,12 +199,29 @@ what they delivered. Run that before considering a police source: if OSM's
 police stations already deliver poorly, a registry that lacks websites
 altogether will not do better.
 
-My expectation, and I am flagging it as an expectation rather than a
-measurement: a city police department publishes the city's website, which is the
-`dotgov` case at 0.36 per cent. The exception in the type breakdown is
-**University or College police, 146 of 2,285**, which sit on campus networks and
-should behave like `nces_ipeds` at 5.40 per cent. That is a small, high-rate
-subset, and `category_yield.sql` will show whether it is real.
+### My prediction about police was wrong, and the measurement says so
+
+I expected a city police department to publish the city's website and therefore
+to behave like `dotgov` at 0.36 per cent. Measured, from `category_yield.sql`
+on 2026-11-03:
+
+| | rows | resolved | have_zip | onpremises | ZIPs | rate |
+|---|---|---|---|---|---|---|
+| `category = 'police'` | 2,519 | 2,301 | 2,231 | **126** | 64 | **5.00%** |
+
+**Five per cent, which is `nces_ipeds` territory, not `dotgov` territory.** I
+was wrong by a factor of fourteen. Of the 2,519, only 58 were rejected as
+hosting; the rest failed on the ZIP rules.
+
+Police stations are therefore a good category, and the reason is visible in the
+agency type breakdown rather than in my reasoning: a police department runs a
+dispatch and records network that cannot be outsourced to Squarespace. It is an
+institution with its own network, which is the criterion that actually predicts
+yield.
+
+What does NOT follow is that a police registry is worth building. The 2,519 OSM
+rows already deliver those 64 ZIPs, and the FBI file has no website to add to
+them. The route to more police stations is more OSM coverage, not a new source.
 
 ## Correction to something I told you
 
@@ -184,14 +235,18 @@ ZIPs **delivered**. The ratio between those two is brutal and measured:
 | nces_ipeds | 4,241 | 312 | 7.4% |
 | osm | 25,626 | 2,755 | 10.8% |
 
-On the `ca_cde` ratio the fire registry's 7,418 source ZIPs become about **140
-delivered**; on the OSM ratio about 800. It has one real structural advantage
-over `ca_cde` — 99.2 per cent unique hosts against 72.0, because fire
-departments do not share a district website the way schools do — so I would
-expect better than 1.9 per cent. I cannot say how much better, and the OSM
-`fire_station` category in `category_yield.sql` section 3 is the measurement
-that answers it from your own data rather than from my analogy.
+That guess is now superseded by a direct measurement. OSM's `fire_station`
+category went through the same chain: **5,208 rows, 4,773 resolved, 146
+on-premises, 2.80 per cent, 62 ZIPs delivered.** Of the 5,208 only 69 were
+rejected as hosting, so the losses are on the ZIP rules, not on rule 2.
 
-Load it regardless: a few hundred ZIPs and several thousand landmarks in
-already-covered ZIPs is worth one minute of fetching. But the number I gave was
-the wrong number, and it was optimistic.
+Applied to the USFA registry's 8,685 usable rows, 2.80 per cent predicts about
+**243 on-premises landmarks**. ZIPs delivered should track that closely rather
+than fall far below it, because 99.5 per cent of USFA hosts appear in exactly
+one ZIP, where OSM fire stations share hosts more often. So roughly **200
+delivered ZIPs**, against the 2,277 I originally implied.
+
+Load it: 243 landmarks and 200 ZIPs for one minute of fetching is a good trade,
+and the rows that land in already-covered ZIPs still feed the 4,940
+unmeasurable nodes. But the number I first gave was wrong by an order of
+magnitude and it was optimistic.

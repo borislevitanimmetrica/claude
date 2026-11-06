@@ -6,24 +6,42 @@
 --   1. Which of that 251,940 can produce a demand pair at all, and in what
 --      order should the queries be spent?
 --
---      RETRACTED, 2026-11-03. This section originally claimed that where ip-api
---      had already named an ISP, "RDAP would tell us nothing we do not already
---      have", and that 86,489 candidates were therefore droppable. That was
---      wrong about what RDAP is for. RDAP establishes the REGISTRANT, and
---      onpremises decides on the registrant: rules 2 and 3 test exact
---      membership of the registrant NAME in provider_names and isp_names, and
---      rules 4 and 5 compare the registrant ZIP with the landmark ZIP. ip-api
---      supplies neither. Its isp string is not an RDAP registrant name, and it
---      has no registrant ZIP at all, only a location estimate for the address,
---      which is a different fact about a different thing.
+--      RETRACTED, 2026-11-03, and then the retraction itself corrected.
 --
---      Nothing can be dropped on the strength of an ip-api name. What ip-api
---      legitimately governs is narrower: a demand pair is (ZIP, ISP), and the
---      ZIP half comes from the probe, so a range with no ip-api ZIP yields no
---      pair however good its registrant turns out to be. That is an ordering
---      argument, probe before RDAP because the probe is free, not a reduction.
---      The buckets below are kept as DIAGNOSIS, to show where the two sources
---      disagree, and the labels have been corrected to say so.
+--      The original claim was that where ip-api had already named an ISP,
+--      "RDAP would tell us nothing we do not already have", and that 86,489
+--      candidates were therefore droppable. That was wrong.
+--
+--      My first explanation of WHY it was wrong was also wrong. I said an
+--      ip-api isp string cannot drive rules 2 and 3 because it is not an RDAP
+--      registrant name. Boris's correction, which is the accurate account:
+--      ip-api's NAME data is mostly right. It identifies ISPs, which usually
+--      mean onpremises true, and hosting providers, which usually mean
+--      onpremises false. There are exceptions, but the names are broadly
+--      usable.
+--
+--      WHAT IP-API CANNOT DO IS THE ZIP, AND THE REASON IS SPECIFIC. It does
+--      not report the customer's ZIP. It reports a location which on some ISP
+--      networks is the customer's town and on most is the physical site of an
+--      AGGREGATION NODE several miles away through which the customer is
+--      served. Those several miles routinely put the two localities in
+--      completely different demographic and socioeconomic areas, which for ZIP
+--      targeting is not a rounding error but the entire failure mode this
+--      project exists to correct.
+--
+--      So RDAP is required for the registrant ZIP, which is a registered
+--      postal address rather than a network-topology artifact. Rules 4 and 5
+--      compare exactly that against the landmark ZIP, and no amount of ip-api
+--      accuracy on names substitutes for it.
+--
+--      Consequence for the work: nothing is dropped, but the ORDER follows
+--      from the above. Spend queries first where the registrant ZIP is the
+--      only thing that can place the range, which is the enterprise and
+--      unclassified space; spend them last where ip-api already says hosting
+--      provider, since that is usually right and the range is usually out of
+--      scope anyway. The buckets below are DIAGNOSIS for that ordering, and
+--      the labels say ip-api rather than registrant so they cannot be misread
+--      as a verdict again.
 --
 --      CORRECTION, 2026-11-03. An earlier version of this comment called the
 --      candidate set's "wider than a /24" rule completeness rather than a

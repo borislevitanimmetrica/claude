@@ -36,11 +36,17 @@
 \set ON_ERROR_STOP on
 
 \echo ''
-\echo 'Timing note, so no step looks like a hang. Sections 1 to 4 scan the'
-\echo 'landmarks_usa rows for source = osm, 1,139,855 of about 15.2 million, so'
-\echo 'expect tens of seconds each rather than minutes. Section 5 probes the'
-\echo 'partial index landmarks_usa_onprem_zip_idx once per delivered'
-\echo 'category-and-ZIP pair, at most 8,735 probes, and is fast.'
+\echo 'Timing, measured on the 2026-11-03 run rather than estimated. Sections 1'
+\echo 'to 4 took 6 to 9 seconds each. Section 5 is rewritten: its first version'
+\echo 'hung, and the note that replaced this one claimed it would be fast, which'
+\echo 'was wrong. It now runs as four short statements over the on-premises rows'
+\echo 'only, about 132,000 of them, and each prints as it finishes.'
+\echo ''
+\echo 'This file is READ-ONLY apart from two TEMP tables in section 5, which are'
+\echo 'dropped at the end and are private to this session. It is therefore safe'
+\echo 'to interrupt with Ctrl-C at any point, and safe to run at the same time'
+\echo 'as rdap_fill_followup.sql, which is read-only throughout. The only cost'
+\echo 'of running both at once is that they compete for CPU and disk.'
 
 \echo ''
 \echo '=== 1 of 5: is the category column populated for OSM at all? ==='
@@ -145,33 +151,69 @@ LIMIT 40;
 \echo '    A category that only delivers ZIPs other sources already cover adds'
 \echo '    landmark density, which node_fanout needs, but no new coverage. Both'
 \echo '    are worth having and they are different things, so both are counted.'
-WITH delivered AS (
-    SELECT DISTINCT overture_zip AS zip
-    FROM landmarks_usa
-    WHERE onpremises AND overture_zip IS NOT NULL
-), per_cat AS (
-    SELECT category, overture_zip AS zip
-    FROM landmarks_usa
-    WHERE source = 'osm' AND onpremises AND overture_zip IS NOT NULL
-      AND btrim(coalesce(category, '')) <> ''
-    GROUP BY 1, 2
-), others AS (
-    SELECT p.category, count(DISTINCT p.zip) AS zips,
-           count(DISTINCT p.zip) FILTER (
-               WHERE NOT EXISTS (
-                   SELECT 1 FROM landmarks_usa o
-                   WHERE o.onpremises
-                     AND o.overture_zip = p.zip
-                     AND (o.source <> 'osm' OR coalesce(o.category,'') <> p.category)
-               )) AS zips_only_this_category
-    FROM per_cat p
-    GROUP BY 1
-)
-SELECT category, zips, zips_only_this_category
-FROM others
-WHERE zips >= 10
+\echo ''
+\echo '    REWRITTEN 2026-11-03 because the first version hung. It put a'
+\echo '    correlated NOT EXISTS inside an aggregate FILTER, which the planner'
+\echo '    evaluated per category-and-ZIP pair against the full 15.2M-row table'
+\echo '    instead of using the partial index. My claim that it would be fast'
+\echo '    was wrong, and worse, psql cannot report progress INSIDE a single'
+\echo '    statement, so there was no way to see it was stuck. The obligation'
+\echo '    is therefore to keep every statement short, not to promise progress.'
+\echo ''
+\echo '    This version makes one pass over the on-premises rows only, roughly'
+\echo '    132,000 of them, and counts contributors per ZIP once. Seconds.'
+
+\echo '    5a: one pass, materialising the on-premises rows'
+CREATE TEMP TABLE cat_onprem AS
+SELECT overture_zip                                        AS zip,
+       source,
+       coalesce(nullif(btrim(category), ''), '(none)')      AS cat
+FROM landmarks_usa
+WHERE onpremises
+  AND overture_zip IS NOT NULL;
+
+SELECT count(*) AS onpremises_rows, count(DISTINCT zip) AS zips
+FROM cat_onprem;
+
+\echo '    5b: how many distinct source-and-category pairs deliver each ZIP'
+CREATE TEMP TABLE cat_zip_contrib AS
+SELECT zip, count(DISTINCT (source, cat)) AS contributors
+FROM cat_onprem
+GROUP BY 1;
+
+CREATE INDEX ON cat_zip_contrib (zip);
+ANALYZE cat_zip_contrib;
+
+SELECT contributors, count(*) AS zips
+FROM cat_zip_contrib
+GROUP BY 1
+ORDER BY 1
+LIMIT 15;
+
+\echo ''
+\echo '    5c: per OSM category, ZIPs delivered and ZIPs it alone delivers'
+SELECT c.cat                                              AS category,
+       count(*)                                           AS zips,
+       count(*) FILTER (WHERE z.contributors = 1)         AS zips_only_this_category
+FROM (SELECT DISTINCT cat, zip FROM cat_onprem WHERE source = 'osm') c
+JOIN cat_zip_contrib z ON z.zip = c.zip
+GROUP BY 1
+HAVING count(*) >= 10
 ORDER BY zips_only_this_category DESC, zips DESC
 LIMIT 40;
+
+\echo ''
+\echo '    5d: and the same per SOURCE, which is the more useful cut'
+SELECT c.source,
+       count(*)                                     AS zips,
+       count(*) FILTER (WHERE z.contributors = 1)   AS zips_only_this_source
+FROM (SELECT DISTINCT source, zip FROM cat_onprem) c
+JOIN cat_zip_contrib z ON z.zip = c.zip
+GROUP BY 1
+ORDER BY zips_only_this_source DESC;
+
+DROP TABLE IF EXISTS cat_zip_contrib;
+DROP TABLE IF EXISTS cat_onprem;
 
 \echo ''
 \echo '=== done ==='
