@@ -70,42 +70,48 @@ SET work_mem = '512MB';
 \echo ''
 \echo '=== 1 of 4: the /24s the candidate filter excludes ==='
 \echo '    The decomposition unit is /25, so a /24 can still carry two ZIPs and'
-\echo '    needs a registrant. masklen < 24 excludes all of them. This is the'
-\echo '    size of that exclusion. Expect a few minutes: it is the same join as'
-\echo '    the candidate build, restricted to exactly /24.'
-SELECT count(*) AS exact_24_candidates
-FROM (
-    SELECT DISTINCT c.network
-    FROM ip2city_dbiplite_probe_tbl c
-    JOIN ip2city_dbiplite_tbl d
-      ON d.network = c.network
-     AND d.source = 'dbip'
-    WHERE family(c.network) = 4
-      AND masklen(c.network) = 24
-      AND NOT EXISTS (SELECT 1 FROM geo_exclusions x
-                      WHERE x.active AND x.prefix IS NOT NULL
-                        AND c.network <<= x.prefix)
-) s;
+\echo '    needs a registrant. masklen < 24 excludes all of them.'
+\echo ''
+\echo '    REWRITTEN 2026-11-06. The first version ran the full probe-to-db-ip'
+\echo '    join restricted to /24, TWICE, with no output in between. The /24'
+\echo '    tier is far larger than the sub-/24 tier that took 13m19s to build,'
+\echo '    so that was tens of minutes of silence. One aggregate over ONE table'
+\echo '    answers the question to within the join, so do that first.'
+\echo ''
+\echo '    1a: the whole probe table by prefix width. One scan, no join.'
+SELECT masklen(network)        AS prefix_width,
+       count(*)                AS probe_rows,
+       count(DISTINCT network) AS distinct_networks
+FROM ip2city_dbiplite_probe_tbl
+WHERE family(network) = 4
+GROUP BY 1
+ORDER BY 1;
 
 \echo ''
-\echo '--- how many of those /24s the current cache ALREADY answers ---'
-\echo '    A /24 inside an allocation we already hold costs nothing to add.'
-\echo '    If most are already covered, widening the filter to /25 is cheap.'
-SELECT count(*)                           AS exact_24_candidates,
+\echo '    1b: the same for the db-ip master, which is the other side of the'
+\echo '        join. If the /24 counts match closely, the join adds little and'
+\echo '        the number above is the answer.'
+SELECT masklen(network) AS prefix_width,
+       count(*)         AS dbip_rows
+FROM ip2city_dbiplite_tbl
+WHERE family(network) = 4
+  AND source = 'dbip'
+  AND masklen(network) = 24
+GROUP BY 1;
+
+\echo ''
+\echo '    1c: of the probe /24s, how many an already-cached allocation covers.'
+\echo '        Cache is small, 1,456 rows, but this is one containment test per'
+\echo '        /24 and there are millions of them, so it is the slow statement'
+\echo '        in this file. For scale: the same test over 281,951 sub-/24'
+\echo '        candidates took 3m30s. SKIP IT with Ctrl-C if 1a is enough.'
+SELECT count(*)                           AS probe_24s,
        count(*) FILTER (WHERE cov.ok)     AS already_covered,
        count(*) FILTER (WHERE NOT cov.ok) AS would_need_a_query
-FROM (
-    SELECT DISTINCT c.network
-    FROM ip2city_dbiplite_probe_tbl c
-    JOIN ip2city_dbiplite_tbl d
-      ON d.network = c.network
-     AND d.source = 'dbip'
-    WHERE family(c.network) = 4
-      AND masklen(c.network) = 24
-      AND NOT EXISTS (SELECT 1 FROM geo_exclusions x
-                      WHERE x.active AND x.prefix IS NOT NULL
-                        AND c.network <<= x.prefix)
-) s
+FROM (SELECT DISTINCT network
+      FROM ip2city_dbiplite_probe_tbl
+      WHERE family(network) = 4
+        AND masklen(network) = 24) s
 CROSS JOIN LATERAL (
     SELECT EXISTS (
         SELECT 1 FROM rdap_registrant_tbl r

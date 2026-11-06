@@ -165,10 +165,25 @@ FROM rdap_fill_cand_tbl;
 
 \echo ''
 \echo '=== step 3 of 6: the containment test, ONCE, into a stored column ==='
-\echo '    This is the slow step: your run took 9m52s for exactly this test.'
-\echo '    It runs only for rows whose coverage has never been tested, so a'
-\echo '    second invocation of this file skips it entirely.'
-\echo '    Nothing prints until it finishes. Expect about ten minutes.'
+\echo '    Measured 3m30s on the 2026-11-03 run. It tests only rows whose'
+\echo '    coverage column is still NULL, so a second invocation skips it.'
+\echo ''
+\echo '    THAT IS ALSO A TRAP, AND I WALKED INTO IT. After the fill ran and'
+\echo '    grew the cache, I told Boris to re-run this file to see the'
+\echo '    still_to_resolve figure drop. It did not drop, because every row had'
+\echo '    already been tested against the SMALLER cache and so was skipped.'
+\echo '    The number below is only current if the cache has not grown since'
+\echo '    covered_at. Compare the two values printed next, and if the cache is'
+\echo '    bigger, clear the column and re-run. The clear is instant; the'
+\echo '    re-test is the 3m30s.'
+\echo ''
+\echo '      UPDATE rdap_fill_cand_tbl SET covered = NULL, covered_at = NULL;'
+
+SELECT max(covered_at)                                    AS coverage_tested_at,
+       (SELECT count(*) FROM rdap_registrant_tbl
+        WHERE family(start_ip) = 4)                        AS cache_now,
+       count(*) FILTER (WHERE covered IS NULL)             AS untested_rows
+FROM rdap_fill_cand_tbl;
 
 UPDATE rdap_fill_cand_tbl c
 SET covered = EXISTS (
