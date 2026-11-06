@@ -3,9 +3,27 @@
 -- The sizing run answered "how much is left": 251,940 of 281,957 candidates.
 -- This file answers the two questions that actually decide what to do about it.
 --
---   1. How much of that 251,940 do we NEED? The probe table already carries
---      ip-api's zip, isp and org for these same networks, so for a large share
---      of them RDAP would tell us nothing we do not already have.
+--   1. Which of that 251,940 can produce a demand pair at all, and in what
+--      order should the queries be spent?
+--
+--      RETRACTED, 2026-11-03. This section originally claimed that where ip-api
+--      had already named an ISP, "RDAP would tell us nothing we do not already
+--      have", and that 86,489 candidates were therefore droppable. That was
+--      wrong about what RDAP is for. RDAP establishes the REGISTRANT, and
+--      onpremises decides on the registrant: rules 2 and 3 test exact
+--      membership of the registrant NAME in provider_names and isp_names, and
+--      rules 4 and 5 compare the registrant ZIP with the landmark ZIP. ip-api
+--      supplies neither. Its isp string is not an RDAP registrant name, and it
+--      has no registrant ZIP at all, only a location estimate for the address,
+--      which is a different fact about a different thing.
+--
+--      Nothing can be dropped on the strength of an ip-api name. What ip-api
+--      legitimately governs is narrower: a demand pair is (ZIP, ISP), and the
+--      ZIP half comes from the probe, so a range with no ip-api ZIP yields no
+--      pair however good its registrant turns out to be. That is an ordering
+--      argument, probe before RDAP because the probe is free, not a reduction.
+--      The buckets below are kept as DIAGNOSIS, to show where the two sources
+--      disagree, and the labels have been corrected to say so.
 --
 --      CORRECTION, 2026-11-03. An earlier version of this comment called the
 --      candidate set's "wider than a /24" rule completeness rather than a
@@ -190,17 +208,21 @@ WHERE p.network = c.network
 \echo '    ip-api attributes attached'
 
 \echo ''
-\echo '--- the remaining 251,940, partitioned by what RDAP would ADD ---'
-\echo '    Read the top row first: that is where RDAP is the only source.'
+\echo '--- the remaining 251,940, by what ip-api says, as DIAGNOSIS not a plan ---'
+\echo '    These labels describe ip-api only. None of them is a reason to skip an'
+\echo '    RDAP query: ip-api cannot supply a registrant name or a registrant'
+\echo '    ZIP, which is what onpremises decides on. Read with_ipapi_zip as the'
+\echo '    column that matters, because that is the half of a demand pair the'
+\echo '    probe owns.'
 SELECT CASE
          WHEN NOT coalesce(c.has_isp, false)
-          AND NOT coalesce(c.has_org, false) THEN 'a no operator name at all: RDAP is the ONLY source'
+          AND NOT coalesce(c.has_org, false) THEN 'a ip-api has no name for this range'
          WHEN NOT coalesce(c.has_isp, false)
-          AND c.has_org                      THEN 'b org but no isp: the enterprise block, IN scope'
-         WHEN p.name IS NOT NULL             THEN 'd isp is a hosting provider: OUT of scope'
-         WHEN i.name IS NOT NULL             THEN 'e isp is a known ISP: RDAP adds little'
-         ELSE                                     'c isp present but unclassified: IN scope'
-       END                                          AS bucket,
+          AND c.has_org                      THEN 'b ip-api gave org but no isp'
+         WHEN p.name IS NOT NULL             THEN 'd ip-api name matches provider_names'
+         WHEN i.name IS NOT NULL             THEN 'c ip-api name matches isp_names'
+         ELSE                                     'e ip-api name matches neither list'
+       END                                          AS ipapi_says,
        count(*)                                     AS candidates,
        count(*) FILTER (WHERE c.has_zip)            AS with_ipapi_zip,
        count(DISTINCT c.ipapi_isp)                  AS distinct_names,

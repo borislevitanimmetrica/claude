@@ -36,6 +36,13 @@
 \set ON_ERROR_STOP on
 
 \echo ''
+\echo 'Timing note, so no step looks like a hang. Sections 1 to 4 scan the'
+\echo 'landmarks_usa rows for source = osm, 1,139,855 of about 15.2 million, so'
+\echo 'expect tens of seconds each rather than minutes. Section 5 probes the'
+\echo 'partial index landmarks_usa_onprem_zip_idx once per delivered'
+\echo 'category-and-ZIP pair, at most 8,735 probes, and is fast.'
+
+\echo ''
 \echo '=== 1 of 5: is the category column populated for OSM at all? ==='
 \echo '    If nearly everything is NULL this file cannot answer and that is the'
 \echo '    answer: the OSM loader only fills category from amenity, shop, office,'
