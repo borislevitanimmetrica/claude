@@ -3,11 +3,19 @@
 -- The sizing run answered "how much is left": 251,940 of 281,957 candidates.
 -- This file answers the two questions that actually decide what to do about it.
 --
---   1. How much of that 251,940 do we NEED? The candidate set is "every db-ip
---      row wider than a /24", which is completeness, not a requirement. The
---      probe table already carries ip-api's zip, isp and org for these same
---      networks, so for a large share of them RDAP would tell us nothing we do
---      not already have.
+--   1. How much of that 251,940 do we NEED? The probe table already carries
+--      ip-api's zip, isp and org for these same networks, so for a large share
+--      of them RDAP would tell us nothing we do not already have.
+--
+--      CORRECTION, 2026-11-03. An earlier version of this comment called the
+--      candidate set's "wider than a /24" rule completeness rather than a
+--      requirement. That mis-stated the project's own decision. apply_splits
+--      says at main.go line 5 "THE UNIT IS /25, AND THAT IS A MEASURED CHOICE,
+--      NOT A DEFAULT", and -unit defaults to 25, because of 96 /24s probed at
+--      /27 midpoints 3.3 pct carried two ZIPs splitting cleanly at .128.
+--      A /24 is therefore NOT atomic and needs a registrant like anything else,
+--      yet loadCandidates filters masklen < 24 and excludes every one of them.
+--      rdap_fill_followup.sql section 1 measures what that exclusion costs.
 --
 --   2. What is the real marginal rate in the tier that dominates? 208,663 of
 --      the 251,940 remaining are /22 and /23. Every rate we have was measured

@@ -1,38 +1,106 @@
-# Website discovery: the cheap test failed, and what that means
+# Website discovery: why it does not make sense to build
 
-You approved building website discovery for the address-only registries. Before
-building it I ran the two experiments that bound its value, because both are
-measurable in under an hour and the alternative is a day of work aimed at a
-number nobody has.
+Decided 2026-11-03. The conclusion is not "we have enough landmarks" — we do
+not, and that is the point. It is that discovery solves the wrong half of the
+problem, and the half it solves was never the binding constraint.
 
-Both came back negative. I am reporting that rather than building on top of it.
+## The argument in one paragraph
 
-## Experiment 1: can a domain be generated instead of searched?
+A landmark needs a hostname whose **address sits at the organisation's own
+premises**. Finding an institution's website gets you a hostname. For the
+registries that lack one — 22,510 private schools in NCES PSS, the IMLS library
+outlets, every police agency in the FBI's file — a large majority of those
+hostnames will resolve into one of exactly two places, and **both of them fail**:
 
-The fire registry hands us **ground truth**: 8,685 institutions whose real
-website we already know. So the question "could a discovery mechanism have found
-this?" can be scored exactly, which is impossible on PSS or IMLS where there is
-no answer key.
+- **A hosting provider.** Squarespace, Wix, GoDaddy, CivicPlus, AWS. Rule 2
+  rejects these, and correctly: the registrant ZIP is the host's, not the
+  institution's.
+- **A higher level of government.** The school district's data centre, the
+  county's web server, the state's. These *are* on premises, and that is why
+  they are worse than useless: the premises belong to the county, so the
+  landmark places fifty institutions in fifty ZIPs at one building.
+  `node_fanout.sql` sees the disjoint ZIP clusters and throws the address away,
+  after it has cost resolve, RDAP and trace budget.
 
-Method: from the department name, city and state, generate plausible registrable
-domains (joined core words, `fd`, `vfd`, `firedept`, `firerescue`, initials,
-across `.org .com .net .us`), check each for an A record, and ask whether the
-true domain is among the live ones. 300 institutions, 13,036 distinct candidate
-domains, 43 candidates generated per institution.
+Discovery cannot distinguish these in advance. It finds a URL; the chain then
+discards most of what it finds, for structural reasons that no better search
+would change.
+
+## The measured basis, from this project's own numbers
+
+**Rule 2's share.** Over 12,775,630 rows the on-premises step rejects
+**10,713,526, which is 83.8 per cent**, because the address belongs to a CDN,
+cloud or web host. That is recorded in `mx_ns_yield.py`.
+
+**Diminishing returns on organisations.** Adding 1,460,317 rows across five
+landmark sources produced **6 new ZIP codes**.
+
+**The per-source rates, from `lm_fetch.py status` on 2026-11-03.** This is the
+table that settles it:
+
+| source | rows | onpremises true | rate | ZIPs delivered |
+|---|---|---|---|---|
+| nces_ipeds, colleges | 6,075 | 328 | **5.40%** | 312 |
+| wikidata | 24,721 | 876 | 3.54% | 582 |
+| overture | 13,797,786 | 119,890 | 0.87% | 15,962 |
+| foursquare | 275,517 | 2,191 | 0.80% | 387 |
+| osm | 1,139,855 | 8,735 | 0.77% | 2,755 |
+| ca_cde, California schools | 8,816 | 54 | **0.61%** | 26 |
+| dotgov, municipalities | 14,149 | 51 | **0.36%** | 44 |
+
+### One defect visible in that table, worth fixing before judging dotgov
+
+`dotgov` resolved 11,474 rows and got RDAP for 10,248, but **only 2,312 have a
+ZIP**. The file carries no postcode by design and the `overture-zip` locality
+fallback was supposed to supply one; it failed for roughly 80 per cent of the
+rows. So `dotgov`'s 0.36 per cent is measured against 14,149 rows of which only
+2,312 could ever have been decided, and 7,936 rows reached RDAP and were then
+discarded for want of a ZIP, not for want of being on premises.
+
+Against the 2,312 that had a ZIP the rate is 2.2 per cent, which is six times
+the headline and middling rather than terrible. The locality fallback is worth
+a look before anyone concludes municipalities are a dead end.
+
+Read the bottom two rows against the top one. **Colleges deliver fifteen times
+the rate of municipalities and nine times the rate of California schools.** The
+reason is the argument above: a university runs its own campus network and often
+its own allocation. A California school publishes its district's website, and a
+small town publishes CivicPlus.
+
+Private schools, public libraries and police stations are the same kind of
+organisation as the bottom two rows, not the top one. `ca_cde` is the honest
+prior: **8,816 schools whose websites we already had, delivering 54 landmarks
+and 26 ZIPs.**
+
+## What discovery would cost against that
+
+PSS 22,510 plus the IMLS outlets plus the FBI's police agencies is roughly
+56,000 institutions. On the `ca_cde` rate that is about **340 landmarks**. On
+the `nces_ipeds` rate, which is the optimistic end and the wrong analogue, about
+3,000.
+
+And discovery is not free, which is the second finding.
+
+## Discovery cannot be done cheaply either
+
+I tested the cheapest possible mechanism against **ground truth**: the fire
+registry gives 8,685 institutions whose real website we already know, so recall
+is exact rather than estimated. From name, city and state, generate plausible
+registrable domains (`fd`, `vfd`, `firedept`, `firerescue`, joined core words,
+initials, across `.org .com .net .us`) and check for an A record. 300
+institutions, 13,036 candidates, 43 per institution.
 
 | result | count | share |
 |---|---|---|
-| institutions tested | 300 | |
-| **true domain among the live candidates** | 106 | **35.3%** |
-| **true domain was the only live candidate** | 3 | **1.0%** |
-| institutions with 6 or more live false candidates | 151 | 50.3% |
+| true domain among the live candidates | 106 | **35.3%** |
+| true domain was the **only** live candidate | 3 | **1.0%** |
+| 6 or more live false candidates | 151 | 50.3% |
 
-**It does not work.** Recall is a third, and precision is almost nil: parked and
-squatted domains resolve, so an A record is close to useless as a filter. The
-median institution came back with five or six live candidates and no way to
-choose between them.
+Parked and squatted domains resolve, so an A record is nearly useless as a
+filter. The median institution returned five or six live candidates with no way
+to choose.
 
-The misses explain why, and the explanation matters more than the number:
+The misses say why, and they say it better than the numbers:
 
 | the real website | the institution |
 |---|---|
@@ -41,87 +109,89 @@ The misses explain why, and the explanation matters more than the number:
 | `www.cityofknoxville.org` | City of Knoxville Fire Department |
 | `townofstratford.com` | Stratford Fire Department |
 | `ci.orange.nj.us` | City of Orange Township Fire Department |
-| `www.savmn.com` | St. Anthony Fire Department |
 
-The institution very often has **no domain of its own**. It is a page on the
-municipality's site. No name-based generator can reach that, and the
-municipality's own domain is already loaded by `lm_fetch.py dotgov`, so finding
-it again adds nothing.
+The institution has **no domain of its own**. It is a page on the
+municipality's site — and `lm_fetch.py dotgov` already loads those 14,149
+municipal domains, at a measured 0.36 per cent. Discovery would spend a search
+API to rediscover the worst-performing source in the corpus.
 
-Conclusion: discovery needs a real search index. There is no free substitute.
+So: discovery needs a paid search index, and what it would find is mostly
+already loaded or structurally rejected. **Do not build it.**
 
-## Experiment 2: would a discovered website even be on-premises?
+## This is not an argument for fewer landmarks
 
-This is the question that decides whether discovery is worth paying for, and it
-is separable from discovery itself.
+We are short of landmarks and the shortage is the project's central problem.
+`node_fanout.sql` calls **4,940 nodes unmeasurable for having too few**. The
+conclusion here is narrow: stop trying to manufacture hostnames for institutions
+that do not have their own, and spend the effort where the measured rate is
+high.
 
-`mx_ns_yield.py` records the governing measurement: over 12,775,630 rows, rule 2
-rejects **10,713,526, which is 83.8 per cent**, because the website's address
-belongs to a CDN, cloud or web host. And adding 1,460,317 rows across five
-landmark sources produced **6 new ZIP codes**.
+**Chase the organisations that run their own network, not the ones that run
+their own building.** `nces_ipeds` at 5.40 per cent is the shape to look for:
+an institution large enough to hold an IP allocation in its own name at its own
+address. Hospitals, health systems, large manufacturers, utilities, research
+institutes and corporate campuses are that shape. Small municipal bodies are
+not, however many of them there are.
 
-So the binding constraint is not whether an institution has a website. It is
-whether that website is served from the institution's own address. Discovery
-addresses the first and is indifferent to the second.
+`category_yield.sql` reads the per-category rate straight out of the 1,139,855
+OSM rows already enriched, so the next source can be chosen from measurement
+instead of from this reasoning.
 
-I measured the second on the fire corpus by DNS, 8,412 hosts, full detail in
-`mx_ns_premeasurement.md`:
+## Police stations specifically
 
-- 7,404 website addresses resolved
-- **3,260 of them, 44.0 per cent, have no PTR at all.** Unknown. Only RDAP can
-  classify these, and that is where any on-premises yield has to come from
-- 46.2 per cent sit under the 40 commonest PTR parents, and those are
-  AWS Global Accelerator, amazonaws, googleusercontent, firehousesolutions,
-  secureserver, Akamai, CivicPlus, Weebly, Bluehost, Wix. Rule-2 rejections,
-  every one
+Asked for, and checked.
 
-I cannot resolve the 44 per cent from here. **You can, for free, as a by-product
-of a load you are already doing.**
+**There is no national police registry carrying a website.** The FBI Crime Data
+Explorer agency API is the authoritative national list and is open with a demo
+key. I pulled 2,285 agencies across seven states before the demo key rate
+limited. The field list is complete and fixed, and it is exactly these ten:
+`ori`, `agency_name`, `agency_type_name`, `counties`, `is_nibrs`, `latitude`,
+`longitude`, `state_abbr`, `state_name`, `nibrs_start_date`.
 
-## What I propose, and why in this order
+No street address, no ZIP, **no website**. Latitude and longitude are present
+for 1,886 of the 2,285, so a ZIP is derivable, but the website half is simply
+absent — the same failure as NCES PSS and IMLS. Agency types in that sample:
+City 1,404, County 278, State Police 158, Other State Agency 149, University or
+College 146, Other 109, Tribal 41.
 
-Load the fire registry, run the chain on that source alone, and read the
-on-premises rate. 8,685 landmarks whose websites are already known, in a
-population of small municipal institutions, 7,418 ZIPs. That single number is
-the per-source on-premises yield for exactly the class of organisation that
-discovery would target.
+The BJS Law Enforcement Agency Identifiers Crosswalk carries mailing addresses
+and no websites, and its public release is from 2000.
 
-```
-cd /home/boris/geo/src/claude/geo/landmark_sources
-python3 lm_fetch.py usfa-fire
-python3 lm_fetch.py status
-```
+**And police stations are already loaded.** OSM tags them `amenity=police`, and
+`lm_fetch.py`'s `osm_tags_to_row` writes `amenity` into `category`, so the
+national OSM pass already carries every police station OSM knows with a website
+and a postcode. Section 2 of `category_yield.sql` reports exactly how many and
+what they delivered. Run that before considering a police source: if OSM's
+police stations already deliver poorly, a registry that lacks websites
+altogether will not do better.
 
-Then the shared chain, restricted to the one table, and the counts after it:
+My expectation, and I am flagging it as an expectation rather than a
+measurement: a city police department publishes the city's website, which is the
+`dotgov` case at 0.36 per cent. The exception in the type breakdown is
+**University or College police, 146 of 2,285**, which sit on campus networks and
+should behave like `nces_ipeds` at 5.40 per cent. That is a small, high-rate
+subset, and `category_yield.sql` will show whether it is real.
 
-```
-cd /home/boris/geo/src/claude/geo/overture_fetch
-python3 ovt_resolve_hosts.py resolve --table lm_places_usa
-python3 ovt_resolve_hosts.py rdap --table lm_places_usa
-python3 ovt_resolve_hosts.py registrants --table lm_places_usa
-python3 ovt_resolve_hosts.py overture-zip --table lm_places_usa
-python3 ovt_resolve_hosts.py onpremises --table lm_places_usa
-```
+## Correction to something I told you
 
-The decisive read is the `onpremises_reason` breakdown for `source = 'usfa_fire'`.
-`landmarks_per_source.sql` in `geo/landmarks` already reports per-source counts.
+I presented the fire registry as reaching "2,277 ZIPs that CCD does not". That
+is true of the ZIPs **present in the source file** and it is not a prediction of
+ZIPs **delivered**. The ratio between those two is brutal and measured:
 
-**If that rate is poor**, in the same band as the 0.66 per cent and 6-new-ZIP
-results, then discovery for PSS and IMLS is dead before it starts: we would be
-paying a search API to find 56,000 websites that rule 2 will then reject. I will
-say so plainly and we drop it.
+| source | ZIPs in source | ZIPs delivered | ratio |
+|---|---|---|---|
+| ca_cde | 1,367 | 26 | 1.9% |
+| nces_ipeds | 4,241 | 312 | 7.4% |
+| osm | 25,626 | 2,755 | 10.8% |
 
-**If it is good**, discovery becomes worth costing, and I will come back with
-search-API options and a measured price per institution rather than an estimate.
+On the `ca_cde` ratio the fire registry's 7,418 source ZIPs become about **140
+delivered**; on the OSM ratio about 800. It has one real structural advantage
+over `ca_cde` — 99.2 per cent unique hosts against 72.0, because fire
+departments do not share a district website the way schools do — so I would
+expect better than 1.9 per cent. I cannot say how much better, and the OSM
+`fire_station` category in `category_yield.sql` section 3 is the measurement
+that answers it from your own data rather than from my analogy.
 
-The cost of finding out is one chain run on a source you are loading anyway. The
-cost of skipping the question is a day of my work and a search-API bill aimed at
-an unmeasured yield, which is the mistake the 6-new-ZIP result already recorded
-once in this project.
-
-## One thing I am NOT doing
-
-I am not treating this as a reason to stop looking for landmarks. The fire
-registry is real: 8,685 rows, 7,418 ZIPs, 2,277 of them unreached by any school,
-99.2 per cent unique hosts. Load it. The question here is narrower, and it is
-only whether to spend on *discovering* websites for registries that lack them.
+Load it regardless: a few hundred ZIPs and several thousand landmarks in
+already-covered ZIPs is worth one minute of fetching. But the number I gave was
+the wrong number, and it was optimistic.

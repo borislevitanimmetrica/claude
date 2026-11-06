@@ -119,15 +119,16 @@ measurement that writes nothing and costs one sample. If it reports a
 newly-qualifying rate in the same one-to-eight per cent band, close the
 question.
 
-```
-cd /home/boris/geo/src/claude/geo/landmark_sources
-python3 mx_ns_yield.py --sample 2000 --out /home/boris/geo/logs/mx_ns_winners.csv
-```
-
-It needs dnspython. If it is missing:
+It needs dnspython:
 
 ```
 pip3 install --user dnspython
+```
+
+Then, fully qualified:
+
+```
+python3 /home/boris/geo/src/claude/geo/landmark_sources/mx_ns_yield.py --sample 2000 --out /home/boris/geo/logs/mx_ns_winners.csv 2>&1 | tee /home/boris/geo/logs/mx_ns_yield.log
 ```
 
 ## The one number worth having from the fire corpus
