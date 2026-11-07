@@ -1,9 +1,48 @@
 -- migrate_into_landmarks_usa.sql - fill landmarks_usa from the three imports.
 --
--- NOTHING IS DROPPED OR ALTERED. ovt_places_usa, fsq_places_usa and
--- lm_places_usa are read only. They remain the raw imports and can be
--- re-migrated at any time by re-running this file, which replaces each source's
--- rows rather than appending to them.
+-- =========================================================================
+-- STOP. DO NOT RUN THIS FILE. USE migrate_new_sources.sql INSTEAD.
+--
+-- Added 2026-11-06. This file is safe ONLY on a first migration, when
+-- landmarks_usa holds no enrichment worth keeping. That stopped being true
+-- long ago and it is now destructive.
+--
+-- Section 3 opens with
+--
+--     DELETE FROM landmarks_usa
+--     WHERE source IN (SELECT DISTINCT source FROM lm_places_usa);
+--
+-- which deletes every landmarks_usa row belonging to ANY source present in the
+-- staging table and re-inserts it from staging, where there is no enrichment,
+-- because the chain runs on landmarks_usa and not on lm_places_usa.
+--
+-- Measured cost as of 2026-11-06, from the institution_ledger run:
+--
+--     source        rows         rdap_ok      onpremises true
+--     osm           1,139,855      986,630              8,735
+--     wikidata         24,721       21,951                876
+--     dotgov           14,149       10,248                 51
+--     ca_cde            8,816        8,322                 54
+--     nces_ipeds        6,075        5,593                328
+--     TOTAL         1,193,616    1,032,744             10,044
+--
+-- Over a million completed RDAP lookups and 10,044 on-premises determinations,
+-- destroyed with no prompt. migrate_ca_cde.sql was written to avoid exactly
+-- this and its header documents the same trap.
+--
+-- Use geo/landmarks/migrate_new_sources.sql. It is insert-only, has no DELETE,
+-- UPDATE or TRUNCATE, uses ON CONFLICT DO NOTHING so existing enrichment can
+-- never be overwritten, needs no list of source names, and is safe to re-run.
+--
+-- Scoping the DELETE here is the real fix. It is a separate change with its own
+-- blast radius and has not been made.
+-- =========================================================================
+--
+-- NOTHING IS DROPPED OR ALTERED in the SOURCE tables. ovt_places_usa,
+-- fsq_places_usa and lm_places_usa are read only. They remain the raw imports
+-- and can be re-migrated at any time by re-running this file, which replaces
+-- each source's rows in landmarks_usa rather than appending to them. That
+-- replacement is the hazard described above.
 --
 -- ONLY ROWS WITH A WEBSITE ARE MIGRATED. A place with no website can never
 -- become a landmark: the chain has nothing to resolve, so it gets
