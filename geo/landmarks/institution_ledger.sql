@@ -1,38 +1,45 @@
 -- institution_ledger.sql
 --
--- Per institution class: how many records exist, how many carry a website and a
--- ZIP, and how many reached onpremises = true.
+-- The funnel, by landmark category: how many records exist, how many were
+-- accepted into landmarks_usa, and how many reached onpremises = true.
 --
--- READ THIS BEFORE READING THE NUMBERS, because one column cannot be produced
--- from the database at all.
+-- FOUR STAGES, AND THEY MEAN DIFFERENT THINGS
 --
--- "RECORDS WITHOUT THE WEBSITE FIELD" IS NOT IN ANY TABLE. Every loader drops
--- rows with no usable website BEFORE loading, by design, because a row with no
--- hostname cannot anchor a landmark. So in lm_places_usa the count without a
--- website is zero for every source, and that zero is an artefact of the loader,
--- not a fact about the world. The OSM source is worse: its Overpass query is
+--   1. source file rows     what the authoritative file contains. NOT in any
+--                           table, because every loader drops rows with no
+--                           usable website before loading. Section 3 supplies
+--                           it from the loaders' own row accounting, and says
+--                           which categories have no knowable figure at all
+--   2. staging rows         lm_places_usa, so rows that survived the loader
+--   3. accepted rows        landmarks_usa, after migrate_new_sources.sql,
+--                           which additionally requires a non-null source_id
+--   4. onpremises = true    the landmarks
 --
---     nwr["website"]["addr:postcode"](area.a);
+-- A category showing accepted rows but zero onpremises has not been through
+-- the chain yet. As of 2026-11-06 that is every school source except ca_cde,
+-- plus usfa_fire: 121,760 rows awaiting resolve.
 --
--- so rows without a website were never FETCHED, and no query against this
--- database can recover how many there are.
+-- WHY THE CLASS IS DERIVED, AND WHY category ALONE WILL NOT DO
 --
--- The honest denominators therefore come from the source files' own row
--- accounting, which the loaders print and which is recorded in
--- institution_ledger.md beside this file. Sections 1 to 3 below report what the
--- database does know; section 4 states plainly which classes have a real
--- denominator and which do not.
+-- The category column is not comparable across loaders:
 --
--- WHY THE CLASS IS DERIVED AND NOT READ FROM category. The category column is
--- not comparable across sources. state_loader writes the literal 'public
--- school' for CCD and every state file. lm_fetch usfa-fire writes the USFA
--- Dept Type, so fire departments arrive as 'volunteer', 'career', 'combination'
--- and similar rather than one value. OSM carries the raw amenity tag. Grouping
--- on category alone would therefore split fire stations across several rows and
--- merge nothing usefully, so the class is derived from (source, category) in
--- one place below.
+--   state_loader, so ccd and all 20 state files   writes 'public school'
+--   lm_fetch ca-cde                               writes SOCType or EILName,
+--                                                 so 'High Schools (Public)'
+--                                                 and about a dozen others
+--   lm_fetch usfa-fire                            writes the USFA Dept Type,
+--                                                 so 'volunteer', 'career',
+--                                                 'combination' and so on
+--   lm_fetch nces-ipeds                           writes 'college'
+--   lm_fetch osm                                  writes the raw OSM amenity
 --
--- READ-ONLY. One TEMP table, dropped at the end, private to this session.
+-- Grouping on category would therefore split fire departments three ways,
+-- scatter California across a dozen buckets, and merge nothing useful. The
+-- class below is derived from source first and category second, in one place,
+-- and the 'public school' test is what makes a newly added state file fall
+-- into the right bucket with no edit here.
+--
+-- READ-ONLY. Two TEMP tables, dropped at the end, private to this session.
 
 \timing on
 \set ON_ERROR_STOP on
@@ -40,21 +47,22 @@ SET work_mem = '512MB';
 
 \echo ''
 \echo 'Timing: section 1 scans lm_places_usa, about 1.3M rows, seconds.'
-\echo 'Section 2 scans landmarks_usa, about 15.2M rows, expect under a minute.'
-\echo 'Sections 3 and 4 read the temp tables and are instant.'
+\echo 'Section 2 scans landmarks_usa, about 15.4M rows, under a minute.'
+\echo 'Sections 3 and 4 are instant.'
 
 \echo ''
-\echo '=== 1 of 4: staging, lm_places_usa, what has been loaded ==='
-\echo '    with_website is 100 pct by construction. It is printed anyway so the'
-\echo '    artefact is visible rather than inferred.'
+\echo '=== 1 of 4: staging, lm_places_usa ==='
 
-CREATE TEMP TABLE ledger_staging AS
+CREATE TEMP TABLE led_stage AS
 SELECT CASE
-         WHEN p.source IN ('ccd', 'ca_cde') THEN 'school, public'
-         WHEN p.source = 'usfa_fire'        THEN 'fire station'
-         WHEN p.source = 'nces_ipeds'       THEN 'college or university'
-         WHEN p.source = 'dotgov'           THEN 'government, municipal domain'
-         WHEN p.source = 'wikidata'         THEN 'wikidata, mixed'
+         WHEN p.source = 'ca_cde'                           THEN 'school, public'
+         WHEN p.source = 'usfa_fire'                        THEN 'fire station'
+         WHEN p.source = 'nces_ipeds'                       THEN 'college or university'
+         WHEN p.source = 'dotgov'                           THEN 'government, municipal domain'
+         WHEN p.source = 'wikidata'                         THEN 'wikidata, mixed'
+         WHEN p.source = 'overture'                         THEN 'overture, mixed'
+         WHEN p.source = 'foursquare'                       THEN 'foursquare, mixed'
+         WHEN p.category = 'public school'                  THEN 'school, public'
          WHEN p.source = 'osm' AND p.category = 'school'            THEN 'school, OSM tagged'
          WHEN p.source = 'osm' AND p.category = 'fire_station'      THEN 'fire station'
          WHEN p.source = 'osm' AND p.category IN ('university', 'college')
@@ -74,41 +82,38 @@ SELECT CASE
          WHEN p.source = 'osm'                                      THEN 'osm, other'
          ELSE p.source
        END                                                           AS class,
-       p.source,
-       btrim(coalesce(p.website, '')) <> ''                          AS has_website,
-       btrim(coalesce(p.postcode, '')) ~ '^[0-9]{5}'                 AS has_zip,
+       left(lpad(btrim(coalesce(p.postcode, '')), 5, '0'), 5)        AS zip5,
        lower(btrim(coalesce(p.website, '')))                         AS host_text,
-       left(lpad(btrim(coalesce(p.postcode, '')), 5, '0'), 5)        AS zip5
+       btrim(coalesce(p.postcode, '')) ~ '^[0-9]{5}'                 AS has_zip,
+       p.source_id IS NOT NULL                                       AS has_id
 FROM lm_places_usa p;
 
-CREATE INDEX ON ledger_staging (class);
-ANALYZE ledger_staging;
+CREATE INDEX ON led_stage (class);
+ANALYZE led_stage;
 
 SELECT class,
-       count(*)                                        AS records,
-       count(*) FILTER (WHERE has_website)             AS with_website,
-       count(*) FILTER (WHERE NOT has_website)         AS without_website,
-       count(*) FILTER (WHERE has_zip)                 AS with_zip,
-       count(*) FILTER (WHERE NOT has_zip)             AS without_zip,
-       count(*) FILTER (WHERE has_website AND has_zip) AS with_both,
-       count(DISTINCT host_text)                       AS distinct_hosts,
-       count(DISTINCT zip5) FILTER (WHERE has_zip)     AS distinct_zips
-FROM ledger_staging
+       count(*)                                     AS staging_rows,
+       count(*) FILTER (WHERE has_zip)              AS with_zip,
+       count(*) FILTER (WHERE has_id)               AS with_source_id,
+       count(DISTINCT host_text)                    AS distinct_hosts,
+       count(DISTINCT zip5) FILTER (WHERE has_zip)  AS distinct_zips
+FROM led_stage
 GROUP BY 1
 ORDER BY 2 DESC;
 
 \echo ''
-\echo '=== 2 of 4: enriched, landmarks_usa, where onpremises is decided ==='
+\echo '=== 2 of 4: THE ANSWER. accepted in landmarks_usa, and onpremises ==='
 
-CREATE TEMP TABLE ledger_enriched AS
+CREATE TEMP TABLE led_enriched AS
 SELECT CASE
-         WHEN t.source IN ('ccd', 'ca_cde') THEN 'school, public'
-         WHEN t.source = 'usfa_fire'        THEN 'fire station'
-         WHEN t.source = 'nces_ipeds'       THEN 'college or university'
-         WHEN t.source = 'dotgov'           THEN 'government, municipal domain'
-         WHEN t.source = 'wikidata'         THEN 'wikidata, mixed'
-         WHEN t.source = 'overture'         THEN 'overture, mixed'
-         WHEN t.source = 'foursquare'       THEN 'foursquare, mixed'
+         WHEN t.source = 'ca_cde'                           THEN 'school, public'
+         WHEN t.source = 'usfa_fire'                        THEN 'fire station'
+         WHEN t.source = 'nces_ipeds'                       THEN 'college or university'
+         WHEN t.source = 'dotgov'                           THEN 'government, municipal domain'
+         WHEN t.source = 'wikidata'                         THEN 'wikidata, mixed'
+         WHEN t.source = 'overture'                         THEN 'overture, mixed'
+         WHEN t.source = 'foursquare'                       THEN 'foursquare, mixed'
+         WHEN t.category = 'public school'                  THEN 'school, public'
          WHEN t.source = 'osm' AND t.category = 'school'            THEN 'school, OSM tagged'
          WHEN t.source = 'osm' AND t.category = 'fire_station'      THEN 'fire station'
          WHEN t.source = 'osm' AND t.category IN ('university', 'college')
@@ -127,90 +132,86 @@ SELECT CASE
                                                                     THEN 'research'
          WHEN t.source = 'osm'                                      THEN 'osm, other'
          ELSE t.source
-       END                                                           AS class,
-       t.ip_address IS NOT NULL                                      AS resolved,
-       t.lookup_status = 'true'                                      AS rdap_ok,
-       t.overture_zip IS NOT NULL                                    AS has_zip,
-       t.onpremises,
+       END                                                   AS class,
+       t.ip_address,
        t.overture_zip,
-       t.ip_address
+       t.lookup_status,
+       t.onpremises,
+       t.onpremises_reason
 FROM landmarks_usa t;
 
-CREATE INDEX ON ledger_enriched (class);
-ANALYZE ledger_enriched;
+CREATE INDEX ON led_enriched (class);
+ANALYZE led_enriched;
 
-SELECT class,
-       count(*)                                                     AS records,
-       count(*) FILTER (WHERE resolved)                             AS resolved,
-       count(*) FILTER (WHERE rdap_ok)                              AS rdap_ok,
-       count(*) FILTER (WHERE has_zip)                              AS have_zip,
-       count(*) FILTER (WHERE onpremises)                           AS onpremises_true,
-       round(100.0 * count(*) FILTER (WHERE onpremises)
-             / greatest(count(*), 1), 2)                            AS pct,
-       count(DISTINCT overture_zip) FILTER (WHERE onpremises)       AS zips_delivered,
-       count(DISTINCT ip_address)   FILTER (WHERE onpremises)       AS addresses_delivered
-FROM ledger_enriched
-GROUP BY 1
+SELECT e.class,
+       coalesce(s.staging_rows, 0)                                AS total_records,
+       count(*)                                                   AS accepted,
+       count(*) FILTER (WHERE e.lookup_status = 'true')            AS rdap_ok,
+       count(*) FILTER (WHERE e.onpremises)                        AS onpremises_true,
+       round(100.0 * count(*) FILTER (WHERE e.onpremises)
+             / greatest(count(*), 1), 2)                          AS pct,
+       count(DISTINCT e.overture_zip) FILTER (WHERE e.onpremises)  AS zips_delivered,
+       count(DISTINCT e.ip_address)   FILTER (WHERE e.onpremises)  AS addresses_delivered,
+       count(*) FILTER (WHERE e.lookup_status IS NULL)             AS awaiting_chain
+FROM led_enriched e
+LEFT JOIN (SELECT class, count(*) AS staging_rows FROM led_stage GROUP BY 1) s
+       ON s.class = e.class
+GROUP BY e.class, s.staging_rows
 ORDER BY onpremises_true DESC;
 
 \echo ''
-\echo '=== 3 of 4: the two tables side by side, which exposes what is PENDING ==='
-\echo '    A class with staging rows and no enriched rows has been loaded but'
-\echo '    not yet migrated and enriched. ccd and usfa_fire are in that state'
-\echo '    until migrate_into_landmarks_usa.sql and the chain have run.'
-SELECT coalesce(s.class, e.class)                  AS class,
-       coalesce(s.records, 0)                      AS staging_records,
-       coalesce(e.records, 0)                      AS enriched_records,
-       coalesce(e.onpremises_true, 0)              AS onpremises_true,
-       CASE WHEN coalesce(e.records, 0) = 0 AND coalesce(s.records, 0) > 0
-            THEN 'PENDING: loaded, not enriched'
-            WHEN coalesce(s.records, 0) = 0
-            THEN 'enriched only, no staging source'
-            ELSE 'enriched' END                    AS state
-FROM (SELECT class, count(*) AS records FROM ledger_staging GROUP BY 1) s
-FULL JOIN (SELECT class, count(*) AS records,
-                  count(*) FILTER (WHERE onpremises) AS onpremises_true
-           FROM ledger_enriched GROUP BY 1) e USING (class)
-ORDER BY staging_records DESC, enriched_records DESC;
+\echo '--- totals across every class ---'
+SELECT (SELECT count(*) FROM led_stage)                             AS staging_total,
+       count(*)                                                     AS accepted_total,
+       count(*) FILTER (WHERE lookup_status = 'true')                AS rdap_ok_total,
+       count(*) FILTER (WHERE onpremises)                            AS onpremises_total,
+       count(DISTINCT overture_zip) FILTER (WHERE onpremises)        AS zips_delivered,
+       count(*) FILTER (WHERE lookup_status IS NULL)                 AS awaiting_chain,
+       count(*) FILTER (WHERE onpremises_reason LIKE 'hosting:%')    AS hosting_rule_rows
+FROM led_enriched;
 
 \echo ''
-\echo '=== 4 of 4: which classes have a REAL denominator, and which do not ==='
-\echo ''
-\echo '    These classes have a true total, because the loader read a complete'
-\echo '    authoritative file and printed the accounting:'
-\echo ''
-\echo '      school, public       CCD 2023-24: 102,274 rows, 99,596 open,'
-\echo '                           32,003 with no website, 2,643 not operating,'
-\echo '                           190 unusable, 67,438 usable'
-\echo '      fire station         USFA registry: 27,117 departments, all with a'
-\echo '                           5-digit HQ ZIP, 18,432 with no usable website,'
-\echo '                           8,685 usable'
-\echo '      college or univ      NCES IPEDS: about 6,000, essentially complete'
-\echo '      government           CISA .gov: 17,025 domains, 15,706 local'
-\echo ''
-\echo '    These classes have NO knowable denominator from this database,'
-\echo '    because the OSM Overpass query required a website tag AND a postcode'
-\echo '    before fetching anything:'
-\echo ''
-\echo '      library, police, hospital, clinic, telecommunication,'
-\echo '      place of worship, courthouse or prison, research, osm other'
-\echo ''
-\echo '    For those, the row count is a sample of unknown bias, not a census.'
-\echo '    Recovering the denominator means re-querying OSM without the website'
-\echo '    filter, which is a different and much larger fetch, or taking the'
-\echo '    denominator from an external registry per class.'
-\echo ''
-\echo '    External counts supplied by Boris, for comparison against section 1:'
-\echo '      police departments            11,824'
-\echo '      fire departments              29,452'
-\echo '      municipalities                19,429'
-\echo '      counties                       3,144'
-\echo '      colleges and universities      2,609'
-\echo '      other degree-granting          3,020'
-\echo '      K-12 schools            129,000 to 133,000, almost 100,000 public'
+\echo '=== 3 of 4: the SOURCE FILE totals, which no table holds ==='
+\echo '    Every loader drops rows with no usable website before loading, so'
+\echo '    staging can never show them. These come from the loaders own row'
+\echo '    accounting, measured 2026-11-06.'
 
-DROP TABLE IF EXISTS ledger_enriched;
-DROP TABLE IF EXISTS ledger_staging;
+SELECT * FROM (VALUES
+  ('school, public',                'NCES CCD 2023-24',        102274, 99631,  67438, 'source file, and CCD is the census of public schools'),
+  ('school, public',                '20 state directories',     91966,  NULL,  45637, 'source files, OVERLAPPING with CCD, so not additive'),
+  ('school, public',                'lm_fetch ca-cde',           NULL,  NULL,   8816, 'needs a local file, pre-filter total not measured'),
+  ('fire station',                  'USFA national registry',   27117, 27117,   8685, 'source file, about 92 pct of the estimated 29,452'),
+  ('college or university',         'NCES IPEDS',                NULL,  NULL,   6075, 'pre-filter total not measured; universe about 5,629'),
+  ('government, municipal domain',  'CISA .gov registry',        17025, 15706,  14149, 'source file, local government is the 15,706'),
+  ('library',                       'OSM only',                  NULL,  NULL,  14264, 'NOT KNOWABLE: Overpass required a website tag'),
+  ('police',                        'OSM only',                  NULL,  NULL,   2519, 'NOT KNOWABLE: same. Universe about 11,824'),
+  ('hospital',                      'OSM only',                  NULL,  NULL,  12222, 'NOT KNOWABLE: same'),
+  ('telecommunication',             'OSM only',                  NULL,  NULL,    595, 'NOT KNOWABLE: same'),
+  ('place of worship',              'OSM only',                  NULL,  NULL,  47280, 'NOT KNOWABLE: same'),
+  ('overture, mixed',               'Overture places',           NULL,  NULL,13797786, 'pre-filter total is in ovt_places_usa, not measured here'),
+  ('foursquare, mixed',             'Foursquare OS Places',      NULL,  NULL, 275517, 'pre-filter total is in fsq_places_usa, not measured here')
+) AS t(class, source_file, file_rows, file_rows_eligible, loaded, basis);
+
+\echo ''
+\echo '=== 4 of 4: the school universe, de-duplicated ==='
+\echo '    The 194,240 rows read across 21 files OVERLAP: a Texas school is in'
+\echo '    both CCD and tx_askted. CCD is the census, so the denominator for'
+\echo '    public schools is its 99,631 open schools, and the state files exist'
+\echo '    to supply websites for the 32,003 CCD leaves blank.'
+\echo ''
+\echo '    Against Boris figure of 129,000 to 133,000 K-12 schools:'
+\echo '      public, CCD census                  99,631'
+\echo '      private, NCES PSS, no URL anywhere  22,510'
+\echo '      the rest is the gap between those and the 129,000'
+
+SELECT count(DISTINCT left(lpad(btrim(postcode), 5, '0'), 5))  AS distinct_zips_all_school_sources,
+       count(DISTINCT lower(btrim(website)))                   AS distinct_hosts_all_school_sources,
+       count(*)                                                AS rows_all_school_sources
+FROM lm_places_usa
+WHERE category = 'public school' OR source = 'ca_cde';
+
+DROP TABLE IF EXISTS led_enriched;
+DROP TABLE IF EXISTS led_stage;
 
 \echo ''
 \echo '=== done ==='
