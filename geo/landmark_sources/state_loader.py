@@ -36,6 +36,7 @@ afterwards.
 """
 
 import argparse
+import collections
 import importlib.util
 import io
 import json
@@ -491,6 +492,50 @@ def resolve_columns(headers, cfg, rows):
 ID_MIN_UNIQUE = 0.95
 
 
+def report_id_collisions(out):
+    """Say whether rows about to be collapsed by the upsert key are real losses.
+
+    The loader reports "N duplicate ids skipped" at merge time, and that line
+    reads like housekeeping whether it is harmless or catastrophic. Florida's
+    "3,620 duplicate ids skipped" was 98 per cent data loss. Alabama's 2,238 is
+    not, as far as this can tell, because the colliding rows carry the SAME
+    website.
+
+    That is the distinction this prints. Two rows sharing an id and a website
+    are a duplicated entity in the source file, and collapsing them loses
+    nothing a landmark needs: the landmark is the host, and the host is
+    identical. Two rows sharing an id but carrying DIFFERENT websites are two
+    different institutions being merged into one, and that is a real loss.
+
+    Both numbers appear before the merge, so the "duplicate ids skipped" line
+    can be read rather than guessed at.
+
+    out rows are build_row output: index 1 is source_id, index 9 is website.
+    """
+    groups = collections.defaultdict(set)
+    for row in out:
+        groups[row[1]].add((row[9] or "").strip().lower())
+    collapsing = {k: v for k, v in groups.items() if len(v) >= 1}
+    dup_rows = len(out) - len(groups)
+    if not dup_rows:
+        print(f"    upsert key                 {len(groups):>8,} distinct, "
+              f"no collisions")
+        return
+    conflicting = {k: v for k, v in collapsing.items() if len(v) > 1}
+    lost = sum(len(v) - 1 for v in conflicting.values())
+    print(f"\n  the upsert will collapse {dup_rows:,} of those {len(out):,} rows:")
+    print(f"    distinct upsert keys       {len(groups):>8,}")
+    print(f"    keys with ONE website      {len(groups) - len(conflicting):>8,}  "
+          f"harmless, a duplicated entity in the source")
+    print(f"    keys with SEVERAL websites {len(conflicting):>8,}  "
+          f"REAL LOSS, different institutions merged")
+    print(f"    distinct websites lost     {lost:>8,}")
+    if conflicting:
+        print(f"    worst, by distinct websites on one key:")
+        for k, v in sorted(conflicting.items(), key=lambda kv: -len(kv[1]))[:5]:
+            print(f"      {len(v):>3} sites  {k[:58]}")
+
+
 def verify_id_column(col, rows):
     """Reject an auto-detected id column that is not unique per row.
 
@@ -812,7 +857,23 @@ def main():
             # A stable per-row id is required for the upsert. Name plus ZIP is
             # deterministic, so a re-run updates the same row rather than
             # inserting a duplicate.
-            sid = f"{name}|{z5}"
+            #
+            # WHEN THE NAME IS BLANK, FALL BACK TO THE HOST. Arizona's feature
+            # service returns rows with an empty SchoolName, and "|85020" then
+            # became the key for every one of them in that ZIP: 21 schools
+            # collapsed onto one row, 354 distinct websites lost across the
+            # state. The host is the thing a landmark actually is, it is never
+            # blank here because unusable websites were already skipped, and it
+            # is just as deterministic.
+            #
+            # Deliberately NOT adding the host to the key for named rows. That
+            # would change every existing id, so the next load would insert a
+            # second copy of every row beside the first. The residual cost of
+            # leaving it is measured and small: Pennsylvania loses 19 websites
+            # and Alabama 2, where two genuinely different institutions share a
+            # name and a ZIP. report_id_collisions prints that figure on every
+            # run so it stays visible rather than becoming invisible policy.
+            sid = f"{name or host}|{z5}"
         if not sid.strip("|"):
             counts["no id"] += 1
             continue
@@ -834,6 +895,7 @@ def main():
     total = len(out) + sum(counts.values())
     print(f"    sum                        {total:>8,}  "
           f"{'balances' if total == len(rows) else 'DOES NOT BALANCE'}")
+    report_id_collisions(out)
     if not operating and cols.get("status"):
         print(f"\n  NO status_operating in the config, so every row was loaded "
               f"regardless of\n  {cols['status']}. Closed schools are INCLUDED. "

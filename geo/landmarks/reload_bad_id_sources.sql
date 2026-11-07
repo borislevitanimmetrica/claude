@@ -5,7 +5,37 @@
 -- anything that carries enrichment.
 --
 -- =========================================================================
--- WHAT WENT WRONG
+-- SCOPE: az_azgeo ONLY. Florida and Alabama are already correct.
+-- =========================================================================
+--
+-- This file first ran against fl_msid, az_azgeo and al_alsde, and after the
+-- reload two of the three came out right:
+--
+--   fl_msid   80 -> 3,693 rows. Correct: the dry run reports 3,693 distinct
+--             keys over 3,700 usable, and the 7 collapsed rows are virtual
+--             programmes that really do share a name and ZIP
+--   al_alsde  1,797 -> 1,788 rows, which looked like a failure and is not.
+--             2,238 rows collapse, but report_id_collisions shows 1,786 of
+--             the 1,788 keys carry exactly ONE website, so those are
+--             duplicated entity rows in the ALSDE export and collapsing them
+--             loses nothing. Only 2 websites are genuinely lost. Alabama
+--             really does have about 1,788 distinct school sites, and 4,026
+--             was the inflated number
+--   az_azgeo  1,163 -> 3,159, still 331 short of the correct 3,490
+--
+-- ARIZONA HAD A SECOND, DIFFERENT DEFECT. Its feature service returns rows
+-- with an EMPTY SchoolName, so the name-plus-ZIP fallback produced "|85020"
+-- as the key for every unnamed school in that ZIP: 21 collapsed onto one row
+-- there, 15 in 85053, 12 in 85258, and 354 distinct websites were lost across
+-- the state. Fixed by falling back to the HOST when the name is blank, which
+-- is never empty because unusable websites are already skipped. Arizona now
+-- yields 3,490 keys with 23 websites lost instead of 354.
+--
+-- So only az_azgeo needs removing. Re-running this file is still safe for the
+-- others; they are simply not named any more.
+--
+-- =========================================================================
+-- WHAT WENT WRONG ORIGINALLY
 -- =========================================================================
 --
 -- state_loader.resolve_columns falls back to the probe's ncesid detector when
@@ -28,12 +58,19 @@
 -- were never affected. Tennessee's sde_ncesnumber auto-detects at 100.0 per
 -- cent unique and still passes.
 --
+-- RESIDUAL, measured across all 21 jurisdictions and left in place: 79
+-- websites in total, being AZ 23, PA 19, TX 17, MN 16, AL 2, FL 1, IL 1. Each
+-- is two genuinely different institutions sharing a name and a ZIP. Fixing
+-- them needs the host in the key for every row, which would change every
+-- existing id and make the next load insert a duplicate of everything.
+-- report_id_collisions prints the figure on every run so it stays visible.
+--
 -- =========================================================================
 -- PRE-MORTEM FOR THE DELETE, WRITTEN BEFORE PROPOSING IT
 -- =========================================================================
 --
--- WHAT IS DESTROYED: 3,040 rows in landmarks_usa, being fl_msid 80,
--- az_azgeo 1,163 and al_alsde 1,797. Every one of them has lookup_status NULL
+-- WHAT IS DESTROYED: 3,159 az_azgeo rows in landmarks_usa. Every one has
+-- lookup_status NULL
 -- and ip_address NULL, confirmed by the migrate_new_sources run of 2026-11-06
 -- which reported rdap_ok_now = 0 and awaiting_the_chain equal to the full row
 -- count for all three. No RDAP lookup, no registrant, no ZIP inference and no
@@ -72,7 +109,7 @@ SELECT source,
        count(*) FILTER (WHERE onpremises IS NOT NULL)      AS has_onpremises,
        count(*) FILTER (WHERE registrant_1 IS NOT NULL)    AS has_registrant
 FROM landmarks_usa
-WHERE source IN ('fl_msid', 'az_azgeo', 'al_alsde')
+WHERE source IN ('az_azgeo')
 GROUP BY 1
 ORDER BY 1;
 
@@ -84,7 +121,7 @@ DECLARE
 BEGIN
     SELECT count(*) INTO enriched
     FROM landmarks_usa
-    WHERE source IN ('fl_msid', 'az_azgeo', 'al_alsde')
+    WHERE source IN ('az_azgeo')
       AND (lookup_status IS NOT NULL
         OR ip_address IS NOT NULL
         OR onpremises IS NOT NULL
@@ -107,13 +144,13 @@ $guard$;
 \echo ''
 \echo '=== 3 of 4: the delete, scoped to exactly three sources ==='
 DELETE FROM landmarks_usa
-WHERE source IN ('fl_msid', 'az_azgeo', 'al_alsde');
+WHERE source IN ('az_azgeo');
 
 \echo ''
 \echo '=== 4 of 4: confirm they are gone and nothing else moved ==='
-SELECT count(*) AS rows_remaining_for_those_three
+SELECT count(*) AS az_rows_remaining
 FROM landmarks_usa
-WHERE source IN ('fl_msid', 'az_azgeo', 'al_alsde');
+WHERE source IN ('az_azgeo');
 
 SELECT count(*)                                              AS landmarks_usa_total,
        count(*) FILTER (WHERE lookup_status = 'true')         AS rdap_ok_total,
@@ -123,13 +160,11 @@ SELECT count(*)                                              AS landmarks_usa_to
 FROM landmarks_usa;
 
 \echo ''
-\echo '    rdap_ok_total must still be 1,032,744 and hosting_rule_rows 243,716.'
+\echo '    rdap_ok_total must still be 12,799,143 and hosting_rule_rows 243,716.'
 \echo '    If either moved, stop.'
 \echo ''
 \echo '    Next, reload the three with the fix, then re-migrate:'
-\echo '      python3 state_loader.py --state FL --replace'
 \echo '      python3 state_loader.py --state AZ --replace'
-\echo '      python3 state_loader.py --state AL --replace'
 \echo '      psql -f geo/landmarks/migrate_new_sources.sql'
 \echo ''
 \echo '=== done ==='
