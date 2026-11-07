@@ -476,8 +476,62 @@ def resolve_columns(headers, cfg, rows):
                 test = (probe.looks_like_zip if role == "zip"
                         else probe.looks_like_url)
                 cands = probe.winnow(cands, rows, test)
-            out[role] = probe.prefer(cands, "school") if cands else None
+            chosen = probe.prefer(cands, "school") if cands else None
+            if role == "id" and chosen:
+                chosen = verify_id_column(chosen, rows)
+            out[role] = chosen
     return out
+
+
+# An auto-detected id must be unique on at least this share of the rows that
+# carry a value. 0.95 rather than 1.0 because a real per-school id file can
+# still contain a handful of genuine duplicate rows: Florida has 7 virtual
+# programmes sharing a name and ZIP, and Texas's configured NCES id repeats on
+# 133 of 7,307.
+ID_MIN_UNIQUE = 0.95
+
+
+def verify_id_column(col, rows):
+    """Reject an auto-detected id column that is not unique per row.
+
+    THIS EXISTS BECAUSE IT SILENTLY DESTROYED 98 PER CENT OF FLORIDA.
+    Measured 2026-11-06: the Florida load reported "merged 80 rows (3,620
+    duplicate ids skipped)" out of 3,700 usable schools. states.json names no
+    id column for Florida, so resolve_columns fell back to the probe's ncesid
+    detector, which matched FEDERAL_DIST_NO. That is the DISTRICT number, and
+    Florida has about 80 districts, so every school in a district collapsed
+    onto one row in the upsert and 3,620 real schools were dropped as
+    duplicates. Reproduced exactly: name plus ZIP gives 3,693 distinct ids for
+    the same 3,700 rows, so only 7 are true duplicates.
+
+    A CONFIGURED id is trusted without this check, because a human read the
+    file and the survey recorded it. An AUTO-DETECTED one is a guess about what
+    a column name means, and a guess that becomes the upsert key can delete
+    data. Texas and Illinois name theirs in states.json and are unaffected.
+
+    The same failure was live on every jurisdiction with no configured id. From
+    the 2026-11-06 load: FL 3,620 of 3,700 lost, AZ 2,402 of 3,565, AL 2,229 of
+    4,026, OH 886 of 2,524, PA 221 of 4,387, SC 135 of 1,427, MN 126 of 4,152.
+    """
+    vals = [(r.get(col) or "").strip() for r in rows]
+    present = [v for v in vals if v]
+    if not present:
+        print(f"  id column      {col} REJECTED: empty on every row; "
+              f"using name plus ZIP")
+        return None
+    uniq = len(set(present))
+    ratio = uniq / len(present)
+    if ratio < ID_MIN_UNIQUE:
+        print(f"  id column      {col} REJECTED: {uniq:,} distinct values over "
+              f"{len(present):,} rows, {100.0 * ratio:.1f} pct unique")
+        print(f"                 that is not a per-row id. Using name plus ZIP "
+              f"instead, which is")
+        print(f"                 deterministic and does not collapse rows onto "
+              f"a shared key.")
+        return None
+    print(f"  id column      {col} auto-detected, {100.0 * ratio:.1f} pct "
+          f"unique over {len(present):,} rows")
+    return col
 
 
 def content_fallback(headers, rows, role, out):
