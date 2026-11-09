@@ -212,6 +212,7 @@ func main() {
 		log.Printf("cache holds %d allocations; -max-age is 0, so NOTHING EXPIRES and a row fetched "+
 			"months ago still answers", len(covered))
 	}
+	logCacheAges(ctx, conn)
 
 	client := &http.Client{Timeout: *timeout}
 	minGap := time.Duration(float64(time.Second) / *rate)
@@ -425,7 +426,7 @@ func runVerifySample(ctx context.Context, conn *pgx.Conn, client *http.Client, b
 	}
 	log.Printf("sampling %d of them at a stride of %d, so the sample spans every prefix width", want, stride)
 
-	var narrower, identical, other, regChanged, failed, done int
+	var narrower, identical, other, regChanged, staleRegistrant, failed, done int
 	var lastCall time.Time
 	for i := 0; i < len(pool) && done < want; i += stride {
 		it := pool[i]
@@ -457,7 +458,17 @@ func runVerifySample(ctx context.Context, conn *pgx.Conn, client *http.Client, b
 		switch {
 		case start == it.cov.start && end == it.cov.end:
 			identical++
-			log.Printf("[%d/%d] %s same allocation", done, want, it.p)
+			// Identical boundaries make this a STALENESS test rather than a
+			// precision test: the registry returned the same allocation, so any
+			// difference in the registrant is drift since the row was fetched.
+			// This is the only measurement of the change rate the project has.
+			if !strings.EqualFold(strings.TrimSpace(cachedReg), strings.TrimSpace(rec.registrant)) {
+				staleRegistrant++
+				log.Printf("[%d/%d] %s STALE same allocation, registrant %q -> %q",
+					done, want, it.p, cachedReg, rec.registrant)
+			} else {
+				log.Printf("[%d/%d] %s same allocation, same registrant", done, want, it.p)
+			}
 		case freshSpan < cachedSpan:
 			narrower++
 			changed := !strings.EqualFold(strings.TrimSpace(cachedReg), strings.TrimSpace(rec.registrant))
@@ -488,6 +499,13 @@ func runVerifySample(ctx context.Context, conn *pgx.Conn, client *http.Client, b
 	if answered > 0 {
 		log.Printf("  narrower rate: %.2f per cent of answered queries",
 			100*float64(narrower)/float64(answered))
+	}
+	if identical > 0 {
+		log.Printf("  STALENESS: of the %d identical allocations, %d had a registrant that has CHANGED "+
+			"since the row was stored (%.2f per cent). Identical boundaries make that drift, not "+
+			"imprecision, and it is the only measurement of the change rate this project has. Use it "+
+			"to choose -max-age rather than picking a duration by feel",
+			identical, staleRegistrant, 100*float64(staleRegistrant)/float64(identical))
 	}
 	if narrower > 0 {
 		log.Printf("  of those %d narrower answers, %d carry a DIFFERENT registrant. That is the number "+
@@ -823,6 +841,42 @@ func ensureTable(ctx context.Context, conn *pgx.Conn) error {
 		return fmt.Errorf("table does not exist: run geo/rdap_registrant_tbl.sql first")
 	}
 	return nil
+}
+
+// logCacheAges prints the age distribution of held allocations on every run, so
+// drift is visible by default instead of needing to be asked about. Nothing read
+// fetched_at before this, which is how rows from September went on answering in
+// November unnoticed.
+func logCacheAges(ctx context.Context, conn *pgx.Conn) {
+	rows, err := conn.Query(ctx, `
+SELECT CASE WHEN fetched_at > now() - interval '7 days'   THEN 'under 7 days'
+            WHEN fetched_at > now() - interval '30 days'  THEN '7 to 30 days'
+            WHEN fetched_at > now() - interval '90 days'  THEN '30 to 90 days'
+            WHEN fetched_at > now() - interval '365 days' THEN '90 to 365 days'
+            ELSE 'over a year' END AS bucket,
+       count(*)
+FROM rdap_registrant_tbl
+WHERE family(start_ip) = 4
+GROUP BY 1
+ORDER BY min(fetched_at) DESC`)
+	if err != nil {
+		log.Printf("could not read the cache age distribution: %v", err)
+		return
+	}
+	defer rows.Close()
+	log.Print("age of held allocations:")
+	for rows.Next() {
+		var bucket string
+		var n int
+		if err := rows.Scan(&bucket, &n); err != nil {
+			log.Printf("  age row unreadable: %v", err)
+			return
+		}
+		log.Printf("  %-16s %8d", bucket, n)
+	}
+	if err := rows.Err(); err != nil {
+		log.Printf("  age distribution incomplete: %v", err)
+	}
 }
 
 // countCached reports every IPv4 allocation held, ignoring age, so an expiry run

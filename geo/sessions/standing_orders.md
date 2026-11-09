@@ -102,7 +102,33 @@ used freely in committed SQL.
   variable, or ask.
 - Any command block containing `sudo` starts with `sudo -v` on its own line.
 
-## 5. Do not second-guess the original instance
+## 5. Command order is part of the command
+
+Issued 2026-11-09, after a run command was given without the `git pull` that had
+to precede it. The tool rejected `-verify-sample` because the flag existed only
+in a commit Boris had not pulled, and the failure was entirely mine.
+
+**Never present commands in an order different from the order they must run
+in.** No "run this, but first run that". No "#2, which I would run first". If
+something must happen first, it goes first in the message. If I want to
+recommend a different order, I reorder the blocks — I do not annotate them.
+
+**Always state explicitly whether commands must run sequentially or may run
+concurrently.** Every multi-command block and every set of blocks carries one of:
+
+- SEQUENTIAL: each command requires the previous one to have completed.
+- CONCURRENT: these may run at the same time, in any order.
+- Or, when it matters, which specific pairs conflict and why.
+
+This includes the dependency that is easiest to forget: anything that uses code
+or SQL I have just written requires `git pull` to have completed first, and that
+pull belongs in the same block, ahead of it, joined with `&&`.
+
+A long-running job in another terminal is part of the ordering question too. If a
+new command contends with it — same table, same remote rate limit, same lock —
+say so when issuing it, not afterwards.
+
+## 6. Do not second-guess the original instance
 
 Where a previous session made a decision and recorded its reasoning, report
 disagreement rather than silently redesigning. `prefer()`'s physical-versus-
