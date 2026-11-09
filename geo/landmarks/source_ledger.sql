@@ -44,7 +44,16 @@ SELECT source,
        count(*) FILTER (WHERE ip_address IS NOT NULL)                  AS resolved,
        count(*) FILTER (WHERE lookup_status = 'true')                  AS rdap_ok,
        count(*) FILTER (WHERE onpremises)                              AS onpremises_true,
-       count(*) FILTER (WHERE onpremises IS NULL)                      AS onpremises_null,
+       -- NOT_EVALUATED and EVALUATED_TO_NULL are different things and the
+       -- first version of this file conflated them in one onpremises_null
+       -- column. A row that never reached RDAP was never offered to the rule
+       -- at all; a row that reached RDAP and came back NULL was judged and
+       -- found unjudgeable, by rule 0 for no registrant or rule 1 for no ZIP.
+       -- Only the second is a finding.
+       count(*) FILTER (WHERE onpremises IS NULL
+                          AND lookup_status = 'true')                  AS null_after_rdap,
+       count(*) FILTER (WHERE onpremises IS NULL
+                          AND lookup_status IS DISTINCT FROM 'true')   AS never_evaluated,
        count(*) FILTER (WHERE onpremises_reason LIKE 'hosting:%')      AS hosting_rule_rows,
        count(DISTINCT overture_zip) FILTER (WHERE onpremises)          AS zips_delivered,
        count(DISTINCT ip_address)   FILTER (WHERE onpremises)          AS addresses_delivered
@@ -66,8 +75,9 @@ ORDER BY records DESC;
 \echo '=== the same with the columns that expose an unexpected value ==='
 \echo '    with_url BELOW records should be impossible: the migration requires'
 \echo '    a non-empty websites. with_zip far below with_source_postcode means'
-\echo '    the chain lost a ZIP the source file had. onpremises_null is rule 0'
-\echo '    or rule 1, meaning no registrant or no ZIP.'
+\echo '    the chain lost a ZIP the source file had. null_after_rdap is rule 0'
+\echo '    or rule 1, no registrant or no ZIP, and is the real finding;'
+\echo '    never_evaluated just means the row did not reach RDAP.'
 SELECT source,
        records,
        with_url,
@@ -77,7 +87,8 @@ SELECT source,
        resolved,
        rdap_ok,
        onpremises_true,
-       onpremises_null,
+       null_after_rdap,
+       never_evaluated,
        hosting_rule_rows,
        zips_delivered,
        addresses_delivered
@@ -102,15 +113,18 @@ SELECT sum(records)            AS records,
        sum(with_zip_and_url)   AS with_zip_and_url,
        sum(rdap_ok)            AS rdap_ok,
        sum(onpremises_true)    AS onpremises_true,
-       sum(onpremises_null)    AS onpremises_null,
+       sum(null_after_rdap)    AS null_after_rdap,
+       sum(never_evaluated)    AS never_evaluated,
        sum(hosting_rule_rows)  AS hosting_rule_rows
 FROM src_ledger;
 
 \echo ''
 \echo '    Expected from the 2026-11-06 runs: records 15,388,679,'
 \echo '    rdap_ok 12,897,538, onpremises_true 134,292, hosting_rule_rows'
-\echo '    243,716. zips_delivered does not sum, because two sources can'
-\echo '    deliver the same ZIP; the corpus figure is 16,161.'
+\echo '    243,716, and null_after_rdap 194,264 which is the figure the chain'
+\echo '    printed as NULL among lookup_status true rows. zips_delivered does'
+\echo '    NOT sum, because two sources can deliver the same ZIP; the corpus'
+\echo '    figure is 16,161.'
 
 DROP TABLE IF EXISTS src_ledger;
 

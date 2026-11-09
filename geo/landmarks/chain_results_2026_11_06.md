@@ -47,18 +47,25 @@ hoping. New coverage has to come from somewhere else.
 | government, municipal domain | 14,149 | 10,248 | 51 | 0.36% | 44 |
 | research | 768 | 698 | 50 | 6.51% | 30 |
 
-### Schools: I was low by 2.7 times
+### Schools: the per-source ledger corrects my own scoring
 
-`school, public` went from 8,816 accepted with 54 on-premises and 26 ZIPs, which
-was California alone, to **121,891 accepted with 2,004 on-premises and 529
-ZIPs**. CCD and the 20 state files therefore contributed about **1,950
-landmarks and 503 ZIPs**.
+I first wrote that I was low by 2.7 times. That compared my CCD-only prediction
+against CCD **plus** 20 state files, which is not the same quantity.
+`source_ledger.sql` separates them:
 
-I predicted roughly 720 landmarks, by applying the OSM `school` rate of 1.07 per
-cent. The authoritative files came in at **1.64 per cent**, half again higher. I
-had said they *should* beat the OSM rate because they are one row per
-institution rather than per building, and then declined to put a number on the
-improvement. The number was 1.5x on rate and 2.7x on the count.
+| source | records | on-premises | ZIPs | rate |
+|---|---|---|---|---|
+| **ccd** | 67,438 | **933** | 340 | 1.38% |
+| the 20 state files | 45,637 | **1,017** | — | — |
+| ca_cde | 8,816 | 54 | 26 | 0.61% |
+| **class total** | **121,891** | **2,004** | **529** | 1.64% |
+
+The 22 per-source figures sum to exactly 2,004, so the class total reconciles.
+
+**CCD alone: I predicted roughly 720 and it delivered 933, low by 1.3 times.**
+That is a reasonable prediction, not a bad one. The 2.7x figure was an artefact
+of comparing against a different population, and the 20 state files contributing
+1,017 landmarks was something I never predicted separately at all.
 
 ### Fire: that prediction held
 
@@ -85,12 +92,33 @@ on an earlier run no longer do. At 0.1 per cent of the Overture corpus this is
 not alarming, but a full chain run can take rows away as well as add them, and
 nothing in the tooling says so.
 
-**The locality fallback was never broken.** I flagged it as a defect when
-`dotgov` showed only 2,312 of 11,474 resolved rows with a ZIP. After this run
-`overture_zip_source = 'locality'` holds **13,286** rows. It had simply never
-been re-run after more locality evidence accumulated. `dotgov` itself still sits
-at 51 on-premises and 44 ZIPs, so the fallback working does not rescue
-municipalities, but the diagnosis was wrong.
+**The locality fallback IS broken, and I wrongly retracted that.** I first
+flagged it as a defect when `dotgov` showed only 2,312 of 11,474 resolved rows
+with a ZIP. Then the chain printed `overture_zip_source = 'locality'` holding
+13,286 rows and I retracted the diagnosis, saying it had simply never been
+re-run.
+
+**That retraction was wrong.** 13,286 is the count across the WHOLE CORPUS, not
+dotgov's share of it. `source_ledger.sql` settles it per source:
+
+| | dotgov |
+|---|---|
+| records | 14,149 |
+| `postcode` from the source file | **0**, by design |
+| `overture_zip` after the fallback | **2,312** |
+| share with a ZIP | **16.3 per cent** |
+| rdap_ok | 10,248 |
+| on-premises | 51 |
+
+So 7,936 dotgov rows have a successful RDAP lookup and no ZIP, which means
+rule 1 discards them before the registrant is ever considered. The original
+diagnosis stands: the locality fallback resolves a ZIP for about a sixth of
+`dotgov`, and that is the ceiling on what municipalities can contribute until it
+is fixed.
+
+I misread a corpus-wide figure as a per-source one and retracted a correct
+finding on the strength of it. The per-source ledger exists precisely to stop
+that, and it caught me on its first run.
 
 **And the two hosting-rule counts were never in conflict.** `migrate_new_sources`
 reported 243,716 rows carrying a `hosting:` reason; the onpremises step reported
