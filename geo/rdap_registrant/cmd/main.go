@@ -198,7 +198,25 @@ func main() {
 	if err != nil {
 		log.Fatalf("PostgreSQL connection failed: %v", err)
 	}
-	defer conn.Close(context.Background())
+	// BOUND THE CLOSE. This was conn.Close(context.Background()), which has no
+	// deadline, and it is the ONLY unbounded operation between the final log line
+	// and process exit. On 2026-11-09 a completed fill printed its summary and
+	// then never returned to the shell, which is exactly the shape an
+	// indefinitely blocking Terminate on a wedged socket produces.
+	//
+	// I have NOT confirmed that was the cause: confirming it needs a goroutine
+	// dump from the stuck process, and the process in question was ended. The fix
+	// is correct regardless, because a network close at process exit must not be
+	// able to outlive the work it is tidying up after. Every result is already
+	// committed by storeRecord one query at a time, so abandoning the close costs
+	// nothing.
+	defer func() {
+		closeCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancel()
+		if err := conn.Close(closeCtx); err != nil {
+			log.Printf("closing the database connection: %v (results were already committed)", err)
+		}
+	}()
 
 	if err := ensureTable(ctx, conn); err != nil {
 		log.Fatalf("rdap_registrant_tbl is not usable: %v", err)
