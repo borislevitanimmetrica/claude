@@ -73,3 +73,31 @@ else is a decision, not an inference.
 - Verify in the sandbox before sending: `grep -c` for backslashes must be 0, and
   the code must build.
 - All SQL as double-quoted single-line Go strings; no backtick raw strings.
+
+## Schema: read the database, never the source file
+
+Three times in one session I wrote SQL against a column that does not exist,
+and every time the name came from reading Go or Python rather than the
+database:
+
+- `rdap_registrant` for `rdap_registrant_tbl`, taken from a filename
+- `rdap_registrant_tbl.registrant_zip`, which has never existed. The table
+  holds `start_ip, end_ip, registrant, registrant_role, handle, network_name,
+  rir, queried_for, http_status, note, fetched_at` and no address at all
+- `ip2city_dbiplite_traceroute_tbl.sampled_ip`, taken from the INSERT at
+  `geo/main.go` line 1325. The deployed table does not have it
+
+**Before writing SQL against any column, confirm it from
+`information_schema.columns`.** A source file states what the current build
+would write, not what the deployed table holds, and the two drift. The third
+case was the most expensive kind of wrong, because the file errored on its
+first statement and wasted a round trip.
+
+The drift is itself diagnostic and worth checking for deliberately: a table
+missing a column the current writer inserts proves those rows were written by
+an older build, which is how the 72,755 empty demand-side traceroute rows were
+explained.
+
+Practical rule for any new analysis file: section 1 dumps
+`information_schema.columns` for every table it touches, and every later
+section uses only columns already proven to exist by a successful run.
