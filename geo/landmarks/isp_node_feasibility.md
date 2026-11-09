@@ -212,17 +212,78 @@ to a CLLI, compare the CLLI's ZIP with the range's ip-api ZIP and count
 same-ZIP, adjacent-ZIP and neither. That is the experiment this whole assessment
 is a prerequisite for.
 
-## Recommended order
+## RESULT: the test ran, 2026-11-06
 
-1. **Run `hoiho_suffixes.sql` then `carrier_node_hoiho_test.sql`.** Costs a
-   212 KB download and two queries, and it says whether any of this applies to
-   our data.
-2. **If coverage is good, apply the rules to the supply side first**, because
-   there the answer is checkable: a landmark's ZIP is known, so a decoded node
-   city can be compared against the landmark's own city.
-3. **Settle the OSM `telecom=exchange` US count from your machine**, since
+**Supply side coverage is 74.8 per cent, which is far better than I would have
+guessed, and the demand side has no hostnames at all.**
+
+| | value |
+|---|---|
+| supply trace rows | 30,226, of which 21,314 reached |
+| with a hostname | 28,180 |
+| distinct hostnames | 7,592 |
+| distinct node addresses | 8,539 |
+| **Hoiho-covered hostnames** | **5,680 of 7,591, 74.8 pct** |
+| of those, `good` class | 5,501 |
+| **covered by rules whose hints include CLLI** | **3,169** |
+| covered by city-only hints | 4,812 |
+
+What explains our data, by traces:
+
+| suffix | ppv | hints | distinct hostnames | traces |
+|---|---|---|---|---|
+| cogentco.com | 0.995 | iata | 614 | 3,881 |
+| alter.net | 0.991 | clli, iata, place | 195 | 2,364 |
+| comcast.net | 0.999 | clli, facility, place | 1,099 | 2,321 |
+| charter.com | 0.998 | clli, iata | 870 | 1,896 |
+| gtt.net | 0.985 | iata | 40 | 1,864 |
+| zayo.com | 0.989 | iata | 341 | 1,783 |
+| verizon-gni.net | 0.977 | clli | 349 | 1,305 |
+| level3.net | 0.995 | place | 417 | 1,174 |
+| he.net | 0.995 | iata | 137 | 1,096 |
+| lumen.tech | 0.946 | place | 171 | 959 |
+
+The gap is small and concentrated enough to close by hand. Uncovered, by
+traces: `twelve99-cust.net` 1,027, `cox.net` 216, `hostasaurus.com` 193,
+`uniti.net` 158, `twelve99.net` 116, `as701.net` 96, `att.net` 81,
+`spectrum.com` 62. One rule for Arelion's customer-facing suffix is the single
+biggest win available.
+
+### The demand side has zero hostnames, and that is the actionable finding
+
+`ip2city_dbiplite_traceroute_tbl`: **72,755 rows, 0 with a hostname.** It is
+2.4 times the supply corpus and it is the side that matters more, because it is
+the node serving a probed customer range, which is exactly what the premise is
+about.
+
+**This is not a limitation of the approach.** `geo/main.go` writes both tables
+from the same code path: `reverseDNS` at line 1310 does a `LookupAddr` with a
+3-second timeout, and `writeResult` at line 1325 inserts `last_hop_hostname`
+into the demand table exactly as line 1377 does for the supply table. The
+capability is there and the column is empty.
+
+I do not know why and will not guess. `demand_hostname_backfill.sql` settles it
+in one query, because the answer determines the response: if `last_hop_ip` is
+populated and only the names are missing, this is a reverse-DNS backfill over at
+most 72,755 addresses, which is free and takes minutes. If `last_hop_ip` is also
+empty, the traces never reached a node and the fix is re-running traceroute,
+which is a different order of cost.
+
+## Recommended order, updated
+
+1. ~~Run `hoiho_suffixes.sql` then `carrier_node_hoiho_test.sql`~~ **done.
+   74.8 per cent supply coverage, 3,169 hostnames under CLLI-hint rules.**
+2. **Run `demand_hostname_backfill.sql`.** One query, and it decides whether
+   the demand side is a free backfill or a re-trace. This is now the top item.
+3. **Write one rule for `twelve99-cust.net`**, 1,027 traces and the largest
+   single uncovered operator.
+4. **Apply the rules to the supply side**, where the answer is checkable: a
+   landmark's ZIP is known, so a decoded node city can be compared against the
+   landmark's own city. That measures the ruleset's real accuracy on our data
+   rather than trusting CAIDA's ppv.
+5. **Settle the OSM `telecom=exchange` US count from your machine**, since
    Overpass is reachable there and it is a two-minute query.
-4. **Do not download the ITDK node files.** 96 per cent MaxMind.
-5. **Treat CLLI-to-ZIP as a procurement question, not an engineering one**, and
+6. **Do not download the ITDK node files.** 96 per cent MaxMind.
+7. **Treat CLLI-to-ZIP as a procurement question, not an engineering one**, and
    decide whether it is worth paying for LERG access. Everything upstream of it
-   is free and already measured.
+   is free and now measured.
