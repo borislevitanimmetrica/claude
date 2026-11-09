@@ -160,6 +160,13 @@ func main() {
 		"query EVERY candidate even when a cached allocation already covers it. REQUIRED to give decomposed "+
 			"subranges their own identification, because a child always sits inside its parent's cached "+
 			"allocation and would otherwise be skipped. Costs one query per candidate with no containment saving")
+	minCoverPrefix := flag.Int("min-cover-prefix", 0,
+		"an allocation WIDER than this prefix length may not retire a candidate, so the candidate is "+
+			"queried directly instead. 0 lets any allocation retire, which is the historical behaviour. "+
+			"Measured 2026-11-09 on a 200-candidate sample: 23.5 per cent of retired candidates had a "+
+			"narrower allocation available, and the worst offenders were /8-wide registry rows such as "+
+			"192.0.0.0-192.255.255.255 'Internet Assigned Numbers Authority', which hid "+
+			"'University of Texas System' at 192.88.12.0/23")
 	maxAge := flag.Duration("max-age", 0,
 		"treat a cached allocation fetched longer ago than this as absent, so its candidates are queried "+
 			"again and the row is updated in place (0 = never expire, which is the historical behaviour)")
@@ -282,10 +289,24 @@ func main() {
 			(time.Duration(len(targets)) * minGap).Round(time.Minute))
 	}
 
+	var coverTooWide int64
+	if *minCoverPrefix > 0 {
+		coverTooWide = int64(1) << uint(32-*minCoverPrefix)
+		log.Printf("-min-cover-prefix %d: an allocation spanning more than %d addresses will not retire "+
+			"a candidate", *minCoverPrefix, coverTooWide)
+	}
+	var tooWideToRetire int
+
 	for _, p := range targets {
-		if _, ok := lookupCovered(covered, p); ok && !*ignoreCache {
-			alreadyCovered++
-			continue
+		if hit, ok := lookupCovered(covered, p); ok && !*ignoreCache {
+			// A very wide allocation is poor evidence about a narrow candidate
+			// inside it. Retiring on one trades a query for an answer that may name
+			// the registry rather than the holder.
+			if coverTooWide == 0 || int64(hit.end)-int64(hit.start)+1 <= coverTooWide {
+				alreadyCovered++
+				continue
+			}
+			tooWideToRetire++
 		}
 		if *dryRun {
 			// Not covered, so count it as work the cache cannot yet answer. Do NOT add
@@ -344,6 +365,10 @@ func main() {
 
 	log.Printf("done: %d already covered by cache, %d queried, %d failed, %d rate limited",
 		alreadyCovered, queried, failed, rateLimited)
+	if tooWideToRetire > 0 {
+		log.Printf("  %d candidates WERE covered but only by an allocation wider than /%d, so they were "+
+			"queried directly instead", tooWideToRetire, *minCoverPrefix)
+	}
 	if queried > failed {
 		log.Printf("cache now holds %d allocations", len(covered))
 	}
