@@ -40,13 +40,69 @@
 -- ARIN)", or an empty string. So these rows survive every repair run.
 --
 --
--- HOW TO RUN
+-- HOW TO RUN, AND WHAT IT ACTUALLY COSTS
 --
 --   cd /home/boris/geo/src/claude/geo/landmarks
 --   psql -X -f rdap_filler_allocations.sql
 --
--- Seconds, not minutes: it reads 12,099 allocation rows and counts candidates
--- against them.
+-- I wrote "seconds, not minutes" here as though it were a fact. MEASURED
+-- 2026-11-09 on the real data:
+--
+--   section 1    1 minute 36 seconds
+--   section 2    0.3 seconds
+--   section 3    4 HOURS 20 MINUTES
+--
+-- Section 3 is the offender and the cause is structural, not incidental: it
+-- runs two correlated subqueries per candidate, each scanning the allocation
+-- set, over 393,003 candidates against roughly 18,000 allocations. That is
+-- some seven billion inet comparisons with no index serving them. Standing
+-- order 3 requires a MEASURED time or an estimate labelled as an estimate,
+-- and I gave neither.
+--
+-- DO NOT RE-RUN SECTION 3 AS WRITTEN. The result it produced is recorded
+-- below so nobody pays four hours for it twice. If it has to be recomputed,
+-- the allocation set should be reduced to int8range under a GiST index first,
+-- as geo/landmarks/rdap_fill_coverage_now.sql does.
+--
+-- MEASURED RESULT, 2026-11-09:
+--
+--   candidates                      393,003
+--   covered_by_something            342,180
+--   covered_ONLY_by_filler            9,160
+--   covered_by_a_real_registrant    333,020
+--
+-- Note 393,003 against the 281,935 the fill reports. The difference is real
+-- and expected: this file counts every ip2city_dbiplite_tbl row with
+-- source = 'dbip' and masklen < 24, whereas loadCandidates additionally joins
+-- rdap_fill_cand_tbl and removes space covered by an active geo_exclusions
+-- prefix. Neither number is wrong; they answer different questions.
+--
+--
+-- WHY THE 9,160 ARE THE ONLY ONES THAT MATTER, which I had wrong
+--
+-- decomposition_exclusions is DoD ONLY. Its own table comment says so: "Policy
+-- is DoD only: a registrant name cannot distinguish infrastructure space from
+-- space serving end users, so nothing else qualifies." The active patterns are
+-- %dod network information center%, %department of defense%, %air force
+-- systems networking%, %navy network information center%, %usaisc% and the
+-- exact string DIA.
+--
+-- So the registrant drives exactly one decision: is this DoD space. Against
+-- that test, the 23.5 per cent precision loss verify-sample measured is almost
+-- entirely harmless. Comcast Cable Communications, LLC and Comcast IP
+-- Services, L.L.C. both answer "not DoD" identically, and so do HEALTHSOUTH
+-- REHAB and University of Texas System. I previously called those "the ones
+-- that matter". They are not. They would matter to a policy that tried to
+-- distinguish datacentre space from end-user space, and that policy was
+-- considered and REJECTED, for the reason written in the table comment.
+--
+-- A FILLER registrant is different in kind. An empty string, or Internet
+-- Assigned Numbers Authority over the whole of 192/8, makes
+-- registrantKnown = true while carrying no information about whether anything
+-- inside it is DoD. That is the one case where retirement by containment
+-- converts "we do not know" into "we checked, it is fine". 9,160 candidates
+-- are in that state, which at one query per second is about two and a half
+-- hours to resolve honestly.
 
 \timing on
 \pset pager off
