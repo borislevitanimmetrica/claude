@@ -104,7 +104,75 @@ the chain's own summary counted 134,243, a difference of 49. Those are rows with
 `onpremises = true` and `lookup_status` something other than `'true'`. Harmless,
 and noted so it is not rediscovered as a bug.
 
-## The demand side is worse than either branch I offered
+## RESOLVED: the demand table holds ip-api lookups, not traceroutes
+
+`demand_trace_forensics.sql`, 2026-11-06. The hypothesis is confirmed and the
+column that settles it is `probe_method`:
+
+| probe_method | status | rows |
+|---|---|---|
+| **ip-api** | success | 72,748 |
+| **ip-api** | error | 7 |
+
+All 72,755 rows. The 7 errors carry a `classification_note` reading
+`Get "http://ip-api.com/json/..." : context deadline exceeded`, which is an
+HTTP timeout against ip-api, not a traceroute failure.
+
+What is populated, and what is not:
+
+| column | populated |
+|---|---|
+| `hop_count` | 72,755 |
+| `attempts` | 72,755 |
+| `probe_method` | 72,755 |
+| `city` | 72,746 |
+| `lat` | 72,748 |
+| `isp` | 72,708 |
+| `org` | 71,642 |
+| `zip` | 65,621 |
+| `as` | 63,510 |
+| **`last_hop_ip`** | **0** |
+| **`last_hop_hostname`** | **0** |
+| **`last_hop_number`** | **0** |
+| `city_target` | 0 |
+
+So the ip-api side is nearly complete and the traceroute side is entirely
+empty. `hop_count` being populated on all 72,755 is the one oddity left: an
+ip-api lookup has no hops, so whatever value it holds is not a hop count.
+
+**NO TRACEROUTE HAS EVER RUN ON THE DEMAND SIDE.** The table name says
+traceroute and its contents are an ip-api cache. That is the whole explanation
+for the status vocabulary differing, for the empty addresses, and for the
+August-to-September dates.
+
+For contrast, here is what a real trace looks like, from the supply table:
+
+| status | rows | have_last_hop_ip | have_hostname |
+|---|---|---|---|
+| reached | 21,314 | 21,314 | 21,314 |
+| excluded-internal | 6,058 | 6,058 | 6,030 |
+| reached-unnamed | 1,959 | 1,959 | **0** |
+| unreachable | 835 | 835 | 835 |
+| incomplete | 59 | 0 | 0 |
+| excluded-mil | 1 | 1 | 1 |
+
+`reached-unnamed` having addresses and no hostnames is by design: it is the
+classifier's fallback to the first hop with no reverse DNS at all.
+
+### What that costs
+
+The demand side is a measurement campaign, not a backfill. The floor is the
+**72,755 ranges already probed**; the ceiling is the probe estate at
+**2,097,870 ranges**. The supply side's 30,226 traces ran 2026-10-25 to
+2026-10-31, so six days for 30,226 is the only throughput figure available, and
+I have not confirmed what limited it.
+
+Against that cost sits the Hoiho result: **74.8 per cent of supply-side
+hostnames are already decodable**, and the demand side is the one that answers
+where a customer range's serving node sits. Whether 72,755 traces are worth it
+is Boris's call, and it is now a priced decision rather than an open question.
+
+## What the demand side looked like before this was resolved
 
 `demand_hostname_backfill.sql` was written to distinguish two cases. Neither
 holds.
