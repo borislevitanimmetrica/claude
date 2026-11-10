@@ -176,9 +176,20 @@ GROUP BY 1
 ORDER BY 2 DESC;
 
 \echo ''
-\echo 'Rule 1 (no Overture ZIP) should dominate. If it does not, the ZIP gate'
-\echo 'is NOT the binding constraint and the rest of this file is beside the'
-\echo 'point. Read that number before reading any other.'
+\echo 'DISREGARD THE ORIGINAL INSTRUCTION HERE. It said rule 1 should dominate'
+\echo 'this breakdown and that the file was beside the point otherwise. That'
+\echo 'test was invalid and nearly caused a correct result to be discarded.'
+\echo ''
+\echo 'VERIFIED: ovt_resolve_hosts.py builds its rule string only to PRINT in'
+\echo '--dry-run, at line 1368. It never writes onpremises_reason. That column'
+\echo 'is written solely by onpremises_hosting_rule.sql, which is why the only'
+\echo 'non-null values here are the hosting ones. The registrant rules leave it'
+\echo 'NULL always, so rule 1 can never appear.'
+\echo ''
+\echo 'The ZIP gate is still the binding constraint, shown by the tier table'
+\echo 'above instead: overture_zip_source none and never-set together hold'
+\echo '11,837 rows and produced ZERO on-premises landmarks, while the 2,312'
+\echo 'rows that got a locality ZIP produced all 51.'
 \echo ''
 
 
