@@ -145,24 +145,79 @@ WITH base AS (
 -- mapping could not be audited and its errors reached Boris as findings:
 -- hospital read 857.9 per cent of the real count because '%hospital%' matches
 -- animal_hospital.
+-- THE MAPPING, REWRITTEN AS WHITELISTS AFTER THE FIRST AUDIT.
+--
+-- The first version blacklisted nothing and let ILIKE '%school%' sweep up
+-- anything with the word in it. MEASURED damage, from the audit Boris ran
+-- 2026-11-10:
+--
+--   specialty_school        67,462 rows   counted as K-12 and is a catch-all
+--   preschool               36,980        counted as K-12 and is not K-12
+--   school_district_office   1,510        an office, not a school
+--   music, prep, dancing, driving, language, trade, flight, cooking, art,
+--   beauty, vocational, surf, swim, coding, sailing, circus, acting,
+--   cosmetology, golf, trapeze and baton schools, plus School Supply Store
+--   and school_bus_service
+--   Medical School 58 and Law School 15, both under Foursquare's College and
+--   University branch, landed in K-12 purely because the school test ran
+--   before the college test
+--
+-- A whitelist cannot fail that way: a category it does not recognise falls to
+-- 'other education or training' where it is visible, instead of inflating a
+-- class that is being compared to a real-world count.
+--
+-- RETRACTED: I told Boris the hospital figure of 857.9 per cent was probably
+-- '%hospital%' catching animal_hospital. The audit shows the hospital class
+-- contains only hospital, specialty_hospital, general_hospital,
+-- psychiatric_hospital, hospital;clinic and Hospital Unit. There is no
+-- animal_hospital in it. That explanation was wrong.
 SELECT b.source,
        b.category,
        CASE
          WHEN b.source = 'usfa_fire'                                  THEN 'fire department'
          WHEN b.category ILIKE '%fire_station%' OR b.category ILIKE '%fire station%'
                                                                        THEN 'fire department'
-         WHEN b.category ILIKE '%police%'                              THEN 'police department'
+         WHEN b.category ILIKE '%police%' AND b.category NOT ILIKE '%police_supply%'
+                                                                       THEN 'police department'
          WHEN b.source = 'dotgov'                                      THEN 'government (dotgov registry)'
-         WHEN b.source IN ('ccd','ca_cde','tx_askted','pa_edna','il_isbe','mn_mde','az_azgeo',
-                           'wi_dpi','ia_educate','al_alsde','in_idoe','nc_dpi','ga_gosa',
-                           'tn_tnsd','fl_msid','nd_insights','wv_wveis','oh_oeds','sc_scde',
-                           'ut_sgid','nv_nde','hi_doe')                THEN 'K-12 school'
-         WHEN b.category ILIKE '%school%'                              THEN 'K-12 school'
+
+         -- College BEFORE school, so Medical School and Law School under
+         -- Foursquare's College and University branch land here.
          WHEN b.source = 'nces_ipeds'                                  THEN 'college or university'
          WHEN b.category ILIKE '%college%' OR b.category ILIKE '%universit%'
                                                                        THEN 'college or university'
+
+         -- K-12 by census source. ca_cde carries non-K-12 school types in the
+         -- same column, so it is filtered rather than taken wholesale.
+         WHEN b.source IN ('ccd','tx_askted','pa_edna','il_isbe','mn_mde','az_azgeo',
+                           'wi_dpi','ia_educate','al_alsde','in_idoe','nc_dpi','ga_gosa',
+                           'tn_tnsd','fl_msid','nd_insights','wv_wveis','oh_oeds','sc_scde',
+                           'ut_sgid','nv_nde','hi_doe')                THEN 'K-12 school'
+         WHEN b.source = 'ca_cde'
+          AND b.category NOT ILIKE '%adult%'
+          AND b.category NOT ILIKE '%preschool%'
+          AND b.category NOT ILIKE '%ROC/ROP%'                         THEN 'K-12 school'
+
+         -- K-12 by explicit category, whitelisted. Nothing else with the word
+         -- school in it reaches this class.
+         WHEN b.category ILIKE '%elementary%'
+           OR b.category ILIKE '%middle school%'
+           OR b.category ILIKE '%middle_school%'
+           OR b.category ILIKE '%high school%'
+           OR b.category ILIKE '%high_school%'
+           OR b.category ILIKE '%junior high%'
+           OR b.category ILIKE '%primary and secondary%'
+           OR b.category ILIKE '%k-12%'
+           OR b.category = 'school'                                    THEN 'K-12 school'
+
          WHEN b.category ILIKE '%hospital%'                            THEN 'hospital'
-         WHEN b.category ILIKE '%librar%'                              THEN 'library'
+         WHEN b.category ILIKE '%librar%'
+          AND b.category NOT ILIKE '%tool%'
+          AND b.category NOT ILIKE '%toy%'                             THEN 'library'
+
+         -- Everything else carrying the word school, so it is counted
+         -- somewhere visible rather than silently inflating K-12.
+         WHEN b.category ILIKE '%school%'                              THEN 'other education or training'
          ELSE                                                               'zz everything else'
        END AS institution_class,
        b.records,
@@ -323,6 +378,93 @@ ORDER BY a.records DESC;
 \echo '  a website; it just does not run it from its own building. A low number'
 \echo '  here is a fact about how institutions buy hosting in 2026, not a'
 \echo '  defect in the corpus.'
+\echo ''
+
+\echo ''
+\echo '================================================================'
+\echo ' 5. THE REAL REASON THE PERCENTAGES EXCEED 100: NO DEDUPLICATION.'
+\echo '================================================================'
+\echo ''
+\echo 'landmarks_usa is keyed on (source, source_id) and there is NO'
+\echo 'cross-source deduplication anywhere. One physical school is a row in'
+\echo 'Overture, another in OpenStreetMap, another in CCD and another in its'
+\echo 'state directory. Four rows, one school. So records can never be'
+\echo 'compared to a count of institutions, for any class, and my reconciling'
+\echo 'them in section 4 was comparing incomparable things.'
+\echo ''
+\echo 'Foursquare makes the second cause visible. For one university it holds'
+\echo 'College Library, College Gym, College Quad, Fraternity House, College'
+\echo 'Cafeteria, College Track and twenty more as SEPARATE PLACES. Those are'
+\echo 'facilities, not organisations.'
+\echo ''
+\echo 'Counting distinct WEBSITE HOSTS instead of rows addresses both at once,'
+\echo 'and it is the right unit for this project anyway: the landmark method'
+\echo 'anchors on a webserver, so one host is one anchor however many'
+\echo 'buildings or catalogues it appears under. An institution with several'
+\echo 'domains still counts several times, so this is an upper bound on'
+\echo 'institutions and a far tighter one than rows.'
+\echo ''
+\echo 'The class mapping is JOINED from section 1 rather than restated, so the'
+\echo 'two cannot drift apart. Named classes only, which is about 630,000 rows'
+\echo 'rather than 15.4 million.'
+\echo ''
+
+CREATE INDEX ON tmp_recon (source, category);
+ANALYZE tmp_recon;
+
+WITH host AS (
+    SELECT r.institution_class,
+           substring(lower(btrim(l.website)) from '^https?://([^/:]+)') AS h,
+           l.onpremises
+    FROM landmarks_usa l
+    JOIN tmp_recon r
+      ON r.source = l.source
+     AND r.category = coalesce(nullif(btrim(l.category), ''), '(none)')
+    WHERE r.institution_class <> 'zz everything else'
+      AND btrim(coalesce(l.website, '')) <> ''
+), agg AS (
+    SELECT institution_class,
+           count(*)                                                       AS rows,
+           count(DISTINCT h)                                              AS distinct_hosts,
+           count(DISTINCT CASE WHEN onpremises IS TRUE THEN h END)        AS distinct_hosts_onprem
+    FROM host GROUP BY 1
+), real_counts AS (
+    SELECT * FROM (VALUES
+        ('fire department',              29452),
+        ('police department',            11824),
+        ('government (dotgov registry)', 22573),
+        ('K-12 school',                 131000),
+        ('college or university',         6000),
+        ('hospital',                      6120),
+        ('library',                       9000)
+    ) AS t(institution_class, real_count)
+)
+SELECT a.institution_class,
+       a.rows,
+       a.distinct_hosts,
+       round(a.rows::numeric / nullif(a.distinct_hosts, 0), 2) AS rows_per_host,
+       a.distinct_hosts_onprem,
+       r.real_count,
+       round(100.0 * a.distinct_hosts / nullif(r.real_count, 0), 1) AS pct_of_real_by_host
+FROM agg a
+LEFT JOIN real_counts r ON r.institution_class = a.institution_class
+ORDER BY a.rows DESC;
+
+\echo ''
+\echo 'rows_per_host is the duplication factor. A figure near 1 means rows and'
+\echo 'institutions are nearly the same thing for that class. A figure of 4'
+\echo 'means the average host is reached through four rows, from overlapping'
+\echo 'catalogues or from separate buildings on one site.'
+\echo ''
+\echo 'pct_of_real_by_host replaces pct_of_real_held in section 4 as the only'
+\echo 'one of the two worth reading. If it is still far above 100 for a class,'
+\echo 'then either the real_count is an organisation count against a facility'
+\echo 'corpus, which is the fire-department case, or the class mapping is'
+\echo 'still wrong and section 3 will show which category is to blame.'
+\echo ''
+\echo 'distinct_hosts_onprem is the honest size of what this project actually'
+\echo 'has for each class: separate webservers, on their own premises, with a'
+\echo 'known ZIP.'
 \echo ''
 
 DROP TABLE IF EXISTS tmp_recon;
