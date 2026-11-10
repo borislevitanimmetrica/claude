@@ -67,6 +67,13 @@
 \timing on
 \pset pager off
 
+-- Suppress the NOTICE that DROP TABLE IF EXISTS emits on a first run. On
+-- 2026-11-09 those three notices read as "table does not exist" and were taken
+-- for a guessed table name. They were nothing of the kind, but a diagnostic
+-- file that prints alarming-looking noise it does not mean is a badly written
+-- diagnostic file. A real problem still raises a WARNING or an ERROR.
+SET client_min_messages = warning;
+
 \echo ''
 \echo '================================================================'
 \echo ' 0. SCHEMA VERIFICATION.'
@@ -200,13 +207,36 @@ FROM tmp_zip_delivered;
 \echo 'to claim the registrant tier was worthless on that ground.'
 \echo ''
 
-\echo 'Coverage against the real denominator:'
-SELECT (SELECT count(*) FROM tmp_zip_universe)   AS universe,
-       (SELECT count(*) FROM tmp_zip_delivered)  AS delivered,
-       (SELECT count(*) FROM tmp_zip_universe)
-         - (SELECT count(*) FROM tmp_zip_delivered) AS gap,
-       round(100.0 * (SELECT count(*) FROM tmp_zip_delivered)
-             / nullif((SELECT count(*) FROM tmp_zip_universe), 0), 2) AS pct_covered;
+-- THIS WAS WRONG AND IS NOW SET ARITHMETIC.
+--
+-- It used to compute gap as count(universe) - count(delivered), which is only
+-- the gap if every delivered ZIP is inside the universe. MEASURED 2026-11-09:
+-- it is not. zip_adjacency holds 32,989 distinct ZIPs while landmarks_usa has
+-- places in 40,859 distinct postcodes, so zip_adjacency is not a superset and
+-- cannot be the ZIP universe at all. It is an adjacency table, presumably
+-- built only for ZIPs with usable centroids.
+--
+-- So I replaced an unverified "roughly 41,000" with a different unverified
+-- number and called it "the real denominator". It is not. What IS established:
+-- the corpus itself has places in 40,859 postcodes, which is a lower bound on
+-- the US ZIP count. Settling the true figure needs an external list, Census
+-- ZCTA or USPS, and nothing in this database supplies one.
+SELECT (SELECT count(*) FROM tmp_zip_universe)  AS adjacency_zips,
+       (SELECT count(*) FROM tmp_zip_delivered) AS delivered_zips,
+       (SELECT count(*) FROM tmp_zip_delivered d
+         WHERE EXISTS (SELECT 1 FROM tmp_zip_universe u WHERE u.zip = d.zip))
+                                                AS delivered_inside_adjacency,
+       (SELECT count(*) FROM tmp_zip_delivered d
+         WHERE NOT EXISTS (SELECT 1 FROM tmp_zip_universe u WHERE u.zip = d.zip))
+                                                AS delivered_OUTSIDE_adjacency,
+       (SELECT count(*) FROM tmp_zip_universe u
+         WHERE NOT EXISTS (SELECT 1 FROM tmp_zip_delivered d WHERE d.zip = u.zip))
+                                                AS adjacency_zips_undelivered;
+
+\echo ''
+\echo 'delivered_OUTSIDE_adjacency being non-zero is the proof that the old'
+\echo 'subtraction was invalid, and that zip_adjacency is not the ZIP universe.'
+\echo ''
 
 
 \echo ''
