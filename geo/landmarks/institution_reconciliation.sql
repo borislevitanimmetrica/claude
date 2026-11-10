@@ -114,6 +114,32 @@ DROP TABLE IF EXISTS tmp_recon;
 CREATE UNLOGGED TABLE tmp_recon AS
 SELECT source,
        coalesce(nullif(btrim(category), ''), '(none)') AS category,
+       -- The class is assigned HERE, once, so section 3 can print exactly
+       -- which raw categories feed each class. Previously the mapping lived
+       -- only inside section 4 and section 3 printed the top categories by
+       -- record count instead, which are all generic Overture values. None of
+       -- the matched categories appeared, so the mapping could not be audited
+       -- and its errors reached Boris as findings. Measured consequence:
+       -- hospital read 857.9 per cent of the real count because
+       -- '%hospital%' matches animal_hospital.
+       CASE
+         WHEN source = 'usfa_fire'                                   THEN 'fire department'
+         WHEN category ILIKE '%fire_station%' OR category ILIKE '%fire station%'
+                                                                      THEN 'fire department'
+         WHEN category ILIKE '%police%'                               THEN 'police department'
+         WHEN source = 'dotgov'                                       THEN 'government (dotgov registry)'
+         WHEN source IN ('ccd','ca_cde','tx_askted','pa_edna','il_isbe','mn_mde','az_azgeo',
+                         'wi_dpi','ia_educate','al_alsde','in_idoe','nc_dpi','ga_gosa',
+                         'tn_tnsd','fl_msid','nd_insights','wv_wveis','oh_oeds','sc_scde',
+                         'ut_sgid','nv_nde','hi_doe')                 THEN 'K-12 school'
+         WHEN category ILIKE '%school%'                               THEN 'K-12 school'
+         WHEN source = 'nces_ipeds'                                   THEN 'college or university'
+         WHEN category ILIKE '%college%' OR category ILIKE '%universit%'
+                                                                      THEN 'college or university'
+         WHEN category ILIKE '%hospital%'                             THEN 'hospital'
+         WHEN category ILIKE '%librar%'                               THEN 'library'
+         ELSE                                                              'zz everything else'
+       END AS institution_class,
        count(*)                                                     AS records,
        count(*) FILTER (WHERE btrim(coalesce(website, '')) <> ''
                           AND (btrim(coalesce(postcode, '')) ~ '^[0-9]{5}'
@@ -174,11 +200,24 @@ FROM tmp_recon;
 \echo 'rather than believed.'
 \echo ''
 
+\echo 'EVERY raw category feeding a named class, largest first. This is the'
+\echo 'audit. A category here that is not the institution the class claims is'
+\echo 'a mapping error and the corresponding row of section 4 is wrong.'
+\echo ''
+
+SELECT institution_class, source, category, records, onpremises_true
+FROM tmp_recon
+WHERE institution_class <> 'zz everything else'
+ORDER BY institution_class, records DESC;
+
+\echo ''
+\echo 'And the largest categories NOT claimed by any class, for contrast:'
 SELECT source, category, records, with_zip_and_url, onpremises_true
 FROM tmp_recon
-WHERE records >= 200
+WHERE institution_class = 'zz everything else'
+  AND records >= 200
 ORDER BY records DESC
-LIMIT 60;
+LIMIT 25;
 
 
 \echo ''
@@ -190,34 +229,13 @@ LIMIT 60;
 \echo 'mine, and I have not independently verified any of them.'
 \echo ''
 
-WITH classed AS (
-    SELECT CASE
-             WHEN source = 'usfa_fire'                                   THEN 'fire department'
-             WHEN category ILIKE '%fire_station%' OR category ILIKE '%fire station%'
-                                                                          THEN 'fire department'
-             WHEN category ILIKE '%police%'                               THEN 'police department'
-             WHEN source = 'dotgov'                                       THEN 'government (dotgov registry)'
-             WHEN source = 'ccd' OR source = 'ca_cde'
-               OR source IN ('tx_askted','pa_edna','il_isbe','mn_mde','az_azgeo','wi_dpi',
-                             'ia_educate','al_alsde','in_idoe','nc_dpi','ga_gosa','tn_tnsd',
-                             'fl_msid','nd_insights','wv_wveis','oh_oeds','sc_scde','ut_sgid',
-                             'nv_nde','hi_doe')                           THEN 'K-12 school'
-             WHEN category ILIKE '%school%'                               THEN 'K-12 school'
-             WHEN source = 'nces_ipeds'                                   THEN 'college or university'
-             WHEN category ILIKE '%college%' OR category ILIKE '%universit%'
-                                                                          THEN 'college or university'
-             WHEN category ILIKE '%hospital%'                             THEN 'hospital'
-             WHEN category ILIKE '%librar%'                               THEN 'library'
-             ELSE                                                              'zz everything else'
-           END AS institution_class,
-           records, with_zip_and_url, onpremises_true
-    FROM tmp_recon
-), agg AS (
+WITH agg AS (
     SELECT institution_class,
            sum(records)          AS records,
            sum(with_zip_and_url) AS with_zip_and_url,
-           sum(onpremises_true)  AS onpremises_true
-    FROM classed GROUP BY 1
+           sum(onpremises_true)  AS onpremises_true,
+           count(*)              AS raw_categories
+    FROM tmp_recon GROUP BY 1
 ), real_counts AS (
     SELECT * FROM (VALUES
         ('fire department',              29452, 'census, Boris'),
@@ -230,15 +248,37 @@ WITH classed AS (
     ) AS t(institution_class, real_count, source_of_figure)
 )
 SELECT a.institution_class,
+       a.raw_categories,
        a.records,
        a.with_zip_and_url,
        a.onpremises_true,
        r.real_count,
        round(100.0 * a.records / nullif(r.real_count, 0), 1)         AS pct_of_real_held,
-       round(100.0 * a.onpremises_true / nullif(r.real_count, 0), 1) AS pct_of_real_onprem
+       round(100.0 * a.onpremises_true / nullif(r.real_count, 0), 1) AS pct_of_real_onprem,
+       r.source_of_figure
 FROM agg a
 LEFT JOIN real_counts r ON r.institution_class = a.institution_class
 ORDER BY a.records DESC;
+
+\echo ''
+\echo 'ANY pct_of_real_held ABOVE 100 NEEDS EXPLAINING BEFORE IT IS BELIEVED,'
+\echo 'and there are two quite different reasons it can happen.'
+\echo ''
+\echo '  LEGITIMATE: a count of FACILITIES exceeding a count of'
+\echo '  ORGANISATIONS. There are 29,452 fire DEPARTMENTS but more fire'
+\echo '  STATIONS, because one department runs several. Same for police'
+\echo '  agencies against precincts, and school districts against schools.'
+\echo '  The real_count column holds organisation counts, so a facility class'
+\echo '  SHOULD exceed it.'
+\echo ''
+\echo '  A MAPPING ERROR: the ILIKE patterns are blunt. hospital catches'
+\echo '  animal_hospital, school catches driving and beauty and pre schools,'
+\echo '  college catches college counselling. Section 3 above now lists every'
+\echo '  raw category feeding each class, so which of the two is happening can'
+\echo '  be read off rather than argued about. Measured 2026-11-09 before this'
+\echo '  fix: hospital read 857.9 per cent and college 1020.2 per cent, which'
+\echo '  are too large to be the facilities effect alone.'
+\echo ''
 
 \echo ''
 \echo 'READING THIS HONESTLY, three separate things not to confuse:'
