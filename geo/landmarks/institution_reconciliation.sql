@@ -111,44 +111,65 @@ ORDER BY column_name;
 
 DROP TABLE IF EXISTS tmp_recon;
 
+-- THE AGGREGATION AND THE CLASSIFICATION ARE IN SEPARATE STAGES, and they
+-- have to be. My previous version put the class CASE in the same SELECT as
+-- count(*) while grouping by the COALESCED category, so the CASE referenced a
+-- bare category column that was not a grouping expression. PostgreSQL rejected
+-- it outright:
+--
+--     ERROR: column "landmarks_usa.category" must appear in the GROUP BY
+--     clause or be used in an aggregate function
+--
+-- and every later section then failed on a missing tmp_recon. Grouping first
+-- and classifying the grouped value afterwards removes the whole class of
+-- mistake: the outer query sees one row per (source, category) and nothing it
+-- references is ambiguous.
 CREATE UNLOGGED TABLE tmp_recon AS
-SELECT source,
-       coalesce(nullif(btrim(category), ''), '(none)') AS category,
-       -- The class is assigned HERE, once, so section 3 can print exactly
-       -- which raw categories feed each class. Previously the mapping lived
-       -- only inside section 4 and section 3 printed the top categories by
-       -- record count instead, which are all generic Overture values. None of
-       -- the matched categories appeared, so the mapping could not be audited
-       -- and its errors reached Boris as findings. Measured consequence:
-       -- hospital read 857.9 per cent of the real count because
-       -- '%hospital%' matches animal_hospital.
-       CASE
-         WHEN source = 'usfa_fire'                                   THEN 'fire department'
-         WHEN category ILIKE '%fire_station%' OR category ILIKE '%fire station%'
-                                                                      THEN 'fire department'
-         WHEN category ILIKE '%police%'                               THEN 'police department'
-         WHEN source = 'dotgov'                                       THEN 'government (dotgov registry)'
-         WHEN source IN ('ccd','ca_cde','tx_askted','pa_edna','il_isbe','mn_mde','az_azgeo',
-                         'wi_dpi','ia_educate','al_alsde','in_idoe','nc_dpi','ga_gosa',
-                         'tn_tnsd','fl_msid','nd_insights','wv_wveis','oh_oeds','sc_scde',
-                         'ut_sgid','nv_nde','hi_doe')                 THEN 'K-12 school'
-         WHEN category ILIKE '%school%'                               THEN 'K-12 school'
-         WHEN source = 'nces_ipeds'                                   THEN 'college or university'
-         WHEN category ILIKE '%college%' OR category ILIKE '%universit%'
-                                                                      THEN 'college or university'
-         WHEN category ILIKE '%hospital%'                             THEN 'hospital'
-         WHEN category ILIKE '%librar%'                               THEN 'library'
-         ELSE                                                              'zz everything else'
-       END AS institution_class,
-       count(*)                                                     AS records,
-       count(*) FILTER (WHERE btrim(coalesce(website, '')) <> ''
-                          AND (btrim(coalesce(postcode, '')) ~ '^[0-9]{5}'
-                            OR btrim(coalesce(overture_zip, '')) ~ '^[0-9]{5}'))
+WITH base AS (
+    SELECT source,
+           coalesce(nullif(btrim(category), ''), '(none)')           AS category,
+           count(*)                                                 AS records,
+           count(*) FILTER (WHERE btrim(coalesce(website, '')) <> ''
+                              AND (btrim(coalesce(postcode, '')) ~ '^[0-9]{5}'
+                                OR btrim(coalesce(overture_zip, '')) ~ '^[0-9]{5}'))
                                                                     AS with_zip_and_url,
-       count(*) FILTER (WHERE lookup_status = 'true')                AS rdap_ok,
-       count(*) FILTER (WHERE onpremises IS TRUE)                    AS onpremises_true
-FROM landmarks_usa
-GROUP BY 1, 2;
+           count(*) FILTER (WHERE lookup_status = 'true')            AS rdap_ok,
+           count(*) FILTER (WHERE onpremises IS TRUE)                AS onpremises_true
+    FROM landmarks_usa
+    GROUP BY 1, 2
+)
+-- The class is assigned here, once, so section 3 can print exactly which raw
+-- categories feed each class. Previously the mapping lived only inside section
+-- 4 while section 3 printed the top categories by record count, which are all
+-- generic Overture values. None of the matched categories appeared, so the
+-- mapping could not be audited and its errors reached Boris as findings:
+-- hospital read 857.9 per cent of the real count because '%hospital%' matches
+-- animal_hospital.
+SELECT b.source,
+       b.category,
+       CASE
+         WHEN b.source = 'usfa_fire'                                  THEN 'fire department'
+         WHEN b.category ILIKE '%fire_station%' OR b.category ILIKE '%fire station%'
+                                                                       THEN 'fire department'
+         WHEN b.category ILIKE '%police%'                              THEN 'police department'
+         WHEN b.source = 'dotgov'                                      THEN 'government (dotgov registry)'
+         WHEN b.source IN ('ccd','ca_cde','tx_askted','pa_edna','il_isbe','mn_mde','az_azgeo',
+                           'wi_dpi','ia_educate','al_alsde','in_idoe','nc_dpi','ga_gosa',
+                           'tn_tnsd','fl_msid','nd_insights','wv_wveis','oh_oeds','sc_scde',
+                           'ut_sgid','nv_nde','hi_doe')                THEN 'K-12 school'
+         WHEN b.category ILIKE '%school%'                              THEN 'K-12 school'
+         WHEN b.source = 'nces_ipeds'                                  THEN 'college or university'
+         WHEN b.category ILIKE '%college%' OR b.category ILIKE '%universit%'
+                                                                       THEN 'college or university'
+         WHEN b.category ILIKE '%hospital%'                            THEN 'hospital'
+         WHEN b.category ILIKE '%librar%'                              THEN 'library'
+         ELSE                                                               'zz everything else'
+       END AS institution_class,
+       b.records,
+       b.with_zip_and_url,
+       b.rdap_ok,
+       b.onpremises_true
+FROM base b;
 
 CREATE INDEX ON tmp_recon (source);
 ANALYZE tmp_recon;
