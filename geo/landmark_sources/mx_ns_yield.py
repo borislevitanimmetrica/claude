@@ -288,6 +288,16 @@ def sample_landmarks(args):
     if args.source:
         srcs = ",".join(ovt.lit(s.strip()) for s in args.source.split(",") if s.strip())
         where.append(f"t.source IN ({srcs})")
+    # --category exists because the institution CLASSES that matter here do not
+    # line up with sources. dotgov and nces_ipeds are whole sources and --source
+    # reaches them, but the college class is mostly Overture rows carrying
+    # category 'college_university', 47,746 of the 61,288 in the class, and no
+    # source filter can select those.
+    if args.category:
+        pats = [p.strip() for p in args.category.split(",") if p.strip()]
+        if pats:
+            ors = " OR ".join(f"t.category ILIKE {ovt.lit(p)}" for p in pats)
+            where.append(f"({ors})")
     if args.zip_prefix:
         where.append(f"left(lpad(btrim(t.overture_zip), 5, '0'), {len(args.zip_prefix)}) "
                      f"= {ovt.lit(args.zip_prefix)}")
@@ -471,6 +481,10 @@ def main():
     p.add_argument("--sample", type=int, default=2000,
                    help="distinct website hosts to test (default 2000)")
     p.add_argument("--source", help="comma-separated sources, e.g. overture,nces_ipeds")
+    p.add_argument("--category",
+                   help="comma-separated ILIKE patterns on category, OR'd together, "
+                        "e.g. '%%college%%,%%universit%%'. Needed because the college "
+                        "class is a category within Overture, not a source")
     p.add_argument("--zip-prefix", help="restrict to ZIPs starting with this, e.g. 021")
     p.add_argument("--rule2-only", action="store_true",
                    help="only hosts that have a stored RDAP record")
