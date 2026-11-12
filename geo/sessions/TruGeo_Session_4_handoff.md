@@ -238,6 +238,66 @@ ip_address_range and ip_last_carrier_node_range exist as columns that nothing
 populates.
 
 
+Added 2026-11-12: municipal domains from Wikipedia
+--------------------------------------------------
+
+Boris's instruction, recorded here because it is substantial and explicitly NOT
+urgent. Do not start it ahead of anything else; it is logged so it is not lost.
+
+Compile domain names for ALL USA municipalities from Wikipedia, which carries
+hierarchical pages per state. Most cities and some villages and townships have
+a website, MX and NS, and many host on premises. Civil townships usually do
+not.
+
+THE POINT OF IT, which is why it outranks more POI feeds. A very large share of
+municipal domains are NOT in .gov. They are in .org, .net, .com and .us. The
+CISA .gov registry cannot see any of those, and that is now measured rather
+than argued: dotgov holds 14,149 rows against 22,573 municipalities and
+counties, 62.7 per cent, and its rows_per_host is exactly 1.00, so the
+shortfall is real coverage loss and not duplication. The missing third are
+largely entities that never registered a .gov domain at all.
+
+Scope notes for whoever picks this up:
+
+  Wikipedia is the only source identified that lists municipalities WITH their
+  actual website regardless of TLD. The Census Bureau's government units file
+  has the entities but not the URLs.
+  Expect the civil-township distinction to matter. Boris's judgement, not a
+  measurement: townships usually do not self-host, so a yield measured over
+  all municipality types will understate cities and overstate townships.
+  Attribution and licensing need checking before bulk extraction, as they did
+  for the consumer map platforms. Wikipedia text is CC BY-SA; the question is
+  whether a compiled list of names and URLs is a derivative work.
+  The loader pattern already exists: lm_fetch.py build_row plus
+  migrate_new_sources.sql, insert-only.
+
+
+Open and unreconciled as of 2026-11-12
+--------------------------------------
+
+THE HOSTING-RULE DISCREPANCY, which this memo warned about and which Session 4
+then walked into anyway. This memo states, above, that on-premises after the
+hosting rule is 65,148 places across 9,728 ZIPs, and that roughly 15,954 ZIPs
+and 132,125 places are PRE-hosting-rule figures that are too high.
+
+Session 4 measured 134,292 on-premises places across 16,161 ZIPs on 2026-11-12
+and treated those as current throughout, including in every coverage
+conclusion it reached. 134,292 is the direct successor of the 132,125 this memo
+flags as pre-hosting-rule, and 16,161 is within rounding of the 15,954 it flags
+as too high.
+
+So either the hosting rule has not been re-run since, in which case Session 4's
+coverage figures are overstated by something close to a factor of two, or it
+has and the memo is stale. NOT ESTABLISHED either way. Nothing in Session 4
+checked it, which is the error worth not repeating.
+
+What would settle it: compare the current on-premises set against
+address_hosting_tbl, which the memo also records as stale, built when the count
+was 120,352. If a large share of current onpremises = true rows sit on an
+address that table marks as hosting, the rule needs re-running and every
+coverage number from Session 4 needs restating.
+
+
 Standing orders carried forward
 -------------------------------
 
