@@ -107,6 +107,22 @@ CREATE TABLE IF NOT EXISTS rdap_fill_cand_tbl (
     covered_at   timestamptz
 );
 
+-- Built by node_fanout.sql as CREATE TABLE AS, so there is no declared DDL to
+-- copy. Columns and types here are read off that SELECT list, verified
+-- 2026-11-12: ip_address from cl.grp::inet, zips_at_address and
+-- clusters_at_address from integer counts, too_wide boolean, places from
+-- count(*), registrant from min(registrant_1), verdict from a CASE over text
+-- literals.
+CREATE TABLE IF NOT EXISTS address_hosting_tbl (
+    ip_address          inet,
+    zips_at_address     int,
+    clusters_at_address int,
+    too_wide            boolean,
+    places              bigint,
+    registrant          text,
+    verdict             text
+);
+
 -- Referenced by apply_splits loadParents. Stub.
 CREATE TABLE IF NOT EXISTS ip2city_dbiplite_probe_tbl (
     network cidr,
