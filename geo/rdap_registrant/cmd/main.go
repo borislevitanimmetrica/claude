@@ -40,11 +40,51 @@
 // when present, backs off when it is not, and reports every 429 it saw, so the
 // real limit can be characterised from evidence instead of assumed.
 //
+// # THIS IS A STORE, NOT A CACHE, AND THAT DISTINCTION WAS THE BUG
+//
+// Everything above calls rdap_registrant_tbl a cache. It is not one. A cache has
+// an invalidation policy and falls back to origin on a miss. This table had
+// neither:
+//
+//   - No consumer filtered on fetched_at. Verified 2026-11-09 by grepping the
+//     whole tree: the column was written here and read by nothing.
+//   - The fill never re-queried a covered candidate, so once an allocation
+//     covered a range, that range was never asked about again.
+//   - apply_splits makes zero HTTP calls, so a miss cannot fall back to origin.
+//     It defers the range instead.
+//
+// The consequence was that a row fetched in September still answered in November
+// and nothing would ever refresh it. IPv4 registrations do change: ARIN 8.3 and
+// 8.4 transfers, reassignments added and withdrawn, org renames and mergers. The
+// RATE of change for the allocations held here has NOT been measured.
+//
+// -max-age is the provision. An allocation older than it is omitted from the
+// covered set, so its candidates are queried again and storeRecord's ON CONFLICT
+// updates the row in place. Refresh needs no deletion and is idempotent. The
+// default is 0, meaning never expire, so existing invocations keep their old
+// behaviour; a run with 0 now says so in its opening log line rather than leaving
+// it implicit.
+//
+// # RETIREMENT BY CONTAINMENT HAS A COST THAT -verify-sample MEASURES
+//
+// Skipping a candidate that a cached allocation contains means a narrower ARIN
+// reassignment for that candidate is never fetched. Consumers prefer the
+// narrowest containing allocation but cannot prefer an absent row. -verify-sample
+// queries already-covered candidates directly and reports how often a narrower
+// allocation exists and how often it changes the registrant.
+//
 // Usage:
 //
 //	rdap_registrant -network 54.144.0.0/16          resolve one range and print it
-//	rdap_registrant -fill -limit 500                warm the cache for 500 candidates
+//	rdap_registrant -fill -limit 500                warm the store for 500 candidates
 //	rdap_registrant -fill -candidates dbip_split_candidates
+//
+//	rdap_registrant -fill -max-age 720h             re-query anything older than 30 days
+//	rdap_registrant -fill -verify-sample 200        measure what containment retirement costs
+//
+//	give decomposed /25 children their own identification, which needs
+//	-ignore-cache because a child always sits inside its parent's allocation:
+//	rdap_registrant -fill -sources routeviews -max-masklen 25 -ignore-cache
 //
 // This tool writes ONLY to rdap_registrant_tbl. It never touches the probe table,
 // the db-ip table, or anything the pipeline reads for geography.
@@ -110,6 +150,30 @@ func main() {
 	candidates := flag.String("candidates", "",
 		"table of candidate ranges with a cidr column named network. Empty means every db-ip row wider than a /24, which is the real candidate set")
 	limit := flag.Int("limit", 0, "stop after this many RDAP queries (0 = no limit)")
+	sources := flag.String("sources", "dbip",
+		"comma-separated ip2city_dbiplite_tbl.source values a candidate may carry. apply_splits writes "+
+			"decomposed children as 'routeviews', so 'routeviews' selects them and 'dbip,routeviews' selects both")
+	maxMasklen := flag.Int("max-masklen", 23,
+		"accept candidates with masklen <= this. 23 reproduces the historical behaviour of taking only "+
+			"ranges wider than a /24. Set 25 to include decomposed /25 children")
+	ignoreCache := flag.Bool("ignore-cache", false,
+		"query EVERY candidate even when a cached allocation already covers it. REQUIRED to give decomposed "+
+			"subranges their own identification, because a child always sits inside its parent's cached "+
+			"allocation and would otherwise be skipped. Costs one query per candidate with no containment saving")
+	minCoverPrefix := flag.Int("min-cover-prefix", 0,
+		"an allocation WIDER than this prefix length may not retire a candidate, so the candidate is "+
+			"queried directly instead. 0 lets any allocation retire, which is the historical behaviour. "+
+			"Measured 2026-11-09 on a 200-candidate sample: 23.5 per cent of retired candidates had a "+
+			"narrower allocation available, and the worst offenders were /8-wide registry rows such as "+
+			"192.0.0.0-192.255.255.255 'Internet Assigned Numbers Authority', which hid "+
+			"'University of Texas System' at 192.88.12.0/23")
+	maxAge := flag.Duration("max-age", 0,
+		"treat a cached allocation fetched longer ago than this as absent, so its candidates are queried "+
+			"again and the row is updated in place (0 = never expire, which is the historical behaviour)")
+	verifySample := flag.Int("verify-sample", 0,
+		"measure instead of filling: take this many candidates the cache ALREADY covers, query each one "+
+			"directly, and report how often the RIR returns a NARROWER allocation than the cached one and "+
+			"how often that changes the registrant. Needs -fill for the candidate loading")
 	rate := flag.Float64("rate", 1.0,
 		"maximum RDAP requests per second. The RIR limits are UNVERIFIED for this project, so the default is deliberately slow")
 	base := flag.String("endpoint", "https://rdap.arin.net/registry/ip/",
@@ -134,17 +198,46 @@ func main() {
 	if err != nil {
 		log.Fatalf("PostgreSQL connection failed: %v", err)
 	}
-	defer conn.Close(context.Background())
+	// BOUND THE CLOSE. This was conn.Close(context.Background()), which has no
+	// deadline, and it is the ONLY unbounded operation between the final log line
+	// and process exit. On 2026-11-09 a completed fill printed its summary and
+	// then never returned to the shell, which is exactly the shape an
+	// indefinitely blocking Terminate on a wedged socket produces.
+	//
+	// I have NOT confirmed that was the cause: confirming it needs a goroutine
+	// dump from the stuck process, and the process in question was ended. The fix
+	// is correct regardless, because a network close at process exit must not be
+	// able to outlive the work it is tidying up after. Every result is already
+	// committed by storeRecord one query at a time, so abandoning the close costs
+	// nothing.
+	defer func() {
+		closeCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancel()
+		if err := conn.Close(closeCtx); err != nil {
+			log.Printf("closing the database connection: %v (results were already committed)", err)
+		}
+	}()
 
 	if err := ensureTable(ctx, conn); err != nil {
 		log.Fatalf("rdap_registrant_tbl is not usable: %v", err)
 	}
 
-	covered, err := loadCovered(ctx, conn)
+	covered, err := loadCovered(ctx, conn, *maxAge)
 	if err != nil {
 		log.Fatalf("loading cached allocations: %v", err)
 	}
-	log.Printf("cache holds %d allocations", len(covered))
+	if *maxAge > 0 {
+		total, err := countCached(ctx, conn)
+		if err != nil {
+			log.Fatalf("counting cached allocations: %v", err)
+		}
+		log.Printf("cache holds %d allocations, of which %d are within -max-age %s and %d have expired",
+			total, len(covered), *maxAge, total-len(covered))
+	} else {
+		log.Printf("cache holds %d allocations; -max-age is 0, so NOTHING EXPIRES and a row fetched "+
+			"months ago still answers", len(covered))
+	}
+	logCacheAges(ctx, conn)
 
 	client := &http.Client{Timeout: *timeout}
 	minGap := time.Duration(float64(time.Second) / *rate)
@@ -175,11 +268,19 @@ func main() {
 		return
 	}
 
-	targets, err := loadCandidates(ctx, conn, *candidates)
+	srcList := strings.Split(*sources, ",")
+	for i := range srcList {
+		srcList[i] = strings.TrimSpace(srcList[i])
+	}
+	if *maxMasklen < 1 || *maxMasklen > 32 {
+		log.Fatalf("-max-masklen must be between 1 and 32, not %d", *maxMasklen)
+	}
+	targets, err := loadCandidates(ctx, conn, *candidates, srcList, *maxMasklen)
 	if err != nil {
 		log.Fatalf("loading candidates: %v", err)
 	}
-	log.Printf("%d candidate ranges wider than a /24, prefix-excluded space already removed", len(targets))
+	log.Printf("%d candidate ranges at /%d or wider from source(s) %v, prefix-excluded space already removed",
+		len(targets), *maxMasklen, srcList)
 
 	// Widest first. A wide candidate is more likely to sit inside, or to coincide
 	// with, a large allocation, so resolving it covers more of the remaining set
@@ -194,10 +295,36 @@ func main() {
 	var alreadyCovered, queried, needed, failed, rateLimited int
 	var lastCall time.Time
 
+	if *verifySample > 0 {
+		runVerifySample(ctx, conn, client, *base, targets, covered,
+			*verifySample, minGap, *dryRun)
+		return
+	}
+
+	if *ignoreCache {
+		log.Printf("-ignore-cache is set, so all %d candidates will be queried directly and containment "+
+			"saves nothing. At -rate %g that is about %s", len(targets), *rate,
+			(time.Duration(len(targets)) * minGap).Round(time.Minute))
+	}
+
+	var coverTooWide int64
+	if *minCoverPrefix > 0 {
+		coverTooWide = int64(1) << uint(32-*minCoverPrefix)
+		log.Printf("-min-cover-prefix %d: an allocation spanning more than %d addresses will not retire "+
+			"a candidate", *minCoverPrefix, coverTooWide)
+	}
+	var tooWideToRetire int
+
 	for _, p := range targets {
-		if _, ok := lookupCovered(covered, p); ok {
-			alreadyCovered++
-			continue
+		if hit, ok := lookupCovered(covered, p); ok && !*ignoreCache {
+			// A very wide allocation is poor evidence about a narrow candidate
+			// inside it. Retiring on one trades a query for an answer that may name
+			// the registry rather than the holder.
+			if coverTooWide == 0 || int64(hit.end)-int64(hit.start)+1 <= coverTooWide {
+				alreadyCovered++
+				continue
+			}
+			tooWideToRetire++
 		}
 		if *dryRun {
 			// Not covered, so count it as work the cache cannot yet answer. Do NOT add
@@ -256,6 +383,10 @@ func main() {
 
 	log.Printf("done: %d already covered by cache, %d queried, %d failed, %d rate limited",
 		alreadyCovered, queried, failed, rateLimited)
+	if tooWideToRetire > 0 {
+		log.Printf("  %d candidates WERE covered but only by an allocation wider than /%d, so they were "+
+			"queried directly instead", tooWideToRetire, *minCoverPrefix)
+	}
 	if queried > failed {
 		log.Printf("cache now holds %d allocations", len(covered))
 	}
@@ -266,6 +397,169 @@ func main() {
 		log.Print("EVERY query failed, so nothing was learned. Check the error text above before re-running: " +
 			"a permission error on rdap_registrant_tbl or its sequence means the grants in " +
 			"geo/rdap_registrant_tbl.sql have not been applied for this role.")
+	}
+}
+
+// cachedRegistrant reads the registrant of one held allocation, identified by its
+// exact boundaries, which are the table's unique key.
+func cachedRegistrant(ctx context.Context, conn *pgx.Conn, it interval) (string, error) {
+	var reg *string
+	err := conn.QueryRow(ctx,
+		"SELECT registrant FROM rdap_registrant_tbl WHERE start_ip = $1::inet AND end_ip = $2::inet",
+		u32ToAddr(it.start).String(), u32ToAddr(it.end).String()).Scan(&reg)
+	if err != nil {
+		return "", err
+	}
+	if reg == nil {
+		return "", nil
+	}
+	return *reg, nil
+}
+
+// runVerifySample measures the one thing retirement by containment can cost.
+//
+// The fill skips any candidate a cached allocation wholly contains. ARIN returns
+// the MOST SPECIFIC network containing the address asked about, so if a
+// reassignment narrower than the cached allocation exists for a skipped
+// candidate, it is never fetched. apply_splits and landmark2zip_tbl both prefer
+// the narrowest containing allocation, but neither can prefer a row that is
+// absent.
+//
+// Whether that costs anything cannot be answered from held data, because the
+// answer IS what was declined. So: take candidates the cache already covers,
+// query them directly, and compare.
+//
+// The decision-relevant number is not how often a narrower allocation exists. It
+// is how often the narrower allocation carries a DIFFERENT registrant, because a
+// narrower allocation with the same registrant changes no exclusion decision.
+//
+// Fresh answers are stored unless -dry-run. A narrower allocation is strictly
+// more precise and the consumers already prefer it, so storing it improves the
+// cache rather than disturbing it. It does mean a second run reports those as
+// identical.
+func runVerifySample(ctx context.Context, conn *pgx.Conn, client *http.Client, base string,
+	targets []netip.Prefix, covered []interval, want int, minGap time.Duration, dryRun bool) {
+
+	type probe struct {
+		p   netip.Prefix
+		cov interval
+	}
+	var pool []probe
+	for _, p := range targets {
+		if hit, ok := lookupCovered(covered, p); ok {
+			pool = append(pool, probe{p: p, cov: hit})
+		}
+	}
+	log.Printf("%d of %d candidates are already covered by the cache", len(pool), len(targets))
+	if len(pool) == 0 {
+		log.Print("nothing to verify: no candidate is covered, so containment has retired nothing")
+		return
+	}
+	if want > len(pool) {
+		want = len(pool)
+		log.Printf("only %d covered candidates exist, so sampling all of them", want)
+	}
+
+	// Even stride, not the first N. targets is sorted widest-first, so the first N
+	// would be entirely wide candidates and would say nothing about the /22 and
+	// /23 bulk where four fifths of the set lives.
+	stride := len(pool) / want
+	if stride < 1 {
+		stride = 1
+	}
+	log.Printf("sampling %d of them at a stride of %d, so the sample spans every prefix width", want, stride)
+
+	var narrower, identical, other, regChanged, staleRegistrant, failed, done int
+	var lastCall time.Time
+	for i := 0; i < len(pool) && done < want; i += stride {
+		it := pool[i]
+		if gap := time.Since(lastCall); gap < minGap {
+			time.Sleep(minGap - gap)
+		}
+		lastCall = time.Now()
+		done++
+
+		rec, err := queryRDAP(client, base, it.p.Addr())
+		if err != nil {
+			failed++
+			log.Printf("[%d/%d] %s FAILED %v", done, want, it.p, err)
+			continue
+		}
+		start, end, ok := recordInterval(rec)
+		if !ok {
+			failed++
+			log.Printf("[%d/%d] %s returned no usable IPv4 boundaries", done, want, it.p)
+			continue
+		}
+		cachedReg, regErr := cachedRegistrant(ctx, conn, it.cov)
+		if regErr != nil {
+			log.Printf("[%d/%d] %s could not read the cached registrant: %v", done, want, it.p, regErr)
+		}
+		cachedSpan := int64(it.cov.end) - int64(it.cov.start)
+		freshSpan := int64(end) - int64(start)
+
+		switch {
+		case start == it.cov.start && end == it.cov.end:
+			identical++
+			// Identical boundaries make this a STALENESS test rather than a
+			// precision test: the registry returned the same allocation, so any
+			// difference in the registrant is drift since the row was fetched.
+			// This is the only measurement of the change rate the project has.
+			if !strings.EqualFold(strings.TrimSpace(cachedReg), strings.TrimSpace(rec.registrant)) {
+				staleRegistrant++
+				log.Printf("[%d/%d] %s STALE same allocation, registrant %q -> %q",
+					done, want, it.p, cachedReg, rec.registrant)
+			} else {
+				log.Printf("[%d/%d] %s same allocation, same registrant", done, want, it.p)
+			}
+		case freshSpan < cachedSpan:
+			narrower++
+			changed := !strings.EqualFold(strings.TrimSpace(cachedReg), strings.TrimSpace(rec.registrant))
+			if changed {
+				regChanged++
+			}
+			log.Printf("[%d/%d] %s NARROWER cached %s-%s %q -> fresh %s-%s %q registrant_changed=%t",
+				done, want, it.p,
+				u32ToAddr(it.cov.start), u32ToAddr(it.cov.end), cachedReg,
+				rec.net.StartAddress, rec.net.EndAddress, rec.registrant, changed)
+		default:
+			other++
+			log.Printf("[%d/%d] %s OTHER cached span %d, fresh span %d", done, want, it.p,
+				cachedSpan+1, freshSpan+1)
+		}
+		if !dryRun {
+			if err := storeRecord(ctx, conn, it.p, rec); err != nil {
+				log.Printf("[%d/%d] %s cached badly: %v", done, want, it.p, err)
+			}
+		}
+	}
+
+	answered := done - failed
+	log.Printf("verify-sample: %d sampled, %d answered, %d failed", done, answered, failed)
+	log.Printf("  identical to the cached allocation: %d", identical)
+	log.Printf("  NARROWER than the cached allocation: %d", narrower)
+	log.Printf("  neither (wider or disjoint boundaries): %d", other)
+	if answered > 0 {
+		log.Printf("  narrower rate: %.2f per cent of answered queries",
+			100*float64(narrower)/float64(answered))
+	}
+	if identical > 0 {
+		log.Printf("  STALENESS: of the %d identical allocations, %d had a registrant that has CHANGED "+
+			"since the row was stored (%.2f per cent). Identical boundaries make that drift, not "+
+			"imprecision, and it is the only measurement of the change rate this project has. Use it "+
+			"to choose -max-age rather than picking a duration by feel",
+			identical, staleRegistrant, 100*float64(staleRegistrant)/float64(identical))
+	}
+	if narrower > 0 {
+		log.Printf("  of those %d narrower answers, %d carry a DIFFERENT registrant. That is the number "+
+			"that decides whether retirement by containment costs anything: a narrower allocation with "+
+			"the same registrant changes no exclusion decision", narrower, regChanged)
+	} else {
+		log.Print("  no narrower allocation was found in this sample, which is evidence that retirement " +
+			"by containment loses nothing at this sample size. It is not proof for the whole set")
+	}
+	if dryRun {
+		log.Print("  -dry-run: nothing was written")
 	}
 }
 
@@ -592,11 +886,69 @@ func ensureTable(ctx context.Context, conn *pgx.Conn) error {
 	return nil
 }
 
-// loadCovered reads every cached allocation as an interval, sorted by start.
-func loadCovered(ctx context.Context, conn *pgx.Conn) ([]interval, error) {
-	rows, err := conn.Query(ctx,
-		"SELECT host(start_ip), host(end_ip) FROM rdap_registrant_tbl "+
-			"WHERE family(start_ip) = 4 ORDER BY start_ip")
+// logCacheAges prints the age distribution of held allocations on every run, so
+// drift is visible by default instead of needing to be asked about. Nothing read
+// fetched_at before this, which is how rows from September went on answering in
+// November unnoticed.
+func logCacheAges(ctx context.Context, conn *pgx.Conn) {
+	rows, err := conn.Query(ctx, `
+SELECT CASE WHEN fetched_at > now() - interval '7 days'   THEN 'under 7 days'
+            WHEN fetched_at > now() - interval '30 days'  THEN '7 to 30 days'
+            WHEN fetched_at > now() - interval '90 days'  THEN '30 to 90 days'
+            WHEN fetched_at > now() - interval '365 days' THEN '90 to 365 days'
+            ELSE 'over a year' END AS bucket,
+       count(*)
+FROM rdap_registrant_tbl
+WHERE family(start_ip) = 4
+GROUP BY 1
+ORDER BY min(fetched_at) DESC`)
+	if err != nil {
+		log.Printf("could not read the cache age distribution: %v", err)
+		return
+	}
+	defer rows.Close()
+	log.Print("age of held allocations:")
+	for rows.Next() {
+		var bucket string
+		var n int
+		if err := rows.Scan(&bucket, &n); err != nil {
+			log.Printf("  age row unreadable: %v", err)
+			return
+		}
+		log.Printf("  %-16s %8d", bucket, n)
+	}
+	if err := rows.Err(); err != nil {
+		log.Printf("  age distribution incomplete: %v", err)
+	}
+}
+
+// countCached reports every IPv4 allocation held, ignoring age, so an expiry run
+// can report how much of the cache it is choosing to disregard.
+func countCached(ctx context.Context, conn *pgx.Conn) (int, error) {
+	var n int
+	err := conn.QueryRow(ctx,
+		"SELECT count(*) FROM rdap_registrant_tbl WHERE family(start_ip) = 4").Scan(&n)
+	return n, err
+}
+
+// loadCovered reads cached allocations as intervals, sorted by start.
+//
+// maxAge > 0 omits any allocation fetched longer ago than that, which is the whole
+// of the staleness provision: an omitted allocation stops covering its candidates,
+// so the fill queries them again and storeRecord's ON CONFLICT updates the row in
+// place. Refresh is therefore idempotent and needs no deletion.
+//
+// The age is passed as a seconds interval rather than as Go's duration text,
+// because '720h0m0s' is not PostgreSQL interval syntax.
+func loadCovered(ctx context.Context, conn *pgx.Conn, maxAge time.Duration) ([]interval, error) {
+	q := "SELECT host(start_ip), host(end_ip) FROM rdap_registrant_tbl WHERE family(start_ip) = 4"
+	var args []interface{}
+	if maxAge > 0 {
+		q += " AND fetched_at > now() - $1::interval"
+		args = append(args, fmt.Sprintf("%d seconds", int64(maxAge.Seconds())))
+	}
+	q += " ORDER BY start_ip"
+	rows, err := conn.Query(ctx, q, args...)
 	if err != nil {
 		return nil, err
 	}
@@ -639,7 +991,8 @@ func loadCovered(ctx context.Context, conn *pgx.Conn) ([]interval, error) {
 // calls was spent on an answer that could not be used. Filtering here keeps the
 // widest-first ordering, which is still correct for maximising coverage per query,
 // while pointing it at ranges that could actually be decomposed.
-func loadCandidates(ctx context.Context, conn *pgx.Conn, table string) ([]netip.Prefix, error) {
+func loadCandidates(ctx context.Context, conn *pgx.Conn, table string,
+	sources []string, maxMasklen int) ([]netip.Prefix, error) {
 	// The exclusion filter is applied in SQL rather than in Go so that a huge
 	// candidate set is never materialised only to be thrown away. It is written as
 	// NOT EXISTS against active prefix rules, which the gist index on
@@ -655,17 +1008,19 @@ func loadCandidates(ctx context.Context, conn *pgx.Conn, table string) ([]netip.
 			"WHERE x.active AND x.prefix IS NOT NULL AND %s <<= x.prefix) "
 	}
 
+	// source and masklen are bound as parameters rather than interpolated, because
+	// -sources is operator input and must not reach the statement text.
 	q := "SELECT DISTINCT network::text FROM ip2city_dbiplite_tbl " +
-		"WHERE source = 'dbip' AND family(network) = 4 AND masklen(network) < 24 " +
+		"WHERE source = ANY($1::text[]) AND family(network) = 4 AND masklen(network) <= $2 " +
 		strings.Replace(notExcluded, "%s", "network", 1)
 	if table != "" {
 		ident := pgx.Identifier{table}.Sanitize()
 		q = "SELECT DISTINCT c.network::text FROM " + ident + " c " +
-			"JOIN ip2city_dbiplite_tbl d ON d.network = c.network AND d.source = 'dbip' " +
-			"WHERE family(c.network) = 4 AND masklen(c.network) < 24 " +
+			"JOIN ip2city_dbiplite_tbl d ON d.network = c.network AND d.source = ANY($1::text[]) " +
+			"WHERE family(c.network) = 4 AND masklen(c.network) <= $2 " +
 			strings.Replace(notExcluded, "%s", "c.network", 1)
 	}
-	rows, err := conn.Query(ctx, q)
+	rows, err := conn.Query(ctx, q, sources, maxMasklen)
 	if err != nil {
 		return nil, err
 	}
