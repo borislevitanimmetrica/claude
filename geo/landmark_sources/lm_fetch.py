@@ -641,6 +641,87 @@ SELECT (COUNT(*) AS ?n) WHERE {
 }
 """
 
+# --------------------------------------------------------------------------
+# THE POSTAL-CODE BRANCH (--by-postal-code), AND WHY IT EXISTS
+#
+# The query above requires P6375, the STREET ADDRESS. That is right for an
+# organisation and wrong for a place: a city does not have a street address, it
+# has a postal code. MEASURED 2026-11-12 via QLever, US items with an official
+# website:
+#
+#   city in the United States      5,767 with a site, 5,254 with P281, 8 with P6375
+#   town in the United States      2,255               1,833            1
+#   county seat                    1,595               1,584            1
+#
+# Eight of 5,767 cities. The loader asks for the one property these entities do
+# not carry, so it has never seen them. It is not only places, either; the
+# largest class by P281 is high school at 7,062.
+#
+#   US items with P856 and P281                      30,206
+#   of those also carrying P6375, already reachable   10,128
+#
+# WHY "EXACTLY ONE P281" AND NOT MIN(). Boris: "Normally it should be the city
+# or town hall, where the servers are." P281 is multi-valued and for a large
+# city it lists EVERY ZIP in the city. Boston carries 02108, 02109, 02110,
+# 02111, 02112, 02113, 02114, 02115, 02116, 02117, 02118, 02123 and more, and
+# City Hall is at 02201, which is not among the first of them. So MIN() would
+# invent a precise-looking answer that is simply wrong.
+#
+# Taking only items with exactly ONE P281 value makes the claim honest: one
+# value means the entity occupies one ZIP, so that ZIP IS the town hall's. This
+# is the same reasoning as the overture-zip locality tier's
+# HAVING count(DISTINCT z) = 1, and it is why that tier is trustworthy.
+#
+#   exactly one P281 value    28,176    93.3 per cent
+#   two to five                1,617
+#   six or more                  413
+#
+#   of the 28,176, already reachable via P6375    10,082
+#   so NEW to the corpus                          18,094
+#
+# The 2,030 multi-ZIP entities are deliberately left out. They need the
+# published street address from the entity's own website, measured at 76.7 per
+# cent of sites that answer, which locates the actual hall.
+# --------------------------------------------------------------------------
+
+WD_ZIP_QUERY = """PREFIX wdt: <http://www.wikidata.org/prop/direct/>
+PREFIX wd: <http://www.wikidata.org/entity/>
+PREFIX rdfs: <http://www.w3.org/2000/01/rdf-schema#>
+SELECT ?item ?itemLabel ?zipc ?site WHERE {{
+  {{
+    SELECT ?item (MIN(?z) AS ?zipc) (COUNT(DISTINCT ?z) AS ?nz) (MIN(?s) AS ?site)
+    WHERE {{ ?item wdt:P17 wd:Q30 ; wdt:P856 ?s ; wdt:P281 ?z . }}
+    GROUP BY ?item
+  }}
+  FILTER(?nz = 1)
+  ?item rdfs:label ?itemLabel .
+  FILTER(LANG(?itemLabel) = "en")
+}}
+ORDER BY ?item
+LIMIT {limit} OFFSET {offset}
+"""
+
+WD_ZIP_COUNT = """PREFIX wdt: <http://www.wikidata.org/prop/direct/>
+PREFIX wd: <http://www.wikidata.org/entity/>
+SELECT (COUNT(DISTINCT ?item) AS ?n) WHERE {
+  {
+    SELECT ?item (COUNT(DISTINCT ?z) AS ?nz) WHERE {
+      ?item wdt:P17 wd:Q30 ; wdt:P856 ?s ; wdt:P281 ?z .
+    } GROUP BY ?item
+  }
+  FILTER(?nz = 1)
+}
+"""
+
+# P281 is free text and not all of it is a ZIP. Observed in the data:
+# Weber Logistics carries "90670-50", which is neither a ZIP nor a ZIP+4. The
+# five leading digits must be the whole value or be followed by a hyphen, which
+# accepts 19023 and 02108-1234 and 90670-50, and rejects "ZIP 12345", "1234"
+# and anything non-numeric. A hyphenated range such as 12345-12399 also passes
+# and yields its first ZIP, which is the start of the range and the best
+# available answer.
+WD_P281_RE = re.compile(r"^(\d{5})(?:-\d+)?$")
+
 # The ZIP sits inside the address text. Prefer a ZIP that follows a 2-letter
 # state code, which is the reliable form ("Nashville, TN, 37240"), and fall back
 # to a trailing ZIP. Same precedence the chain's own freeform rule uses.
@@ -669,9 +750,26 @@ def cmd_wikidata(args):
     release = args.release or time.strftime("%Y-%m-%d")
     started = time.monotonic()
 
+    # A SEPARATE SOURCE NAME IS LOAD-BEARING, not cosmetic. --resume computes
+    # its offset as count(*) WHERE source = <this source>, so if the
+    # postal-code branch wrote 'wikidata' it would resume the address branch
+    # from the combined total and skip everything in between.
+    by_zip = bool(getattr(args, "by_postal_code", False))
+    source = "wikidata_zip" if by_zip else "wikidata"
+    query_tpl = WD_ZIP_QUERY if by_zip else WD_QUERY
+    count_q = WD_ZIP_COUNT if by_zip else WD_COUNT
+    if by_zip:
+        print("  --by-postal-code: items with ONE P281 value and an official "
+              "website.")
+        print("  Entities spanning several ZIPs are excluded on purpose: P281 "
+              "lists every")
+        print("  ZIP in a large city, so it cannot locate the hall. Those need "
+              "the address")
+        print("  published on the entity's own site.")
+
     total = None
     d = http_json(endpoint + "?" + urllib.parse.urlencode(
-        {"query": WD_COUNT, "format": "json"}),
+        {"query": count_q, "format": "json"}),
         headers={"Accept": "application/sparql-results+json"},
         timeout=args.timeout, max_backoff=args.max_backoff)
     if "__error__" not in d:
@@ -692,7 +790,7 @@ def cmd_wikidata(args):
     offset = 0
     if args.resume:
         offset = int(psql("-qtA", "-c", "SELECT count(*) FROM lm_places_usa "
-                                        "WHERE source = 'wikidata'").strip() or 0)
+                                        f"WHERE source = '{source}'").strip() or 0)
         print(f"  resuming from offset {offset:,}")
 
     # --limit counts rows fetched BY THIS RUN, not an absolute offset ceiling.
@@ -709,7 +807,7 @@ def cmd_wikidata(args):
             break
 
         n = args.page if stop_at == 0 else min(args.page, stop_at - offset)
-        q = WD_QUERY.format(limit=n, offset=offset)
+        q = query_tpl.format(limit=n, offset=offset)
         shown = f"/{total:,}" if total else ""
         print(f"  offset {offset:,}{shown} ...", end="", flush=True)
         d = http_json(endpoint + "?" + urllib.parse.urlencode(
@@ -729,27 +827,43 @@ def cmd_wikidata(args):
             break
 
         rows = []
+        dropped_zip = 0
         for b in binds:
-            addr = b.get("addr", {}).get("value", "")
             site = normalise_url(b.get("site", {}).get("value"))
             if not site:
                 continue
-            m = WD_ZIP_AFTER_STATE.search(addr)
-            if m:
-                region, zipc = m.group(1), m.group(2)
-            else:
-                m2 = WD_ZIP_AT_END.search(addr)
-                if not m2:
+            if by_zip:
+                # The ZIP arrives as its own property, so there is no address
+                # text to mine and no state to read. region is left empty, as
+                # the WD_ZIP_AT_END branch below already does for addresses
+                # with no state code. The chain only needs the postcode: its
+                # overture-zip step matches "postcode":"12345" in the
+                # addresses JSON that build_row synthesises.
+                mz = WD_P281_RE.match((b.get("zipc", {}).get("value") or "").strip())
+                if not mz:
+                    dropped_zip += 1
                     continue
-                region, zipc = "", m2.group(1)
+                addr, region, zipc = "", "", mz.group(1)
+            else:
+                addr = b.get("addr", {}).get("value", "")
+                m = WD_ZIP_AFTER_STATE.search(addr)
+                if m:
+                    region, zipc = m.group(1), m.group(2)
+                else:
+                    m2 = WD_ZIP_AT_END.search(addr)
+                    if not m2:
+                        continue
+                    region, zipc = "", m2.group(1)
             qid = b.get("item", {}).get("value", "").rsplit("/", 1)[-1]
             rows.append(build_row(
-                "wikidata", qid, release,
+                source, qid, release,
                 b.get("itemLabel", {}).get("value"), addr, "", region, zipc,
-                site, None, None, "wikidata"))
+                site, None, None, source))
+        if dropped_zip:
+            print(f"    {dropped_zip} dropped: P281 value is not a ZIP")
 
         # Merge per page, so an interrupted pull keeps what it already fetched.
-        load_rows("wikidata", rows, replace=False)
+        load_rows(source, rows, replace=False)
         merged += len(rows)
 
         if len(binds) < n:
@@ -1262,7 +1376,19 @@ def main():
     n = common(sub.add_parser("nces-ipeds", help="NCES IPEDS colleges"))
     n.add_argument("--year", type=int, default=2023)
 
-    w = common(sub.add_parser("wikidata", help="Wikidata items with P856 + P6375"))
+    w = common(sub.add_parser("wikidata",
+                              help="Wikidata items with P856 + P6375, or "
+                                   "P856 + a single P281 with --by-postal-code"))
+    w.add_argument("--by-postal-code", action="store_true",
+                   help="take the ZIP from P281 instead of mining it out of the "
+                        "P6375 street address, and accept only items carrying "
+                        "exactly ONE P281 value. Reaches places, which have a "
+                        "postal code and no street address: MEASURED, 5,254 of "
+                        "5,767 US cities with a website carry P281 and EIGHT "
+                        "carry P6375. 28,176 items qualify, 18,094 of them "
+                        "invisible to the default branch. Writes "
+                        "source='wikidata_zip', kept separate so --resume "
+                        "counts the right rows")
     w.add_argument("--limit", type=int, default=0,
                    help="0 means ALL matching items, which is the default. Set a "
                         "number only to cap a deliberate smoke test")
