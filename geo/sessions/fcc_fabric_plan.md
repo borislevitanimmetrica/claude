@@ -72,7 +72,7 @@ geo/landmarks remains valid as measurement and should not be deleted.
    one headend usually serves several tracts.
 7. Combine census tracts and their IP addresses into ZIP codes.
 
-## ACCESS: step 1 is gated on a licence, not on code
+## ACCESS: SETTLED, no licence is needed. What was investigated, and why
 
 VERIFIED by search 2026-11-12, from the FCC's own BDC help centre and
 CostQuest:
