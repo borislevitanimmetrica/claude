@@ -100,22 +100,36 @@ VERIFIED as publicly available WITHOUT a Fabric licence:
   Congressional District, Tribal Areas and CBSA. CENSUS TRACT IS NOT AMONG
   THEM.
 
-NOT VERIFIED, and this is the single question that decides whether step 1
-needs the licence at all:
+SETTLED 2026-11-12 by Boris reading the actual header. THE COSTQUEST LICENCE
+IS NOT ON THE CRITICAL PATH. The public per-state availability file carries:
 
-- Whether the PUBLIC per-state availability file carries a census block or
-  tract GEOID alongside the Location ID. If it carries block_geoid, the tract
-  is the first 11 digits of the 15-digit block GEOID and steps 4 to 7 need no
-  Fabric licence. If it carries only Location ID, then tract assignment
-  REQUIRES the Fabric, because only the Fabric maps a Location ID to a place.
-- The two FCC documents that would settle it, Broadband Map Data Downloads and
-  the BDC public data API specification, both returned HTTP 403 to automated
-  fetching from this sandbox. They open in a browser.
+    frn
+    provider_id
+    brand_name
+    location_id
+    technology
+    max_advertised_download_speed
+    max_advertised_upload_speed
+    low_latency
+    business_residential_code
+    state_usps
+    block_geoid
+    h3_res8_id
 
-HOW TO SETTLE IT CHEAPLY: download one small state from
-broadbandmap.fcc.gov/data-download, one technology, and read the CSV header.
-Rhode Island or Delaware. That is a two-minute job in a browser and it decides
-whether the licence is on the critical path.
+block_geoid is present, so the census tract is the first 11 characters of the
+15-character block GEOID, the county is the first 5 and the state FIPS is the
+first 2. h3_res8_id additionally gives a ready-made spatial index cell.
+
+So every identifier steps 2, 4 and 7 need is in the free download: carrier by
+frn, provider_id and brand_name; network type by technology, which is what
+separates FIOS from xDSL; and geography by block_geoid. The Fabric would add
+per-location coordinates and addresses, which this plan does not require,
+because steps 4 and 5 work from the TRACT CENTROID rather than from
+individual locations.
+
+block_geoid MUST BE STORED AS TEXT. It is a fixed-width 15-character code and
+half the states have a leading zero in the state FIPS; Alabama is 01. Reading
+it as a number silently destroys those and misfiles an entire state.
 
 ## What is NOT yet established about the rest of the plan
 
@@ -130,19 +144,81 @@ whether the licence is on the critical path.
   earlier ITDK and Hoiho assessment in geo/landmarks/isp_node_feasibility.md
   established that OSM telecom tagging is useless for this: 61 objects tagged
   telecom=central_office and 1,275 carrying a clli tag, WORLDWIDE.
-- Step 5's "uninterrupted coverage between it and the centroid" needs a
-  definition of coverage continuity along a path. Not specified yet, and it is
-  the only step with a genuinely novel algorithm in it.
-- Step 6 rests on ip-api.com locating IPs at or near a headend. Measured
-  2026-11-12 on 65.218.12.0/23: all 512 addresses returned a single identical
-  answer, ZIP 02112, Boston, Verizon Business, with the district and reverse
-  fields EMPTY. So ip-api gives one point per range, not per address, and that
-  point is the registrant or aggregation location. Whether that point
-  coincides with a headend is the hypothesis step 6 depends on and it is NOT
-  yet tested.
+- Step 5's coverage continuity. SPECIFIED by Boris 2026-11-12: a gap, meaning
+  an interruption in coverage, is configured at FOUR BLOCKS IN ANY DIRECTION
+  for now, to be fine-tuned later. So the path from a candidate headend to the
+  tract centroid counts as uninterrupted when no run of consecutive
+  uncovered census blocks along it exceeds four in any direction.
+
+  Because the figure is explicitly provisional, it must be STORED WITH EVERY
+  DECISION rather than compiled in, so a change of parameter can be re-run and
+  compared instead of silently invalidating earlier output. That is what the
+  config column on the decision log is for.
+
+- Step 6 and ip-api granularity. I WROTE SOMETHING FALSE HERE AND BORIS
+  CORRECTED IT. The earlier text said ip-api "gives one point per range, not
+  per address", generalised from a single probe of 65.218.12.0/23 where all
+  512 addresses returned one identical answer.
+
+  That range is Verizon Business dedicated access, which is the uniform case,
+  and one range cannot establish a property of the service. Boris: ip-api
+  localises MORE finely than the decomposed RouteViews and db-ip data
+  combined, and 72.72.3.64/26 returns several distinct localities including
+  one /28 and several /27. His assessment is that the ip-api data are
+  consistent and he tends to trust them.
+
+  Consequence for the probing strategy: once batch queries are enabled the
+  project switches from one address per range to EVERY address. The batch
+  path is already proven, measured 2026-10-26 and re-confirmed 2026-11-12:
+  /batch accepts 100 addresses per call and refuses 101 with HTTP 422, the
+  limit is 15 calls a minute from the X-Rl header, and /batch and /json have
+  SEPARATE rate buckets. 100 times 15 is 1,500 addresses a minute, so 90,000
+  an hour.
+
+## Decision logging, required by Boris 2026-11-12
+
+"Keep a log of all decisions in a table, with step identifiers and geography
+identifiers."
+
+Built in geo/fcc_bdc/schema.sql as TWO tables, and the reason for two rather
+than one is the four-block gap parameter.
+
+geo_decision_log holds one row per decision: the step that made it, the
+geography it concerns with a geo_level saying what the identifier means,
+because a bare GEOID is ambiguous between block, tract, county and ZIP; the
+carrier and technology where those apply; the decision; the rationale; and the
+inputs it rested on as jsonb, so a step can record the distances and candidate
+headends it actually used without a schema change per step.
+
+geo_decision_run holds the CONFIGURATION IN FORCE, one row per execution of a
+step, referenced by every decision it produced. That is what makes the
+four-block figure tunable: changing it starts a new run, and the old
+decisions remain attributable to the parameter that produced them instead of
+being silently invalidated. A single table carrying the config on each row
+would repeat it millions of times and still not let two runs be compared.
+
+## State of the code
+
+Written and VALIDATED against a real PostgreSQL 16, not merely read:
+
+- geo/fcc_bdc/schema.sql. Idempotent, re-runnable. Verified that the
+  generated columns derive state FIPS, county and tract correctly and that
+  the CHECK rejects a 14-digit block_geoid.
+- geo/fcc_bdc/bdc_load.py. Loads the public per-state availability files from
+  CSV, ZIP or GZ. Verified end to end against synthetic files with the real
+  header: the leading zero survives, so 010010201001001 files under state
+  FIPS 01, Alabama, and the 14-digit row that would have landed in Delaware
+  is refused and reported rather than loaded; a file already present is
+  skipped, and --replace reloads one file without changing the row count;
+  a header whose columns are REORDERED is refused with the difference
+  printed, because loading it positionally would put upload speeds into the
+  download column; and `technologies` reports the codes present from the
+  data, since the FCC code list is not verified here and so is hardcoded
+  nowhere.
 
 ## Immediate next action
 
-Read the CSV header of one public state availability file. Everything else
-waits on that, because it decides whether a CostQuest licence is on the
-critical path or merely useful.
+Download the public per-state availability files and load them. Then run
+`bdc_load.py technologies`, which establishes the technology code to carrier
+mapping from the data. That mapping is step 2's input, and it is the first
+thing in the new plan that cannot be derived from anything already held.
