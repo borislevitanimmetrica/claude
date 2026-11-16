@@ -128,7 +128,24 @@ A long-running job in another terminal is part of the ordering question too. If 
 new command contends with it — same table, same remote rate limit, same lock —
 say so when issuing it, not afterwards.
 
-## 6. Do not second-guess the original instance
+## 6. Batch commands that are expected to succeed
+
+Issued 2026-11-12. Where several commands are to be run in sequence and NO
+error is expected in any of them, put them in ONE block so there is a single
+copy-paste rather than seven.
+
+This does not weaken order 5. Still state SEQUENTIAL or CONCURRENT, and still
+put a `git pull` ahead of anything that needs it. The distinction is:
+
+- Expected to succeed, order known, nothing to read in between: ONE block.
+- A step whose OUTPUT must be read before deciding the next, or where failure
+  is plausible and would make later steps harmful: SEPARATE blocks, with what
+  to look for stated.
+
+A mutation with a pre-mortem still gets its own block, because the point of
+the pre-mortem is a decision between steps.
+
+## 7. Do not second-guess the original instance
 
 Where a previous session made a decision and recorded its reasoning, report
 disagreement rather than silently redesigning. `prefer()`'s physical-versus-
