@@ -66,6 +66,12 @@
 
 \timing on
 \set ON_ERROR_STOP on
+
+-- Without this, psql pages the per-source tables through less and pressing q
+-- DISCARDS them from the shell transcript. That happened on 2026-11-12:
+-- sections 3 and 4 were lost and the whole file had to be re-run to read them.
+\pset pager off
+
 SET lock_timeout = '30s';
 
 \echo ''

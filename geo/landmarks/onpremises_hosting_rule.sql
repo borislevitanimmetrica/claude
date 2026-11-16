@@ -1,3 +1,10 @@
+-- Disable the pager. Without this, psql sends long result tables to less, and
+-- pressing q to leave it DISCARDS them from the shell transcript. Boris lost
+-- sections 3 and 4 of migrate_new_sources.sql that way on 2026-11-12 and had
+-- to re-run the whole file. A diagnostic whose output cannot be kept is not a
+-- diagnostic.
+\pset pager off
+
 -- onpremises_hosting_rule.sql - rule 2b. Hosting addresses are not landmarks.
 --
 -- THE RULE IS PER ADDRESS, NOT PER REGISTRANT. That distinction is the whole
