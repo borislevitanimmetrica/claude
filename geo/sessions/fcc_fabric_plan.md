@@ -447,3 +447,119 @@ information_schema.columns, and refuses to load at all if the table matches
 neither, rather than inserting into a shape it cannot identify. The reporting
 subcommands read the bdc_availability view under schema_v2, so there is one
 copy of each query.
+
+## Step 2, started 2026-11-17: carrier nodes located from their own hostnames
+
+### The reversal this rests on
+
+geo/node_fanout.sql warns: "A node named
+po-1-rur201.westroxbury.ma.boston.comcast.net records where the ROUTER is,
+not where the subscriber is." Comcast serves West Roxbury from a Brockton
+node, and that is one of the four reasons the landmark method was abandoned.
+
+Step 2 wants the ROUTER's location. The property that made hostnames useless
+for locating a subscriber is the property step 2 is built on. This is a
+change of purpose, not a revival of the abandoned method, and the distinction
+is now demonstrated rather than argued: on that exact hostname the decoder
+returns boston at 42.358430, -71.059770 and does NOT return westroxbury.
+
+### The asset that was already paid for and never used
+
+geo/landmarks/hoiho_suffixes.sql loaded the CAIDA Hoiho ruleset's METADATA on
+2026-11-06, 871 domains with their scores, and recorded that the regexes stay
+in the CAIDA jsonl and would need applying. geo/carrier_nodes/hoiho_apply.py
+applies them. The file is 212,714 bytes and the download is public and
+unauthenticated.
+
+MEASURED 2026-11-17 on the 2025-08 release: 871 domains, 1,045 regexes, every
+one of which Python's re module compiles. 15,952 geohints, 11,444 with
+coordinates:
+
+    iata       6,081   all with coordinates    476 domains   metro
+    place      5,144   all with coordinates    323 domains   town or city
+    clli       4,508   NONE with coordinates     89 domains   building
+    locode       203   all with coordinates      12 domains
+    facility      16   all with coordinates       2 domains   carrier hotels
+
+### A CLAIM I MADE AND RETRACTED WITHIN THE HOUR
+
+I first reported that CAIDA had embedded coordinates for the CLLI hints,
+which would have removed the LERG blocker isp_node_feasibility.md identified.
+WRONG. Zero of the 4,508 CLLI hints carry coordinates and none carries a
+location object; a CLLI hint is the bare six-character code. The blocker
+stands exactly as that file described it.
+
+### Three bugs found by running it, not by reading it
+
+1. A Hoiho rule can have SEVERAL capture groups. Comcast's
+   ^[^.]+\.[a-z\d]+\.([a-z]{2})\.([a-z]+)\.comcast\.net$
+   captures the state and the place separately, and reading group 1 returned
+   ma and resolved nothing. Every group is now a candidate.
+
+2. A code is NOT unique within a domain. 213 (domain, code) pairs repeat
+   across 26 domains, up to seven times, and 201 repeat WITHIN one hint type.
+   The load failed on alter.net/dtm, which is Dortmund by IATA and Dortmund
+   by place with coordinates 11 km apart. The primary key was wrong and the
+   in-memory index silently kept whichever hint loaded last.
+
+3. THE DANGEROUS ONE. comcast.net/springfield has SEVEN hints: IL, FL, MA,
+   OR, GA, MI, TN, whose extremes are 4,032 KM APART. Choosing by CAIDA's
+   true-positive count picks Springfield IL. But Comcast hostnames carry the
+   state as a separate capture group, so a hint whose state matches a
+   two-letter group from the same hostname now wins over a better-scoring
+   one. 67 of the 213 ambiguous codes are fully separable this way.
+   Verified: ...springfield.ma.boston.comcast.net resolves to Springfield MA.
+   Without this, Massachusetts nodes would have been placed in Illinois and
+   nothing would have complained.
+
+   Widest alternatives for one code, measured: comcast.net springfield
+   4,032 km, lebanon 3,975, hillsboro 3,907, salem 3,898, aberdeen 3,880.
+
+carrier_node_tbl records code_hint_count and selection for every row, so a
+location chosen by score rather than by state agreement is identifiable
+instead of indistinguishable.
+
+### CLLI resolution is unblocked, at rate centre granularity
+
+localcallingguide.com publishes LERG-derived data and answers PARTIAL CLLI
+queries: lca_switch.php?switch=albyny returns every switch whose CLLI begins
+with those six characters, with switch name and operating company.
+xmlprefix.php?npa=518&nxx=464 returns the full eleven-character switch CLLI
+ALBYNYGDDS0, its name ALBANY GUILDERLAND, VERIZON NEW YORK INC, and rc-lat
+and rc-lon.
+
+So the chain is: hostname, CAIDA regex, six-character CLLI, partial CLLI
+query, switch and company and rate centre coordinates. All public.
+
+WHAT THIS IS NOT: a rate centre is a TARIFF GEOGRAPHY and its coordinates are
+a nominal centroid. Several central offices share one rate centre in a dense
+metro. This locates a node to its rate centre and no finer, which is why the
+columns are named rc_lat and rc_lon and why clli_site_tbl's comment says so.
+Building precision is step 3's job and is not delivered here.
+
+### The join step 2 does not have
+
+Step 2 is per carrier AND per network type. Network type comes from the BDC
+technology code. Carrier comes from two things that share no key: BDC gives
+frn, provider_id and brand_name, for example 130317 Xfinity; a hostname gives
+a DNS domain, for example comcast.net. Nothing public pairs them.
+
+carrier_domain_provider_tbl is therefore created EMPTY, with basis NOT NULL so
+a row cannot be added without recording what established it, and confirmed
+defaulting to false. Until it is seeded, step 2 reports nodes per DNS domain
+and cannot report them per BDC carrier and technology. An AS-number match or
+an RDAP registrant match is evidence; a similar-looking name is not.
+
+### Sources checked and what they gave
+
+- CAIDA publicdata: open, no credentials. The correct path is
+  /datasets/topology/ark/ipv4/itdk/2025-08/, not the one in my first attempt.
+- localcallingguide.com: open, LERG-derived, partial CLLI search works.
+- data.fcc.gov and www.fcc.gov: HTTP 403 to this sandbox with every header
+  combination tried, including the full browser set that works for
+  broadbandmap.fcc.gov. So FCC ASR and ULS, which would give exact
+  coordinates for licensed fixed wireless sites, are UNASSESSED rather than
+  unavailable: Boris's machine may reach them. Worth one probe before
+  concluding anything.
+- Census TIGER and the tract gazetteer: open, 200, and the 2024 national
+  tract gazetteer is a 2.4 MB download. That is step 4's centroid source.
