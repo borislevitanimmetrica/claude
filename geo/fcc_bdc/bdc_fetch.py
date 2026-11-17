@@ -736,24 +736,51 @@ def cmd_verify(args):
         print("Every file is a BDC availability ZIP. Safe to load.")
         return
 
-    print("\nThe bad files are NOT loadable and must not be left where a "
-          "glob will pick them up.")
-    if not args.remove_bad:
-        print("Re-run with --remove-bad to delete exactly these files:")
-        for n, _, _ in bad:
-            print(f"  {n}")
-        print("\nPre-mortem for that deletion: every one of these is either "
-              "a server refusal page or a truncated transfer, none of them "
-              "contains any data, all are re-downloadable from the FCC by "
-              "id, and nothing else in the directory is touched. The "
-              "catalogue and the technology TSV are not .zip files and are "
-              "therefore not candidates.")
+    print("\nThe bad files are NOT loadable and must not be left under a .zip "
+          "name where a glob will pick them up.")
+
+    if args.quarantine:
+        # Preferred over deletion. A refusal page carries the Akamai
+        # reference number, which is the only thing the FCC could look up,
+        # and renaming removes it from the *.zip glob just as effectively.
+        for n, path, _ in bad:
+            if n.endswith(".rejected"):
+                print(f"  {n} is already quarantined")
+                continue
+            dest = path + ".rejected"
+            os.replace(path, dest)
+            print(f"  {n} -> {os.path.basename(dest)}")
+        print(f"\n{len(bad)} file(s) renamed, none deleted. They no longer "
+              f"match *.zip, so the loader cannot pick them up, and their "
+              f"contents are still readable. Re-run `fetch` to try them "
+              f"again.")
         sys.exit(1)
 
-    for n, path, _ in bad:
-        os.remove(path)
-        print(f"  removed {n}")
-    print(f"\n{len(bad)} file(s) removed. Re-run `fetch` to try them again.")
+    if args.remove_bad:
+        for n, path, _ in bad:
+            os.remove(path)
+            print(f"  removed {n}")
+        print(f"\n{len(bad)} file(s) DELETED. Re-run `fetch` to try them "
+              f"again.")
+        sys.exit(1)
+
+    print("\nTwo ways to clear them:")
+    print("  --quarantine   renames each to .rejected. PREFERRED: it takes "
+          "them out of the *.zip glob while keeping the bytes, and a refusal "
+          "page contains the Akamai reference number, which is the only "
+          "identifier the FCC could act on.")
+    print("  --remove-bad   deletes them.")
+    print("\nPre-mortem for either: each of these files is a server refusal "
+          "page or a truncated transfer and contains no availability data; "
+          "all are re-downloadable from the FCC by id; nothing else in the "
+          "directory is touched, and the catalogue and technology TSV are "
+          "not .zip files so they are not candidates. What DELETION destroys "
+          "and quarantining does not is the refusal body, including its "
+          "Akamai reference number. That is the whole reason to prefer "
+          "quarantining.")
+    print("\nThe files concerned:")
+    for n, _, _ in bad:
+        print(f"  {n}")
     sys.exit(1)
 
 
@@ -816,6 +843,10 @@ def main():
                         help="read every downloaded file and prove it is a "
                              "BDC availability ZIP, not a refusal page")
     ve.add_argument("--dest", default="/home/boris/geo/bdc")
+    ve.add_argument("--quarantine", action="store_true",
+                    help="rename each bad file to .rejected, keeping its "
+                         "bytes but taking it out of the *.zip glob; "
+                         "preferred over deletion")
     ve.add_argument("--remove-bad", action="store_true",
                     help="delete the files that are not BDC ZIPs")
     ve.set_defaults(func=cmd_verify)
