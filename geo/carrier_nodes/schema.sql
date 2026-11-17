@@ -177,8 +177,18 @@ BEGIN
           AND i.indisprimary
           AND i.indnatts = 1)
     THEN
-        DROP TABLE carrier_node_tbl;
-        RAISE NOTICE 'carrier_node_tbl had the old single-column key and has been dropped. It is rebuilt entirely by: python3 geo/carrier_nodes/hoiho_apply.py apply';
+        -- CASCADE, because carrier_node_located is defined at the foot of
+        -- this file and depends on the table. Without it the drop fails with
+        -- "cannot drop table because other objects depend on it" and the
+        -- whole file aborts. I had already hit and fixed this exact thing in
+        -- geo/fcc_bdc/schema_v2.sql earlier the same day and did not
+        -- generalise it; my test built the old table WITHOUT the view, so it
+        -- never reproduced the real upgrade path.
+        --
+        -- The view is recreated unconditionally at the end of this file, so
+        -- cascading it away costs nothing. It holds no data of its own.
+        DROP TABLE carrier_node_tbl CASCADE;
+        RAISE NOTICE 'carrier_node_tbl had the old single-column key and has been dropped, together with the dependent view carrier_node_located which is recreated at the end of this file. The table is rebuilt entirely by: python3 geo/carrier_nodes/hoiho_apply.py apply';
     END IF;
 END
 $$;

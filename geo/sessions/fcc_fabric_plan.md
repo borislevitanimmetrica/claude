@@ -784,3 +784,66 @@ as 'normalised name equal' and Frontier Fiber as 'first word only, WEAK'.
 722 provider rows with the BDC load still in progress. All four ip-api
 columns this file needs are present on the deployed table, verified by the
 runtime check rather than assumed: network cidr, isp text, org text, as text.
+
+### Bugs seven and eight: I tested fresh installs, not upgrades
+
+Two failures on Boris's database, both of which my tests passed:
+
+    ERROR: cannot drop table carrier_node_tbl because other objects depend
+           on it, view carrier_node_located depends on it
+    ERROR: there is no unique or exclusion constraint matching the ON
+           CONFLICT specification
+
+Both are upgrade-path failures and both have the same root: CREATE TABLE IF
+NOT EXISTS does nothing to a table that already exists.
+
+The first: the migration dropped carrier_node_tbl, but the view defined at
+the foot of the same file depends on it. I HAD ALREADY HIT AND FIXED THIS
+EXACT THING in geo/fcc_bdc/schema_v2.sql earlier the same day and failed to
+generalise it. My test built the old-shape table WITHOUT the view, so the
+real path was never exercised. Fixed with DROP TABLE ... CASCADE, the view
+being recreated unconditionally at the end of the file.
+
+The second: his carrier_crosswalk_tbl already carried the original
+UNIQUE (itdk_domain, asn), so widening it inside CREATE TABLE IF NOT EXISTS
+never reached his install and ON CONFLICT had no matching constraint.
+geo/traceroute_hostname_rules.sql documents this precise trap, in a comment
+recording that it once caused zero rules to load while the run looked
+successful, and the context report put it in front of me. I walked into it
+anyway.
+
+Fixed by removing the dependency on any constraint: unapproved proposals are
+DELETED and regenerated, and the insert skips anything duplicating an
+approved row. That is better behaviour as well as more robust, because a
+better name matcher or more loaded BDC providers should change the
+proposals. The stale constraint is also dropped for tidiness.
+
+### geo/carrier_nodes/test_upgrade_path.sh
+
+Written because the failures above were not detectable by any test that
+starts from an empty database. It builds the PREVIOUS schema including the
+dependent view and the old constraint, inserts an APPROVED row, seeds all
+four sources, then runs the current files over it and checks:
+
+- the primary key of carrier_node_tbl became node_id
+- carrier_node_located exists again
+- the hostname that broke the load, 113.115.207.atginternet.com, loads as
+  two address rows
+- the approved row and its note survived
+- a second crosswalk run changes nothing
+
+All pass. Any future schema change to these files should be run through it
+before being issued, because testing a fresh install only proves the easy
+half.
+
+### One refinement the upgrade test exposed
+
+An approved row is never deleted, so it kept the measured values it had when
+approved while a freshly measured proposal appeared beside it. Section 4 now
+UPDATEs the measured columns on approved rows, touching only ip-api, RDAP and
+the node count, and never approved, approved_at, note or the BDC choice. New
+evidence about a carrier is not a reason to revisit a decision about it.
+
+Known and harmless: a carrier with an approved BDC pairing can still show a
+second unapproved row carrying no BDC candidate. It proposes nothing and can
+be ignored or suppressed on request.
