@@ -913,3 +913,70 @@ need rules written from observed hostnames or they contribute nothing.
 
 ip-api identified a range for 21,060 of the 22,790 node addresses, 17,716
 with an isp and 17,041 with an AS string, across 3,908 domains.
+
+## 2026-11-17: the crosswalk hung, and two wrong diagnoses before the right one
+
+Boris: "Proposed BDC pairings have not yet appeared in around 10 minutes. Is
+this expected?" No. It was mine, and he could interrupt it safely because the
+DELETE of unapproved rows had already committed and approved rows are never
+touched.
+
+### Two hypotheses I formed and had to discard
+
+FIRST, WRONG: that carrier_name_norm being called inside the join was the
+cost. The ON clause does call it 24 times per candidate pair across 3.08
+million pairs, about 74 million invocations of a function doing four regex
+passes. Measured on a count, that shape took 169 SECONDS against under a
+second with the normalisation precomputed, both returning the identical
+442,326 pairs. So the concern was real and the fix is kept. But it was NOT
+the thing making the file hang: the whole file still took 225 seconds after
+it.
+
+SECOND, WRONG: that bdc_provider_shim had no statistics, being built inside a
+DO block, so the planner was choosing badly. ANALYZE was genuinely missing
+and is now added. The file still took 230 seconds.
+
+THIRD, MEASURED: the join is innocent. The full join including the
+domain_rdap left join and the NOT EXISTS, producing the same 177,577 rows,
+takes 645 MILLISECONDS. The 225 seconds is the INSERT WRITE: 177,577 rows of
+367 bytes into a table with a bigserial and five indexes.
+
+So the problem was never the query shape. It was the ROW COUNT.
+
+### The row count, and how much of it is my fixture's fault
+
+My scale fixture gave 749 BDC providers only 8 distinct brand names across
+its first 400 rows, so every ip-api name matched about 50 providers. Boris's
+real data has 677 distinct brand names in 749 rows. His proposal count will
+therefore be far lower and I CANNOT predict it from this fixture, which is
+exactly why the file now counts before it writes.
+
+### What was added
+
+- \timing on. Its absence is why ten minutes passed without knowing which
+  statement was slow. Any analysis file that can run for minutes should have
+  it.
+- Section 4a counts the proposals per tier BEFORE inserting and prints a
+  verdict. The count is sub-second; the insert is the expensive part.
+- Above 20,000 total, the weak first-word tier is skipped.
+- Above 20,000 from equality and containment ALONE, no BDC pairing is
+  inserted at all. The measured ITDK, ip-api and RDAP crosswalk still goes
+  in, so the sound part is delivered and only the BDC column is left empty.
+  Inserting an unreviewable list is worse than delivering the part that
+  holds.
+- Section 4b names the over-matching names whenever the count is large,
+  because a handful of generic names matching many providers is what makes
+  the list explode, and the carrier count is not the cause.
+
+Measured on the degenerate fixture: 225 seconds before, 110 with the weak
+tier skipped, 6 SECONDS with the hard stop, and it names
+'at t internet services' as matching 50 BDC providers. On the realistic
+fixture nothing is suppressed and all tiers are proposed.
+
+### The pattern across bugs four to ten
+
+Four of the last seven were cases where I reasoned about what the code would
+do instead of measuring what it did: the argument-list limit, the hostname
+key, the two upgrade-path failures. This one is the clearest instance: I
+formed two plausible mechanical explanations, implemented both, and neither
+was the cause. Reading the plan took one command and settled it.

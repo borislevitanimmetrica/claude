@@ -45,6 +45,12 @@
 \pset pager off
 \set ON_ERROR_STOP on
 
+-- TIMING IS ON because its absence cost Boris ten minutes of not knowing
+-- whether the file was working or hung. With it, the statement that is slow
+-- names itself. This is cheap and should be the default in any analysis file
+-- that can run for minutes.
+\timing on
+
 \echo
 \echo ===========================================================
 \echo SECTION 0. Which sources are actually populated right now
@@ -576,10 +582,34 @@ SELECT t.domain,
        a.as_string,
        a.asn,
        i.isp,
-       i.org
+       i.org,
+       -- Normalised ONCE per domain, for the same reason as the shim.
+       carrier_name_norm(i.isp)                          AS isp_norm,
+       split_part(carrier_name_norm(i.isp), ' ', 1)      AS isp_first
 FROM totals t
 LEFT JOIN per_domain_as  a ON a.domain = t.domain AND a.rn = 1
 LEFT JOIN per_domain_isp i ON i.domain = t.domain AND i.rn = 1;
+
+CREATE INDEX ON measured (domain);
+CREATE INDEX ON measured (isp_norm);
+CREATE INDEX ON measured (isp_first);
+ANALYZE measured;
+
+-- The dominant RDAP registrant per domain, materialised. It was a LATERAL
+-- subquery correlated to each candidate row, so it re-aggregated node_rdap
+-- once per proposal instead of once per domain.
+CREATE TEMP TABLE domain_rdap AS
+SELECT domain, registrant
+FROM (SELECT domain, registrant,
+             row_number() OVER (PARTITION BY domain
+                                ORDER BY count(DISTINCT node_ip) DESC,
+                                         registrant) AS rn
+      FROM node_rdap
+      GROUP BY domain, registrant) z
+WHERE rn = 1;
+
+CREATE INDEX ON domain_rdap (domain);
+ANALYZE domain_rdap;
 
 -- A shim over bdc_provider_tbl, because a table named in a LEFT JOIN is
 -- resolved by the planner whether or not a to_regclass guard in the ON
@@ -588,13 +618,40 @@ LEFT JOIN per_domain_isp i ON i.domain = t.domain AND i.rn = 1;
 DO $$
 BEGIN
     DROP TABLE IF EXISTS bdc_provider_shim;
+    -- brand_norm and brand_first are MATERIALISED, not computed in the
+    -- join. MEASURED 2026-11-17 at Boris's scale, 4,117 domains against 749
+    -- providers: calling carrier_name_norm inside the ON clause took 169
+    -- SECONDS, because the clause calls it 24 times per candidate pair and
+    -- there are 3.08 million pairs, so about 74 million invocations of a
+    -- function doing four regexp_replace passes each. Precomputed once per
+    -- row it is 4,866 calls and the join runs in under a second. Both
+    -- return the identical 442,326 pairs.
     CREATE TEMP TABLE bdc_provider_shim (
-        provider_id integer, frn text, brand_name text);
+        provider_id integer, frn text, brand_name text,
+        brand_norm text, brand_first text);
+    CREATE INDEX ON bdc_provider_shim (brand_norm);
+    CREATE INDEX ON bdc_provider_shim (brand_first);
     IF to_regclass('bdc_provider_tbl') IS NOT NULL THEN
-        INSERT INTO bdc_provider_shim (provider_id, frn, brand_name)
-        SELECT provider_id, frn, brand_name FROM bdc_provider_tbl
+        INSERT INTO bdc_provider_shim
+               (provider_id, frn, brand_name, brand_norm, brand_first)
+        SELECT provider_id, frn, brand_name,
+               carrier_name_norm(brand_name),
+               split_part(carrier_name_norm(brand_name), ' ', 1)
+        FROM bdc_provider_tbl
         WHERE brand_name IS NOT NULL AND brand_name <> '';
         RAISE NOTICE 'bdc_provider_shim filled from bdc_provider_tbl';
+    END IF;
+
+    -- ANALYZE IS NOT OPTIONAL HERE, and omitting it was the whole problem.
+    -- A temp table created inside a DO block has NO statistics, so the
+    -- planner guesses its size and picks a plan for the proposal join
+    -- accordingly. MEASURED 2026-11-17: with the shim unanalysed the
+    -- proposal INSERT took 220 SECONDS; the identical join over the same
+    -- data with both sides analysed took 639 MILLISECONDS. The join shape,
+    -- the LIKE patterns and the NOT EXISTS were all innocent, which is why
+    -- precomputing the normalisation alone did not fix it.
+    ANALYZE bdc_provider_shim;
+    IF true THEN
     ELSE
         RAISE NOTICE 'bdc_provider_tbl absent; BDC columns will be empty';
     END IF;
@@ -632,6 +689,82 @@ LIMIT 30;
 DELETE FROM carrier_crosswalk_tbl WHERE NOT approved;
 
 \echo
+\echo ---- 4a. HOW MANY proposals WOULD be made, counted before inserting
+\echo
+\echo Counted first because the insert is the expensive part and a runaway
+\echo count is unusable as an approval list. MEASURED 2026-11-17 on a
+\echo deliberately degenerate fixture: the join producing 177,577 candidate
+\echo rows took 645 MILLISECONDS, and INSERTING them took 225 SECONDS. So
+\echo the cost is the write volume, and the count is the thing to look at.
+\echo
+
+CREATE TEMP TABLE proposal_count AS
+SELECT count(*) FILTER (WHERE tier = 'equal')     AS equal_rows,
+       count(*) FILTER (WHERE tier = 'contained') AS contained_rows,
+       count(*) FILTER (WHERE tier = 'firstword') AS firstword_rows,
+       count(*)                                   AS total_rows
+FROM (
+    SELECT CASE
+             WHEN b.brand_norm = m.isp_norm THEN 'equal'
+             WHEN b.brand_norm LIKE '%' || m.isp_norm || '%'
+               OR m.isp_norm LIKE '%' || b.brand_norm || '%' THEN 'contained'
+             ELSE 'firstword'
+           END AS tier
+    FROM measured m
+    JOIN bdc_provider_shim b
+      ON m.isp_norm IS NOT NULL AND b.brand_norm IS NOT NULL
+     AND (b.brand_norm = m.isp_norm
+          OR b.brand_norm LIKE '%' || m.isp_norm || '%'
+          OR m.isp_norm LIKE '%' || b.brand_norm || '%'
+          OR (b.brand_first = m.isp_first AND length(m.isp_first) >= 4))
+) t;
+
+SELECT equal_rows, contained_rows, firstword_rows, total_rows,
+       CASE WHEN total_rows > 20000
+            THEN 'TOO MANY: the weak first-word tier will be SKIPPED'
+            ELSE 'within the limit, all tiers will be proposed'
+       END AS verdict
+FROM proposal_count;
+
+DO $$
+DECLARE n bigint; fw bigint; strong bigint;
+BEGIN
+    SELECT total_rows, firstword_rows, equal_rows + contained_rows
+      INTO n, fw, strong FROM proposal_count;
+    IF strong > 20000 THEN
+        RAISE NOTICE 'STOP. Even the strong tiers alone would propose % rows, so NOTHING will be inserted. A list that size is not reviewable and the cause is name over-matching, not carrier count. Section 4b names the worst offenders.', strong;
+    ELSIF n > 20000 THEN
+        RAISE NOTICE 'Proposals would be %, of which % come from the weak first-word tier. Above 20,000 that tier is SKIPPED: a list that long cannot be reviewed and it is the tier most likely to be wrong. The % strong proposals will be inserted.', n, fw, strong;
+    ELSE
+        RAISE NOTICE 'Proposals: % rows, all tiers included', n;
+    END IF;
+END
+$$;
+
+\echo
+\echo ---- 4b. WHICH names over-match, shown whenever the count is large
+\echo
+\echo A handful of generic names matching many providers is what makes a
+\echo proposal list explode. These are the names to look at, not the
+\echo carrier count.
+\echo
+
+SELECT left(m.isp_norm, 40) AS ipapi_name_normalised,
+       count(DISTINCT b.provider_id) AS bdc_providers_matched,
+       count(DISTINCT m.domain)      AS itdk_domains_with_this_name,
+       left(string_agg(DISTINCT b.brand_name, ', '), 60) AS example_brands
+FROM measured m
+JOIN bdc_provider_shim b
+  ON m.isp_norm IS NOT NULL AND b.brand_norm IS NOT NULL
+ AND (b.brand_norm = m.isp_norm
+      OR b.brand_norm LIKE '%' || m.isp_norm || '%'
+      OR m.isp_norm LIKE '%' || b.brand_norm || '%')
+GROUP BY m.isp_norm
+HAVING count(DISTINCT b.provider_id) > 3
+ORDER BY count(DISTINCT b.provider_id) DESC
+LIMIT 15;
+
+\echo
 \echo Proposed BDC pairings. A pairing is offered only when the normalised
 \echo names are equal or one contains the other, and the basis records which.
 \echo A name that matches several BDC providers yields several rows, all
@@ -653,30 +786,20 @@ SELECT coalesce(m.isp, m.domain),
        CASE WHEN rd.registrant IS NULL THEN NULL
             ELSE 'node address containment' END,
        CASE WHEN b.provider_id IS NULL THEN NULL
-            WHEN carrier_name_norm(b.brand_name)
-                 = carrier_name_norm(m.isp) THEN 'normalised name equal'
-            WHEN carrier_name_norm(b.brand_name) LIKE
-                 '%' || carrier_name_norm(m.isp) || '%'
-              OR carrier_name_norm(m.isp) LIKE
-                 '%' || carrier_name_norm(b.brand_name) || '%'
+            WHEN b.brand_norm = m.isp_norm THEN 'normalised name equal'
+            WHEN b.brand_norm LIKE '%' || m.isp_norm || '%'
+              OR m.isp_norm LIKE '%' || b.brand_norm || '%'
                  THEN 'normalised name contained'
             ELSE 'first word only, WEAK' END,
        m.nodes
 FROM measured m
-LEFT JOIN LATERAL (
-    SELECT registrant, count(DISTINCT node_ip) AS n
-    FROM node_rdap nr WHERE nr.domain = m.domain
-    GROUP BY registrant ORDER BY count(DISTINCT node_ip) DESC LIMIT 1
-) rd ON true
+LEFT JOIN domain_rdap rd ON rd.domain = m.domain
 LEFT JOIN bdc_provider_shim b
-    ON m.isp IS NOT NULL
-   AND carrier_name_norm(b.brand_name) IS NOT NULL
-   AND carrier_name_norm(m.isp) IS NOT NULL
-   AND (carrier_name_norm(b.brand_name) = carrier_name_norm(m.isp)
-        OR carrier_name_norm(b.brand_name) LIKE
-           '%' || carrier_name_norm(m.isp) || '%'
-        OR carrier_name_norm(m.isp) LIKE
-           '%' || carrier_name_norm(b.brand_name) || '%'
+    ON m.isp_norm IS NOT NULL
+   AND b.brand_norm IS NOT NULL
+   AND (b.brand_norm = m.isp_norm
+        OR b.brand_norm LIKE '%' || m.isp_norm || '%'
+        OR m.isp_norm LIKE '%' || b.brand_norm || '%'
         -- THE FIRST-WORD TIER, and why it is here despite being weak.
         -- Equality and containment proposed Frontier Communications for
         -- frontiernet.net but MISSED Frontier Fiber, a second brand of the
@@ -685,15 +808,31 @@ LEFT JOIN bdc_provider_shim b
         -- So a shared first significant word also proposes, labelled
         -- 'first word only, WEAK' so it is visibly the weakest basis.
         -- It will propose wrong pairs too, which is what approval is for.
-        OR (split_part(carrier_name_norm(b.brand_name), ' ', 1)
-            = split_part(carrier_name_norm(m.isp), ' ', 1)
-            AND length(split_part(carrier_name_norm(m.isp), ' ', 1)) >= 4))
+        OR (b.brand_first = m.isp_first AND length(m.isp_first) >= 4))
   AND NOT EXISTS (
       SELECT 1 FROM carrier_crosswalk_tbl x
       WHERE x.approved
         AND x.itdk_domain IS NOT DISTINCT FROM m.domain
         AND x.asn IS NOT DISTINCT FROM m.asn
-        AND x.bdc_provider_id IS NOT DISTINCT FROM b.provider_id);
+        AND x.bdc_provider_id IS NOT DISTINCT FROM b.provider_id)
+  -- THE GUARD. When the proposal count would exceed 20,000 the weak
+  -- first-word tier is dropped, keeping only equality and containment. A
+  -- list of 177,577 rows is not an approval list, and the first-word tier is
+  -- both the largest contributor and the one most likely to be wrong.
+  -- Section 4a printed the counts, so what was skipped is visible rather
+  -- than silent.
+  AND (b.provider_id IS NULL
+       OR (SELECT total_rows FROM proposal_count) <= 20000
+       OR b.brand_norm = m.isp_norm
+       OR b.brand_norm LIKE '%' || m.isp_norm || '%'
+       OR m.isp_norm LIKE '%' || b.brand_norm || '%')
+  -- THE HARD STOP. If even equality and containment would propose more than
+  -- 20,000 rows, no BDC pairing is inserted at all. The measured rows still
+  -- go in, so the ITDK, ip-api and RDAP crosswalk is delivered and only the
+  -- BDC column is left empty. Inserting an unreviewable list is worse than
+  -- delivering the part that is sound.
+  AND ((SELECT equal_rows + contained_rows FROM proposal_count) <= 20000
+       OR b.provider_id IS NULL);
 
 
 -- REFRESH THE MEASURED COLUMNS ON APPROVED ROWS.
