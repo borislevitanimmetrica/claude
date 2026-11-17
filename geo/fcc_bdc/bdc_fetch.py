@@ -719,7 +719,7 @@ def cmd_verify(args):
         print(f"no .zip, .part or .rejected files in {args.dest}")
         return
 
-    good, bad = [], []
+    good, bad, quarantined = [], [], []
     for n in names:
         path = os.path.join(args.dest, n)
         ok, detail = inspect_zip(path)
@@ -727,13 +727,29 @@ def cmd_verify(args):
         if ok:
             good.append(n)
             print(f"ok   {n}  {human(size)}  {detail}")
+        elif n.endswith(".rejected"):
+            # Already dealt with. Reporting these as BAD each time invited
+            # the reader to act on something that had been handled, and it
+            # made a clean directory read as "4 good, 4 bad".
+            quarantined.append(n)
+            print(f"held {n}  {human(size)}  quarantined earlier: {detail}")
         else:
             bad.append((n, path, detail))
             print(f"BAD  {n}  {human(size)}  {detail}")
 
-    print(f"\n{len(good)} good, {len(bad)} bad")
+    summary = f"\n{len(good)} good, {len(bad)} bad"
+    if quarantined:
+        summary += (f", {len(quarantined)} already quarantined and not "
+                    f"counted as bad")
+    print(summary)
+
     if not bad:
-        print("Every file is a BDC availability ZIP. Safe to load.")
+        if good:
+            print("Every loadable file is a BDC availability ZIP. Safe to "
+                  "load.")
+        if quarantined:
+            print("The quarantined files do not match *.zip, so the loader "
+                  "will not see them. Nothing to do about them.")
         return
 
     print("\nThe bad files are NOT loadable and must not be left under a .zip "
