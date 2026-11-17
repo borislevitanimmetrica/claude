@@ -168,12 +168,128 @@ def require_schema():
     """Fail with the fix rather than with a psql error about a missing table."""
     ok = psql_q("SELECT to_regclass('bdc_availability_tbl') IS NOT NULL")
     if ok != "t":
-        sys.exit("bdc_availability_tbl does not exist. Apply the schema "
-                 "first:\n  psql -X -P pager=off -f geo/fcc_bdc/schema.sql")
+        sys.exit("bdc_availability_tbl does not exist. Apply a schema "
+                 "first, one of:\n"
+                 "  psql -X -P pager=off -f geo/fcc_bdc/schema.sql\n"
+                 "  psql -X -P pager=off -f geo/fcc_bdc/schema_v2.sql")
+
+
+def schema_is_lean():
+    """True for schema_v2, false for the original wide table.
+
+    Detected from the catalogue rather than configured, because getting this
+    wrong means inserting into columns that do not exist, and the database
+    already knows the answer.
+    """
+    cols = psql_q("SELECT string_agg(column_name, ',' ORDER BY column_name) "
+                  "FROM information_schema.columns "
+                  "WHERE table_name = 'bdc_availability_tbl' "
+                  "AND column_name IN ('source_file', 'source_file_id', "
+                  "'provider_key', 'brand_name')")
+    present = set((cols or "").split(",")) - {""}
+    lean = {"source_file_id", "provider_key"} <= present
+    wide = "source_file" in present and "brand_name" in present
+    if lean and not wide:
+        return True
+    if wide and not lean:
+        return False
+    sys.exit("bdc_availability_tbl matches neither schema.sql nor "
+             f"schema_v2.sql. Columns found among the ones that distinguish "
+             f"them: {sorted(present) or 'none'}. Nothing was loaded; "
+             f"inserting against a shape I cannot identify is how data ends "
+             f"up in the wrong columns.")
+
+
+def rows_for_file(name, lean):
+    if lean:
+        return int(psql_q(
+            "SELECT coalesce(count(*), 0) FROM bdc_availability_tbl a "
+            "JOIN bdc_source_file_tbl f USING (source_file_id) "
+            f"WHERE f.source_file = {lit(name)}") or 0)
+    return int(psql_q("SELECT count(*) FROM bdc_availability_tbl "
+                      f"WHERE source_file = {lit(name)}") or 0)
+
+
+def delete_file_rows(name, lean):
+    if lean:
+        psql("-qc", "DELETE FROM bdc_availability_tbl a "
+                    "USING bdc_source_file_tbl f "
+                    "WHERE a.source_file_id = f.source_file_id "
+                    f"AND f.source_file = {lit(name)}")
+        psql("-qc", "DELETE FROM bdc_source_file_tbl "
+                    f"WHERE source_file = {lit(name)}")
+        return
+    psql("-qc", "DELETE FROM bdc_availability_tbl "
+                f"WHERE source_file = {lit(name)}")
+
+
+def insert_lean(name):
+    """Insert from staging into the normalised tables.
+
+    Order matters: the file row and the provider rows must exist before the
+    availability rows that reference them, and both are derived from the
+    staging table rather than supplied, so a brand new carrier appearing in
+    one state file is registered by loading that file.
+    """
+    psql("-qc", "INSERT INTO bdc_source_file_tbl (source_file) VALUES "
+                f"({lit(name)}) ON CONFLICT (source_file) DO NOTHING")
+
+    psql("-qc",
+         "INSERT INTO bdc_provider_tbl (frn, provider_id, brand_name) "
+         "SELECT DISTINCT nullif(frn, ''), nullif(provider_id, '')::integer, "
+         "nullif(brand_name, '') FROM bdc_stage_tbl "
+         "WHERE block_geoid ~ '^[0-9]{15}$' "
+         "ON CONFLICT (frn, provider_id, brand_name) DO NOTHING")
+
+    psql("-qc",
+         "INSERT INTO bdc_availability_tbl ("
+         "source_file_id, provider_key, location_id, technology, "
+         "max_advertised_download_speed, max_advertised_upload_speed, "
+         "low_latency, business_residential_code, state_usps, block_geoid, "
+         "h3_res8_id) "
+         "SELECT f.source_file_id, p.provider_key, "
+         "nullif(s.location_id, '')::bigint, "
+         "nullif(s.technology, '')::smallint, "
+         "nullif(s.max_advertised_download_speed, '')::integer, "
+         "nullif(s.max_advertised_upload_speed, '')::integer, "
+         "nullif(s.low_latency, '')::smallint, "
+         "nullif(s.business_residential_code, ''), "
+         "nullif(s.state_usps, ''), s.block_geoid, nullif(s.h3_res8_id, '') "
+         "FROM bdc_stage_tbl s "
+         "JOIN bdc_source_file_tbl f ON f.source_file = " + lit(name) + " "
+         "JOIN bdc_provider_tbl p "
+         "  ON p.frn IS NOT DISTINCT FROM nullif(s.frn, '') "
+         " AND p.provider_id IS NOT DISTINCT FROM "
+         "     nullif(s.provider_id, '')::integer "
+         " AND p.brand_name IS NOT DISTINCT FROM nullif(s.brand_name, '') "
+         "WHERE s.block_geoid ~ '^[0-9]{15}$'")
+
+    psql("-qc", "UPDATE bdc_source_file_tbl f SET row_count = ("
+                "SELECT count(*) FROM bdc_availability_tbl a "
+                "WHERE a.source_file_id = f.source_file_id) "
+                f"WHERE f.source_file = {lit(name)}")
+
+
+def insert_wide(name):
+    psql("-qc",
+         "INSERT INTO bdc_availability_tbl (" + COLS + ", source_file) "
+         "SELECT nullif(frn, ''), nullif(provider_id, '')::integer, "
+         "nullif(brand_name, ''), nullif(location_id, '')::bigint, "
+         "nullif(technology, '')::smallint, "
+         "nullif(max_advertised_download_speed, '')::integer, "
+         "nullif(max_advertised_upload_speed, '')::integer, "
+         "nullif(low_latency, '')::smallint, "
+         "nullif(business_residential_code, ''), nullif(state_usps, ''), "
+         "block_geoid, nullif(h3_res8_id, ''), " + lit(name) + " "
+         "FROM bdc_stage_tbl "
+         "WHERE block_geoid ~ '^[0-9]{15}$'")
 
 
 def cmd_load(args):
     require_schema()
+    lean = schema_is_lean()
+    print("schema: " + ("schema_v2, normalised" if lean
+                        else "schema.sql, wide"))
     for f in args.files:
         if not os.path.isfile(f):
             sys.exit(f"not a file: {f}")
@@ -184,8 +300,7 @@ def cmd_load(args):
     for path in args.files:
         name = os.path.basename(path)
         print(f"\n{name}")
-        existing = int(psql_q("SELECT count(*) FROM bdc_availability_tbl "
-                              f"WHERE source_file = {lit(name)}") or 0)
+        existing = rows_for_file(name, lean)
         if existing and not args.replace:
             print(f"  already holds {existing:,} rows; SKIPPED. "
                   f"Use --replace to reload it.")
@@ -206,8 +321,7 @@ def cmd_load(args):
             print(f"  --replace: deleting {existing:,} existing rows for this "
                   f"file only. They are re-downloadable from the FCC and no "
                   f"other table is touched.")
-            psql("-qc", "DELETE FROM bdc_availability_tbl "
-                        f"WHERE source_file = {lit(name)}")
+            delete_file_rows(name, lean)
 
         # Staging first, and every staging column is text. Two reasons: the
         # CHECK on block_geoid reports a bad row from a table I can query
@@ -246,22 +360,13 @@ def cmd_load(args):
                              "OR block_geoid !~ '^[0-9]{15}$' LIMIT 5"))
 
         print("  inserting ...", flush=True)
-        psql("-qc",
-             "INSERT INTO bdc_availability_tbl (" + COLS + ", source_file) "
-             "SELECT nullif(frn, ''), nullif(provider_id, '')::integer, "
-             "nullif(brand_name, ''), nullif(location_id, '')::bigint, "
-             "nullif(technology, '')::smallint, "
-             "nullif(max_advertised_download_speed, '')::integer, "
-             "nullif(max_advertised_upload_speed, '')::integer, "
-             "nullif(low_latency, '')::smallint, "
-             "nullif(business_residential_code, ''), nullif(state_usps, ''), "
-             "block_geoid, nullif(h3_res8_id, ''), " + lit(name) + " "
-             "FROM bdc_stage_tbl "
-             "WHERE block_geoid ~ '^[0-9]{15}$'")
+        if lean:
+            insert_lean(name)
+        else:
+            insert_wide(name)
         psql("-qc", "DROP TABLE IF EXISTS bdc_stage_tbl")
 
-        n = int(psql_q("SELECT count(*) FROM bdc_availability_tbl "
-                       f"WHERE source_file = {lit(name)}") or 0)
+        n = rows_for_file(name, lean)
         total_loaded += n
         print(f"  loaded {n:,} rows in {time.monotonic() - started:.0f}s")
 
@@ -281,28 +386,39 @@ def cmd_load(args):
         sys.exit(1)
 
 
+def report_relation():
+    """The relation the reporting queries should read.
+
+    Under schema_v2 the carrier columns live in bdc_provider_tbl and the
+    bdc_availability view puts them back under their original names, so one
+    copy of each query serves both schemas.
+    """
+    return "bdc_availability" if schema_is_lean() else "bdc_availability_tbl"
+
+
 def cmd_technologies(args):
     require_schema()
+    rel = report_relation()
     print("Technology codes PRESENT IN THE LOADED DATA, with their brands.")
     print("This is the mapping step 2 needs. It is read from the data because")
     print("I have not verified the FCC code list and will not guess it.\n")
-    print(psql("-c", """
+    print(psql("-c", f"""
 SELECT technology,
        count(*)                          AS records,
        count(DISTINCT provider_id)       AS providers,
        count(DISTINCT tract_geoid)       AS tracts,
        left(string_agg(DISTINCT brand_name, ', '), 90) AS example_brands
-FROM bdc_availability_tbl
+FROM {rel}
 GROUP BY technology
 ORDER BY count(*) DESC"""))
 
     print("\nThe FIOS versus xDSL case: one carrier, several technologies.")
     print("Top 25 carrier and technology pairs by tract count.\n")
-    print(psql("-c", """
+    print(psql("-c", f"""
 SELECT provider_id, left(brand_name, 34) AS brand, technology,
        count(DISTINCT tract_geoid) AS tracts,
        count(*)                    AS records
-FROM bdc_availability_tbl
+FROM {rel}
 GROUP BY provider_id, left(brand_name, 34), technology
 ORDER BY count(DISTINCT tract_geoid) DESC
 LIMIT 25"""))
@@ -310,24 +426,25 @@ LIMIT 25"""))
 
 def cmd_status(args):
     require_schema()
-    print(psql("-c", """
+    rel = report_relation()
+    print(psql("-c", f"""
 SELECT source_file,
        count(*)                    AS rows,
        count(DISTINCT state_usps)  AS states,
        count(DISTINCT tract_geoid) AS tracts,
        count(DISTINCT provider_id) AS providers,
        min(loaded_at)              AS loaded_at
-FROM bdc_availability_tbl
+FROM {rel}
 GROUP BY source_file
 ORDER BY source_file"""))
-    print(psql("-c", """
+    print(psql("-c", f"""
 SELECT count(*)                     AS rows_total,
        count(DISTINCT state_usps)   AS states,
        count(DISTINCT county_geoid) AS counties,
        count(DISTINCT tract_geoid)  AS tracts,
        count(DISTINCT block_geoid)  AS blocks,
        count(DISTINCT provider_id)  AS providers
-FROM bdc_availability_tbl"""))
+FROM {rel}"""))
 
     if not args.check_overlap:
         print("The same availability record can arrive twice when the files "
@@ -341,12 +458,12 @@ FROM bdc_availability_tbl"""))
     print("\nRecords present under more than one source_file. A nonzero count "
           "means two of the downloads cover the same availability record, "
           "which would double-weight a tract in later steps.\n")
-    print(psql("-c", """
+    print(psql("-c", f"""
 SELECT count(*)            AS duplicated_record_keys,
        sum(files)          AS rows_involved,
        max(files)          AS most_files_one_record_is_in
 FROM (SELECT count(DISTINCT source_file) AS files
-      FROM bdc_availability_tbl
+      FROM {rel}
       GROUP BY provider_id, technology, location_id,
                business_residential_code, block_geoid
       HAVING count(DISTINCT source_file) > 1) d"""))

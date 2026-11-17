@@ -389,3 +389,61 @@ len("657 B") is 5. Renamed. Cosmetic, but it was mine and it was wrong.
 THE GENERAL LESSON, worth keeping: a transfer that is checked only by exit
 status and byte count cannot distinguish data from a refusal page. Anything
 this project downloads should be validated by reading its structure.
+
+## 2026-11-17: the storage question, answered by measurement
+
+I asked three times whether the 230 GB was affordable. Rather than ask again I
+built the alternative and measured both against THE SAME nine real files,
+2,757,622 rows of Rhode Island and Delaware, in the same PostgreSQL 16.
+
+| schema | total | bytes per row |
+| --- | --- | --- |
+| schema.sql, wide | 746 MB | 283.8 |
+| schema_v2.sql, normalised | 341 MB | 129.5 |
+
+A 54.4 percent reduction, better than the 43 percent I had estimated. At the
+observed 200,000 rows per zipped megabyte and 4.06 GB of non-satellite data,
+roughly 810 million rows, that is about 105 GB rather than about 230 GB.
+
+PROVEN IDENTICAL, not assumed. Both schemas were loaded from the same files
+in the same database and compared with EXCEPT ALL in BOTH directions over all
+fourteen columns: 0 rows in the wide table only, 0 rows in the lean table
+only, 2,757,622 each. Verizon still reads as 502,163 records on technology 50
+across 422 tracts and 200,976 on 71 across 505 tracts, through the view.
+
+### What schema_v2 changes
+
+Three values were repeated on every row to say one of a few thousand things:
+
+- source_file, a 58-character name, became a smallint referencing
+  bdc_source_file_tbl. Nine files here; 333 nationally.
+- frn, provider_id and brand_name became an integer referencing
+  bdc_provider_tbl. Twenty-seven distinct providers across these two states.
+  The three are kept together as the key because one provider_id files under
+  several brands.
+- state_fips and county_geoid were stored generated columns and are now
+  computed in the view. tract_geoid is still STORED, because it is the join
+  key for steps 4 to 7.
+
+Also dropped: the unreferenced bdc_id bigserial and its index, loaded_at from
+every row, and the indexes on block_geoid and h3_res8_id, which no step reads.
+Adding an index later costs minutes; carrying one through a national load does
+not.
+
+block_geoid is STILL text under a 15-digit CHECK. That was never a size
+decision.
+
+### Safety
+
+The file refuses to run when the table holds rows. Verified: against 2,757,622
+rows it raised an exception and changed nothing. Against an empty table it
+reports that replacing it loses nothing and proceeds. It is also re-runnable,
+which took a fix: the view at the foot depends on the table, so a second run
+failed with "cannot drop table because other objects depend on it" until the
+view was dropped first. Found by running it three times, not by reading it.
+
+bdc_load.py detects which schema is in place by reading
+information_schema.columns, and refuses to load at all if the table matches
+neither, rather than inserting into a shape it cannot identify. The reporting
+subcommands read the bdc_availability view under schema_v2, so there is one
+copy of each query.
