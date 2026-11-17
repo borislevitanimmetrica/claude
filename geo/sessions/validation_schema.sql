@@ -145,3 +145,16 @@ CREATE TABLE IF NOT EXISTS ip2city_dbiplite_traceroute_tbl (
     isp               text,
     ran_at            timestamptz
 );
+
+
+-- Added 2026-11-17 for geo/carrier_nodes/carrier_crosswalk.sql. The ip-api
+-- probe table's isp, org and "as" columns were absent from this fixture, so
+-- the crosswalk file failed validation on a fixture gap rather than on a
+-- real defect. Names taken from the UPDATE in
+-- geo/check_geo_ip-api/cmd/main.go and STILL UNVERIFIED against the
+-- deployed table, which is why the crosswalk file checks them at runtime
+-- instead of trusting this.
+ALTER TABLE ip2city_dbiplite_probe_tbl
+    ADD COLUMN IF NOT EXISTS isp  text,
+    ADD COLUMN IF NOT EXISTS org  text,
+    ADD COLUMN IF NOT EXISTS "as" text;

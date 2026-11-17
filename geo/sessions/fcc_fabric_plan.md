@@ -450,18 +450,34 @@ copy of each query.
 
 ## Step 2, started 2026-11-17: carrier nodes located from their own hostnames
 
-### The reversal this rests on
+### What step 2 needs from a hostname
 
-geo/node_fanout.sql warns: "A node named
-po-1-rur201.westroxbury.ma.boston.comcast.net records where the ROUTER is,
-not where the subscriber is." Comcast serves West Roxbury from a Brockton
-node, and that is one of the four reasons the landmark method was abandoned.
+A hostname gives the ROUTER's location. geo/node_fanout.sql says so, as a
+warning against using it for the subscriber's location. Step 2 wants the
+router's location, so it is simply the right field to read. Demonstrated
+rather than argued: po-1-rur201.westroxbury.ma.boston.comcast.net decodes to
+boston at 42.358430, -71.059770 and not to westroxbury.
 
-Step 2 wants the ROUTER's location. The property that made hostnames useless
-for locating a subscriber is the property step 2 is built on. This is a
-change of purpose, not a revival of the abandoned method, and the distinction
-is now demonstrated rather than argued: on that exact hostname the decoder
-returns boston at 42.358430, -71.059770 and does NOT return westroxbury.
+### A COMPARISON I DREW THAT WAS WRONG, corrected by Boris 2026-11-17
+
+An earlier version of this section framed step 2 as a "reversal" of the flaw
+that killed the landmark method, as though step 2 had inherited a failure
+mode and overcome it. Boris: "I do not see failure modes in the plan I wrote
+... I don't understand your comparison of the two for failure modes."
+
+He is right and the framing was wrong. The landmark method failed for three
+reasons, all of them about LANDMARKS: too few of them per ZIP even for a
+dominant carrier, sitting on IP ranges unrelated to subscribers, and behind
+CPE-connecting nodes that traceroute often cannot see. None of the three
+transfers to this plan, because this plan takes the ZIP from the FCC BDC
+service footprint of a carrier and technology, which is a census of every
+served block rather than a sparse sample, and uses the node only as the thing
+ip-api resolutions congregate at. The node's own location is an intermediate
+quantity, not the answer.
+
+I was arguing against an objection nobody had raised, and in doing so implied
+a weakness in his plan that is not there. Recorded because the error was
+mine and the framing is now removed from the live text above.
 
 ### The asset that was already paid for and never used
 
@@ -563,3 +579,109 @@ an RDAP registrant match is evidence; a similar-looking name is not.
   concluding anything.
 - Census TIGER and the tract gazetteer: open, 200, and the 2024 national
   tract gazetteer is a 2.4 MB download. That is step 4's centroid source.
+
+
+## Step 2 continued, 2026-11-17: carrier identity across four sources
+
+Boris: "If it is a list of carriers, it should relate carriers by name, and
+names differ in ITDK, Fabric, ip-api.com and RDAP (in case we need it).
+Obtain the names from each source and submit a list with fields per source
+for my approval."
+
+carrier_domain_provider_tbl was the wrong shape, pairing a DNS domain to a
+single BDC provider_id. geo/carrier_nodes/carrier_crosswalk.sql replaces it
+with carrier_crosswalk_tbl, one row per carrier and one column group per
+source. The stub is dropped only after a count confirms it is empty, and it
+was empty by construction.
+
+### Three of the four sources link by MEASUREMENT
+
+A carrier node has an IP address, that address sits inside a routed range,
+and the range carries both ip-api's isp, org and AS string and an RDAP
+registrant. So the DNS domain, the ip-api identity and the RDAP registrant
+are joined through the node's own address with a countable number of nodes
+behind each pairing. Containment is most-specific, ORDER BY masklen DESC
+LIMIT 1, the same convention as landmark_carrier_node.sql section 2.
+
+### BDC cannot, and that is the whole reason for the approval column
+
+A BDC filing contains no IP address. The only available link is the name, and
+the names do not match for the carriers that matter most. Verified on seeded
+data that mirrors the real strings:
+
+| ITDK domain | ip-api isp | RDAP registrant | BDC brand | proposed |
+| --- | --- | --- | --- | --- |
+| comcast.net | Comcast Cable Communications, LLC | Comcast Cable Communications, LLC | Xfinity | NO |
+| charter.com | Charter Communications Inc | Charter Communications Inc | Spectrum | NO |
+| cogentco.com | Cogent Communications | Cogent Communications | Cogent Communications | name equal |
+| sbcglobal.net | AT&T Internet Services | AT&T Enterprises, LLC | AT&T Internet | name contained |
+
+The two largest US residential carriers file under consumer brands that share
+no words with their corporate names, so no name comparison can pair them and
+asserting the pairing would be a guess. They need Boris's decision. That is
+not a defect in the tool; it is the measurement telling us the link does not
+exist in the data.
+
+Normalisation is deliberately conservative: it strips punctuation and
+corporate-form words only, and KEEPS cable, communications and broadband,
+because those distinguish real companies and removing them would merge
+distinct carriers.
+
+### A bug that stopped Boris's run, and the fix
+
+hoiho_apply.py apply died with OSError errno 7, Argument list too long, after
+reading 22,790 hostnames from his trace corpus. I had built INSERT ... VALUES
+statements 500 rows at a time into a psql -c argument, and the argument
+vector has a size limit that SQL text built into it inherits. His coverage
+figures from that run are therefore PARTIAL: 13,695 rows of 22,790.
+
+Replaced with COPY FROM STDIN in CSV format, streamed. CSV rather than the
+default text format because the values include regexes full of backslashes
+and CSV quoting handles them without an escaping pass of my own invention.
+Measured after the fix: 25,000 hostnames in 0.79 seconds.
+
+Also fixed: node_rdap was created inside a conditional block but referenced
+unconditionally later, so an absent rdap_registrant_tbl aborted the file at
+the point it was meant to degrade. And a table named in a LEFT JOIN is
+resolved by the planner whether or not a to_regclass guard in the ON clause
+would be false, so bdc_provider_tbl is reached through a temp shim built
+before the query is parsed.
+
+### A column set I have NOT verified
+
+The ip-api column names isp, org and "as" come from the UPDATE in
+geo/check_geo_ip-api/cmd/main.go. The standing order says never to take a
+column name from a source file, because that states what the current build
+would write and not what the deployed table holds. The crosswalk file
+therefore prints the real columns from information_schema and RAISES rather
+than proceeding if any are missing. The validation fixture was also missing
+them, which is how this surfaced.
+
+### What Boris's partial run already showed
+
+From 13,695 decoded hostnames before the crash:
+
+    located                                        3,395   83 domains, 538 sites
+    clli code, needs clli_resolve                  1,358   35 domains, 444 codes
+    regex matched, code not in the ruleset hints     793   64 domains, 342 codes
+    domain has rules but none matched                3,544  117 domains
+    no rule for this domain                         4,605  1,908 domains
+
+Per carrier, the ones that matter for step 2: charter.com 1,720 hostnames
+with 480 CLLI pending and 306 distinct sites; comcast.net 1,715 with 879
+already located and 270 sites; frontiernet.net 457 hostnames and 146 sites
+but ZERO located and ZERO clli pending, which needs explaining;
+verizon-gni.net 329 with 327 CLLI pending and only 22 sites.
+
+frontiernet.net having 146 distinct sites and no locations at all is the
+first thing to look at after the re-run, because 324 CLLI hints exist for
+that domain in the ruleset at ppv 0.990.
+
+### data.fcc.gov is not blocked, the path is retired
+
+Boris's probe returned HTTP 302 to www.fcc.gov/what-can-we-help-you-find,
+not the 403 this sandbox gets. So the host is reachable from his machine and
+the /download/pub-acc-sys/ path no longer exists. FCC ASR and ULS, which
+would give exact coordinates for licensed fixed wireless sites, need their
+CURRENT bulk-download URLs found. Still unassessed, now for a different
+reason.

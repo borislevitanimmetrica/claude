@@ -74,6 +74,8 @@ NOTHING HERE PROBES THE NETWORK. It reads hostnames the project already has.
 
 import argparse
 import bz2
+import csv
+import io
 import json
 import os
 import re
@@ -108,6 +110,65 @@ def psql(*args):
 
 def psql_q(sql):
     return psql("-qtA", "-c", sql).strip()
+
+
+def psql_copy_csv(table, cols, rows):
+    """Load rows via COPY FROM STDIN, streamed.
+
+    NOT as INSERT ... VALUES in a -c argument. That is what the first version
+    did, 500 rows at a time, and it died on Boris's real corpus with
+    OSError errno 7, Argument list too long, after 22,790 hostnames: the
+    argument vector has a size limit and SQL text built into it inherits that
+    limit. COPY carries the data on stdin, which has no such ceiling, and is
+    faster besides.
+
+    CSV rather than the default text format because the values include
+    regexes full of backslashes, and CSV quoting handles them without an
+    escaping pass of my own invention.
+    """
+    buf = io.StringIO()
+    w = csv.writer(buf, lineterminator="\n")
+    for r in rows:
+        w.writerow(["" if v is None else v for v in r])
+    data = buf.getvalue()
+
+    sql = (f"\\copy {table} ({cols}) FROM STDIN "
+           f"WITH (FORMAT csv, NULL '')")
+    cmd = ["psql", "-X", "-P", "pager=off", "-v", "ON_ERROR_STOP=1",
+           "-q", "-c", sql]
+    proc = subprocess.Popen(cmd, stdin=subprocess.PIPE,
+                            stderr=subprocess.PIPE, text=True)
+    broke = False
+    try:
+        proc.stdin.write(data)
+    except BrokenPipeError:
+        broke = True
+    try:
+        proc.stdin.close()
+    except BrokenPipeError:
+        broke = True
+    err = proc.stderr.read()
+    rc = proc.wait()
+    if rc != 0 or broke:
+        sys.exit(f"copy into {table} failed (psql exit {rc}):\n"
+                 f"{err.strip()}")
+    if err.strip():
+        print(f"  psql said: {err.strip()}")
+
+
+def pg_array(items):
+    """A PostgreSQL text[] literal, for COPY in CSV format.
+
+    Each element is double-quoted and its backslashes and quotes escaped.
+    The regexes are full of backslashes, so this is not optional.
+    """
+    if not items:
+        return "{}"
+    parts = []
+    for it in items:
+        e = str(it).replace("\\", "\\\\").replace('"', '\\"')
+        parts.append('"' + e + '"')
+    return "{" + ",".join(parts) + "}"
 
 
 def lit(s):
@@ -434,47 +495,34 @@ def cmd_load(args):
     rule_rows = []
     hint_rows = []
     for r in recs:
-        s = r.get("score") or {}
+        sc = r.get("score") or {}
         pats = [rx for rx, _ in compiled.get(r["domain"], [])]
         bad = [rx for d, rx, _ in rejected if d == r["domain"]]
-        rule_rows.append(
-            "(" + ", ".join([
-                lit(r["domain"]),
-                "ARRAY[" + ", ".join(lit(x) for x in pats) + "]::text[]"
-                if pats else "ARRAY[]::text[]",
-                "ARRAY[" + ", ".join(lit(x) for x in bad) + "]::text[]"
-                if bad else "ARRAY[]::text[]",
-                lit(s.get("ppv")), lit(s.get("class")),
-                str(int(s.get("routers") or 0)),
-                str(int(s.get("tp") or 0)), str(int(s.get("fp") or 0)),
-            ]) + ")")
+        rule_rows.append((
+            r["domain"],
+            pg_array(pats),
+            pg_array(bad),
+            sc.get("ppv"), sc.get("class"),
+            int(sc.get("routers") or 0),
+            int(sc.get("tp") or 0), int(sc.get("fp") or 0),
+        ))
         for h in r.get("geohints") or []:
             loc = h.get("location") or {}
-            hint_rows.append(
-                "(" + ", ".join([
-                    lit(r["domain"]), lit((h.get("code") or "").lower()),
-                    lit(h.get("type")),
-                    lit(h.get("lat")) + "::numeric" if h.get("lat") else "NULL",
-                    lit(h.get("lng")) + "::numeric" if h.get("lng") else "NULL",
-                    lit(loc.get("place")),
-                    lit(loc.get("st") or h.get("st")),
-                    lit(loc.get("cc") or h.get("cc")),
-                    str(int(h.get("tp") or 0)), str(int(h.get("fp") or 0)),
-                ]) + ")")
+            hint_rows.append((
+                r["domain"], (h.get("code") or "").lower(), h.get("type"),
+                h.get("lat"), h.get("lng"),
+                loc.get("place"), loc.get("st") or h.get("st"),
+                loc.get("cc") or h.get("cc"),
+                int(h.get("tp") or 0), int(h.get("fp") or 0),
+            ))
 
-    def insert(table, cols, rows, chunk=500):
-        for i in range(0, len(rows), chunk):
-            batch = rows[i:i + chunk]
-            psql("-qc", f"INSERT INTO {table} ({cols}) VALUES "
-                        + ", ".join(batch))
-
-    insert("hoiho_rule_tbl",
-           "domain, regexes, regexes_rejected, ppv, klass, routers, tp, fp",
-           rule_rows)
+    psql_copy_csv("hoiho_rule_tbl",
+                  "domain, regexes, regexes_rejected, ppv, klass, routers, "
+                  "tp, fp", rule_rows)
     print(f"  {len(rule_rows)} rules")
-    insert("hoiho_geohint_tbl",
-           "domain, code, hint_type, lat, lng, place, st, cc, tp, fp",
-           hint_rows)
+    psql_copy_csv("hoiho_geohint_tbl",
+                  "domain, code, hint_type, lat, lng, place, st, cc, tp, fp",
+                  hint_rows)
     print(f"  {len(hint_rows)} geohints")
 
     print(psql("-c", """
@@ -532,24 +580,17 @@ WHERE last_hop_hostname IS NOT NULL AND last_hop_hostname <> ''
     for host, ip in rows:
         d = decode(host, compiled, hints)
         stats[d["status"]] = stats.get(d["status"], 0) + 1
-        batch.append("(" + ", ".join([
-            lit(d["hostname"]),
-            lit(ip) + "::inet" if ip else "NULL",
-            lit(d["domain"]), lit(d["code"]), lit(d["hint_type"]),
-            lit(d["lat"]) + "::numeric" if d["lat"] else "NULL",
-            lit(d["lng"]) + "::numeric" if d["lng"] else "NULL",
-            lit(d["place"]), lit(d["st"]), lit(d["cc"]),
-            lit(d["matched_re"]), str(int(d["code_hint_count"])),
-            lit(d["selection"]), lit(d["corroborated_by"]), lit(d["status"]),
-        ]) + ")")
+        batch.append((
+            d["hostname"], ip or None, d["domain"], d["code"], d["hint_type"],
+            d["lat"], d["lng"], d["place"], d["st"], d["cc"],
+            d["matched_re"], d["code_hint_count"], d["selection"],
+            d["corroborated_by"], d["status"],
+        ))
 
     cols = ("hostname, node_ip, domain, code, hint_type, lat, lng, "
             "place, st, cc, matched_re, code_hint_count, selection, "
             "corroborated_by, status")
-    for i in range(0, len(batch), 500):
-        psql("-qc", f"INSERT INTO carrier_node_tbl ({cols}) VALUES "
-                    + ", ".join(batch[i:i + 500])
-                    + " ON CONFLICT (hostname) DO NOTHING")
+    psql_copy_csv("carrier_node_tbl", cols, batch)
 
     print(f"\n{len(batch):,} rows written. Outcome by status:")
     for k, v in sorted(stats.items(), key=lambda x: -x[1]):
