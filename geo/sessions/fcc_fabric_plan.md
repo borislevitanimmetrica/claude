@@ -222,3 +222,101 @@ Download the public per-state availability files and load them. Then run
 `bdc_load.py technologies`, which establishes the technology code to carrier
 mapping from the data. That mapping is step 2's input, and it is the first
 thing in the new plan that cannot be derived from anything already held.
+
+## 2026-11-17: the downloads are scriptable, and what that measured
+
+Boris asked for a block of curl commands on the assumption the download was
+blocked. It is not blocked. I found the API the download page itself uses, and
+geo/fcc_bdc/bdc_fetch.py drives it. VERIFIED against the live service, not
+recalled:
+
+    GET /nbm/map/api/published/filing
+        the data vintages, no credentials at all
+    GET /nbm/map/api/national_map_process/nbm_get_data_download/{uuid}
+        the catalogue, 10,396 entries
+    GET /nbm/map/api/getNBMDataDownloadFile/{id}/1
+        the file, as a ZIP; the trailing 1 is required
+
+Browser headers are mandatory. Those paths sit behind Akamai and answer 403
+to a plain curl; with a browser User-Agent and a Referer of the download page
+they answer 200. Python urllib was refused even with a User-Agent, so the
+script shells out to curl.
+
+The separately documented /api/public/map/downloads/ API wants credentials and
+answers 401. It is NOT used and nothing here authenticates.
+
+### The FCC technology codes, settled from the FCC's own catalogue
+
+The catalogue carries technology_code with technology_code_desc beside it, so
+this is now evidence rather than recollection:
+
+     0  Other
+    10  Copper
+    40  Cable
+    50  Fiber to the Premises
+    60  GSO Satellite
+    61  NGSO Satellite
+    70  Unlicensed Fixed Wireless
+    71  Licensed Fixed Wireless
+    72  LBR Fixed Wireless
+
+Verizon fibre is 50 and Verizon copper is 10, in separate files, which is the
+separation step 2 requires.
+
+### The files do not overlap, MEASURED
+
+Fixed availability is published as one file per state per technology, 442
+files over 56 jurisdictions. Every availability record therefore appears in
+exactly one file. Confirmed by loading Rhode Island and Delaware entire,
+2,757,622 real rows over 9 files, and running the overlap check:
+duplicated_record_keys came back ZERO. The per-provider files are a different
+cut of the same data and must not be loaded as well.
+
+### Satellite is excluded by default
+
+Reading content-length for 376 of the 442 files gives at least 7.38 GB zipped,
+of which GSO and NGSO satellite are 3.31 GB, 45 percent. Satellite has no
+headend or central office serving a census tract, so those rows cannot
+contribute to steps 2 to 6. Non-satellite measured at 4.06 GB. Both figures
+are LOWER BOUNDS: 66 of the 442 HEAD requests failed when run eight at a time
+and their sizes are missing.
+
+### THE SIZE PROBLEM, which needs a decision before a national load
+
+MEASURED on the real Rhode Island and Delaware load: 2,757,622 rows occupy
+746 MB, being 583 MB of heap and 163 MB of indexes. That is 283.8 bytes per
+row. The measured zip-to-CSV ratio over those nine files is 17.5x.
+
+ESTIMATE, and it is labelled as one because the arithmetic rests on two small
+dense states extrapolating to the country: 4.06 GB of non-satellite zipped
+data at the observed 200,000 rows per zipped megabyte is about 810 million
+rows, which at 283.8 bytes per row is about 230 GB in PostgreSQL. The true
+figure is higher, since 4.06 GB is a lower bound.
+
+Most of that is avoidable and the table is still empty, so the cheap moment to
+decide is now:
+
+- source_file is a text column holding a 58-character file name on every row.
+  Normalising it to a small integer key referencing a file table saves roughly
+  57 bytes per row, on the order of 46 GB.
+- state_fips and county_geoid are generated columns derivable from block_geoid
+  at the two call sites that would want them, and state_usps already carries
+  the state. tract_geoid earns its place as the constant join key; the other
+  two cost about 10 bytes per row, on the order of 8 GB.
+- bdc_id is a bigserial primary key that nothing references. Dropping it saves
+  8 bytes per row plus its index.
+- loaded_at belongs on the file table, not on every row.
+- Five indexes are 22 percent of the total. The block and h3 indexes are not
+  used by any step yet written.
+
+Together those are roughly 100 GB of the 230 GB. NOT APPLIED: this is Boris's
+call, and it is a schema change rather than a tuning knob.
+
+### Open question for the national load
+
+Rhode Island and Delaware contain only 19 Copper rows between them, while
+Licensed Fixed Wireless alone is 1,358,214. If that holds nationally then the
+FIOS-versus-xDSL distinction largely answers itself, because xDSL has nearly
+vanished from these filings, and the dominant technology is served from cell
+sites rather than from headends or central offices. Two small states cannot
+establish either point. It needs re-measuring once more states are loaded.
