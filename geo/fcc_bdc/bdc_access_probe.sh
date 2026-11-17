@@ -118,12 +118,27 @@ sleep 60
 probe "filing list" -A "$UA" -e "$PAGE" "$FILING"
 echo
 
-echo "WHAT TO DO WITH THIS"
-echo "    If the FILE DOWNLOAD line is 200 anywhere above, the downloads work"
-echo "    and only the catalogue endpoint is refused. Run bdc_fetch.py with"
-echo "    --catalog-tsv geo/fcc_bdc/bdc_catalog_fixed.tsv, which is committed"
-echo "    to the repository and needs no API call at all."
+echo "WHAT THIS MEASURED ON BORIS'S MACHINE, 2026-11-17"
+echo "    Tests 1, 2, 3, 4 and 6: all 403. Test 5, the FULL browser header"
+echo "    set: 200. So the full set is what bdc_fetch.py now sends always,"
+echo "    and the cookie warmup is not the fix: the page itself was refused"
+echo "    and gave up no usable cookie."
 echo
-echo "    If every line is 403, this machine is refused outright and the"
-echo "    download has to come from somewhere else."
+echo "    From the Kiro sandbox the same day every variant returned 200,"
+echo "    including a bare request. The refusal is per client."
+echo
+echo "WHAT TO DO WITH THIS"
+echo "    If TEST 5 is 200, bdc_fetch.py should work as it stands, because"
+echo "    it sends those headers on every request."
+echo
+echo "    If the FILE DOWNLOAD lines are 403 while test 5 is 200, only the"
+echo "    files are refused; the catalogue is committed as"
+echo "    geo/fcc_bdc/bdc_catalog_fixed.tsv so no API call is needed, but"
+echo "    the download itself has to come from elsewhere."
+echo
+echo "    If every line is 403, this machine is refused outright."
+echo
+echo "    ALWAYS run bdc_fetch.py verify before loading. A refusal arrives as"
+echo "    a 438-byte HTML page, and on 2026-11-17 four of them were saved as"
+echo "    .zip files and reported as successful downloads."
 rm -f "$BODY"

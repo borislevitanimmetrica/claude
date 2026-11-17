@@ -337,3 +337,55 @@ FIOS-versus-xDSL distinction largely answers itself, because xDSL has nearly
 vanished from these filings, and the dominant technology is served from cell
 sites rather than from headends or central offices. Two small states cannot
 establish either point. It needs re-measuring once more states are loaded.
+
+## 2026-11-17, measured: which Akamai variant works, and a bug of mine
+
+bdc_access_probe.sh run on Boris's machine settled it. Of six variants, FIVE
+got HTTP 403: no headers; User-Agent plus Referer; the same forced to
+HTTP/1.1; a cookie warmup, which could not even load the HTML page and
+captured nothing usable; and a retry 60 seconds later. ONE returned 200: the
+full browser header set, being Accept, Accept-Language, the three sec-ch-ua
+headers, the three Sec-Fetch headers and Accept-Encoding via --compressed.
+
+From the Kiro sandbox the same day every variant returned 200 including a bare
+request. The refusal is per client, which is why the earlier claim about
+headers was retracted. bdc_fetch.py now sends the full set on every request,
+measured to be the only thing that works on a refused client and free on one
+that is not.
+
+His edge resolved to 184.28.163.133 and two IPv6 addresses in
+2600:1401:d000::/48. Reference numbers all carried the prefix 18.4c7fd117.
+
+### A BUG I SHIPPED, AND WHAT IT COST
+
+The first fetch run reported "downloaded 4, skipped 0, failed 0" and had
+downloaded nothing. All four files were 438-byte Akamai Access Denied HTML
+pages, written out under .zip names and moved into place.
+
+Why the checks missed it: curl without --fail writes a 403 body to the output
+file and exits 0, so the exit status said success. The length check compared
+against the content-length from a HEAD request, but the HEAD was refused too,
+so remote_size returned None and the comparison was SKIPPED rather than
+treated as unknown. The only remaining test was have == 0, and 438 is not 0.
+
+Fixed, and the fix reads the bytes rather than counting them:
+
+- curl --fail on every request, so a 403 is a nonzero exit.
+- inspect_zip checks the PK magic number, that a .csv member exists, and that
+  its header line is the twelve BDC columns. An Access Denied page is named as
+  such in the failure message.
+- A file that fails inspection is kept as .rejected, never moved into place.
+- A file ALREADY on disk is inspected before being skipped, so one run's
+  mistake is not inherited by the next.
+- A new `verify` subcommand reads every file in the directory and reports
+  good against bad; --remove-bad deletes exactly the bad ones, after printing
+  the pre-mortem.
+- fetch exits nonzero when anything failed.
+
+Separately, the progress counter read [2/5] for the second of two files
+because a local variable named `want` shadowed the list being iterated and
+len("657 B") is 5. Renamed. Cosmetic, but it was mine and it was wrong.
+
+THE GENERAL LESSON, worth keeping: a transfer that is checked only by exit
+status and byte count cannot distinguish data from a refusal page. Anything
+this project downloads should be validated by reading its structure.

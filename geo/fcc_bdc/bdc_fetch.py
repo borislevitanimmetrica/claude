@@ -107,11 +107,14 @@ interrupted run cannot leave a truncated file that a later run trusts.
 """
 
 import argparse
+import csv
+import io
 import json
 import os
 import subprocess
 import sys
 import time
+import zipfile
 
 BASE = "https://broadbandmap.fcc.gov/nbm/map/api"
 FILING_URL = f"{BASE}/published/filing"
@@ -127,7 +130,32 @@ TECH_FILE = "bdc_technology_codes.tsv"
 
 SATELLITE_CODES = {"60", "61"}
 
-CURL_HEADERS = ["-H", f"User-Agent: {UA}", "-H", f"Referer: {REFERER}"]
+# THE FULL BROWSER HEADER SET, AND WHY IT IS ALL OF THEM
+#
+# MEASURED on Boris's machine 2026-11-17 by bdc_access_probe.sh. Every one of
+# these got HTTP 403 from Akamai: no headers at all; User-Agent plus Referer;
+# the same forced to HTTP/1.1; and a cookie warmup. The ONLY variant that
+# returned 200 was the full set below. From the Kiro sandbox the same day,
+# every variant including a bare request returned 200.
+#
+# So the full set is sent always. It is what the download page's own
+# JavaScript sends, it is the only thing measured to work on a refused
+# client, and it costs nothing on a client that would have been served
+# anyway. Do not trim it to the ones that look necessary: which ones matter
+# is a property of the client, and that was established the expensive way.
+CURL_HEADERS = [
+    "-H", f"User-Agent: {UA}",
+    "-H", f"Referer: {REFERER}",
+    "-H", "Accept: application/json, text/plain, */*",
+    "-H", "Accept-Language: en-US,en;q=0.9",
+    "-H", 'sec-ch-ua: "Chromium";v="131", "Not_A Brand";v="24"',
+    "-H", "sec-ch-ua-mobile: ?0",
+    "-H", 'sec-ch-ua-platform: "Linux"',
+    "-H", "Sec-Fetch-Dest: empty",
+    "-H", "Sec-Fetch-Mode: cors",
+    "-H", "Sec-Fetch-Site: same-origin",
+    "--compressed",
+]
 
 # Set by --warmup. Akamai sits in front of these paths and refuses some
 # clients outright; loading the HTML download page first can leave cookies
@@ -192,10 +220,16 @@ def curl_json(url, what):
 
 
 def remote_size(file_id):
-    """content-length for one file, or None. Uses HEAD, which is allowed."""
+    """content-length for one file, or None if the server would not say.
+
+    None means UNKNOWN, and callers must not read it as "fine". A refused
+    HEAD returns None, and treating that as nothing-to-check is the bug that
+    let 438-byte Akamai error pages be saved as .zip files and reported as
+    four successful downloads.
+    """
     url = f"{FILE_URL}/{file_id}/1"
-    r = subprocess.run(["curl", "-sS", "-I", "-m", "90", *cookie_args(),
-                        *CURL_HEADERS, url],
+    r = subprocess.run(["curl", "-sS", "-I", "-m", "90", "--fail",
+                        *cookie_args(), *CURL_HEADERS, url],
                        capture_output=True, text=True)
     if r.returncode != 0:
         return None
@@ -205,6 +239,61 @@ def remote_size(file_id):
             if v.isdigit():
                 return int(v)
     return None
+
+
+EXPECTED_CSV_HEADER = [
+    "frn", "provider_id", "brand_name", "location_id", "technology",
+    "max_advertised_download_speed", "max_advertised_upload_speed",
+    "low_latency", "business_residential_code", "state_usps",
+    "block_geoid", "h3_res8_id",
+]
+
+
+def inspect_zip(path):
+    """Return (ok, detail). Proves a file is a BDC availability ZIP.
+
+    Checked because the server's refusal is an HTML page with HTTP 403, and a
+    size comparison cannot catch it when the size probe was refused too. This
+    reads the actual bytes instead: the ZIP magic number, a CSV member, and
+    that member's header line.
+    """
+    try:
+        with open(path, "rb") as f:
+            magic = f.read(4)
+    except OSError as exc:
+        return False, f"unreadable: {exc}"
+
+    if magic[:2] != b"PK":
+        try:
+            with open(path, "rb") as f:
+                head = f.read(200).decode("utf-8", "replace")
+        except OSError:
+            head = ""
+        if "Access Denied" in head or head.lstrip()[:5].lower() == "<html":
+            return False, ("an Akamai Access Denied HTML page, not a ZIP. "
+                           "The server refused this client.")
+        return False, (f"not a ZIP; it begins {magic!r} rather than b'PK'")
+
+    try:
+        z = zipfile.ZipFile(path)
+        inner = [n for n in z.namelist() if n.lower().endswith(".csv")]
+        if not inner:
+            return False, f"a ZIP with no .csv inside: {z.namelist()[:5]}"
+        with z.open(inner[0]) as fh:
+            first = io.TextIOWrapper(fh, encoding="utf-8",
+                                     errors="replace").readline()
+        got = [h.strip().lstrip("\ufeff")
+               for h in next(csv.reader([first]), [])]
+        if got != EXPECTED_CSV_HEADER:
+            missing = [c for c in EXPECTED_CSV_HEADER if c not in got]
+            why = missing if missing else "nothing, but the column order differs"
+            return False, f"a ZIP whose CSV header is not the BDC one; {why}"
+        rows = z.getinfo(inner[0]).file_size
+        return True, f"{inner[0]}, {rows:,} bytes uncompressed"
+    except zipfile.BadZipFile as exc:
+        return False, f"a corrupt ZIP: {exc}"
+    except (OSError, KeyError, StopIteration) as exc:
+        return False, f"unreadable as a BDC ZIP: {exc}"
 
 
 def human(n):
@@ -511,39 +600,63 @@ def cmd_fetch(args):
         size = remote_size(r["id"])
         if os.path.isfile(path):
             have = os.path.getsize(path)
-            if size is not None and have == size:
+            # Validate what is on disk before trusting it, whatever the
+            # server says about sizes. A file that is already there is the
+            # one case where a previous run's mistake gets inherited.
+            ok, detail = inspect_zip(path)
+            if not ok:
+                print(f"{tag}: the file already on disk is {detail}")
+                print(f"  it will be replaced")
+            elif size is not None and have == size:
                 skipped += 1
-                print(f"{tag}: already have {human(have)}, skipped")
+                print(f"{tag}: already have {human(have)}, verified, skipped")
                 continue
-            if size is None:
+            elif size is None:
                 skipped += 1
-                print(f"{tag}: already have {human(have)} and the server did "
-                      f"not report a size to check it against, skipped. "
-                      f"Delete the file to force a re-download.")
+                print(f"{tag}: already have {human(have)} and it verifies as "
+                      f"a BDC ZIP; the server would not report a size to "
+                      f"check the length against, so it is skipped")
                 continue
-            print(f"{tag}: on disk at {human(have)} but the server says "
-                  f"{human(size)}, so it is incomplete and will be fetched "
-                  f"again")
+            else:
+                print(f"{tag}: on disk at {human(have)} but the server says "
+                      f"{human(size)}, so it is incomplete and will be "
+                      f"fetched again")
 
         part = path + ".part"
         url = f"{FILE_URL}/{r['id']}/1"
-        print(f"{tag}: downloading {human(size)} ...", flush=True)
+        # Named size_text, not want: `want` is the list being iterated and
+        # shadowing it made the progress counter read [2/5] on the second of
+        # two files, because len("657 B") is 5.
+        size_text = human(size) if size is not None else "an unreported size"
+        print(f"{tag}: downloading {size_text} ...", flush=True)
         t0 = time.monotonic()
-        res = subprocess.run(["curl", "-sS", "-L", "-m", "3600",
+        # --fail makes curl exit nonzero on 403 instead of writing the
+        # refusal page to the output file and exiting 0. -w gives the status
+        # so the message can say which it was.
+        res = subprocess.run(["curl", "-sS", "-L", "-m", "3600", "--fail",
+                              "-w", "%{http_code}",
                               "--retry", "3", "--retry-delay", "5",
                               *cookie_args(), *CURL_HEADERS,
                               "-o", part, url],
                              capture_output=True, text=True)
+        status = res.stdout.strip() or "no status"
         if res.returncode != 0:
             failed += 1
-            problems.append(f"{name}: curl exit {res.returncode} "
-                            f"{res.stderr.strip()}")
-            print(f"  FAILED: {res.stderr.strip()}")
+            detail = res.stderr.strip() or f"http {status}"
+            problems.append(f"{name}: curl exit {res.returncode}, {detail}")
+            print(f"  FAILED, http {status}: {detail}")
             if os.path.exists(part):
                 os.remove(part)
             continue
 
         have = os.path.getsize(part) if os.path.exists(part) else 0
+        if have == 0:
+            failed += 1
+            problems.append(f"{name}: empty response, http {status}")
+            print(f"  FAILED: empty file, http {status}")
+            if os.path.exists(part):
+                os.remove(part)
+            continue
         if size is not None and have != size:
             failed += 1
             problems.append(f"{name}: got {have} bytes, server said {size}")
@@ -551,12 +664,23 @@ def cmd_fetch(args):
                   f"Left as {os.path.basename(part)} rather than moved into "
                   f"place.")
             continue
-        if have == 0:
+
+        # THE BYTES ARE READ, not merely counted. A refused request can
+        # arrive as a 438-byte HTML page with HTTP 403, and when the size
+        # probe was refused as well there is no size to compare it against.
+        # Counting bytes reported four such pages as successful downloads on
+        # 2026-11-17. This is the check that would have caught it.
+        ok, detail = inspect_zip(part)
+        if not ok:
             failed += 1
-            problems.append(f"{name}: empty response")
-            print("  FAILED: empty file")
-            os.remove(part)
+            problems.append(f"{name}: {detail}")
+            print(f"  FAILED: the file is {detail}")
+            reject = path + ".rejected"
+            os.replace(part, reject)
+            print(f"  kept as {os.path.basename(reject)} so you can read it, "
+                  f"NOT moved into place and NOT loadable")
             continue
+        print(f"  verified: {detail}")
 
         os.replace(part, path)
         got += 1
@@ -578,6 +702,59 @@ def cmd_fetch(args):
               f"--files {args.dest}/*.zip")
     if failed:
         sys.exit(1)
+
+
+def cmd_verify(args):
+    """Read every file in dest and say whether it is really a BDC ZIP.
+
+    Exists because four Akamai refusal pages were saved as .zip files and
+    reported as successful downloads. Run it before loading anything.
+    """
+    if not os.path.isdir(args.dest):
+        sys.exit(f"{args.dest} is not a directory")
+    names = sorted(n for n in os.listdir(args.dest)
+                   if n.endswith(".zip") or n.endswith(".part")
+                   or n.endswith(".rejected"))
+    if not names:
+        print(f"no .zip, .part or .rejected files in {args.dest}")
+        return
+
+    good, bad = [], []
+    for n in names:
+        path = os.path.join(args.dest, n)
+        ok, detail = inspect_zip(path)
+        size = os.path.getsize(path)
+        if ok:
+            good.append(n)
+            print(f"ok   {n}  {human(size)}  {detail}")
+        else:
+            bad.append((n, path, detail))
+            print(f"BAD  {n}  {human(size)}  {detail}")
+
+    print(f"\n{len(good)} good, {len(bad)} bad")
+    if not bad:
+        print("Every file is a BDC availability ZIP. Safe to load.")
+        return
+
+    print("\nThe bad files are NOT loadable and must not be left where a "
+          "glob will pick them up.")
+    if not args.remove_bad:
+        print("Re-run with --remove-bad to delete exactly these files:")
+        for n, _, _ in bad:
+            print(f"  {n}")
+        print("\nPre-mortem for that deletion: every one of these is either "
+              "a server refusal page or a truncated transfer, none of them "
+              "contains any data, all are re-downloadable from the FCC by "
+              "id, and nothing else in the directory is touched. The "
+              "catalogue and the technology TSV are not .zip files and are "
+              "therefore not candidates.")
+        sys.exit(1)
+
+    for n, path, _ in bad:
+        os.remove(path)
+        print(f"  removed {n}")
+    print(f"\n{len(bad)} file(s) removed. Re-run `fetch` to try them again.")
+    sys.exit(1)
 
 
 def main():
@@ -634,6 +811,14 @@ def main():
     fe = sub.add_parser("fetch", help="download the files")
     common(fe)
     fe.set_defaults(func=cmd_fetch)
+
+    ve = sub.add_parser("verify",
+                        help="read every downloaded file and prove it is a "
+                             "BDC availability ZIP, not a refusal page")
+    ve.add_argument("--dest", default="/home/boris/geo/bdc")
+    ve.add_argument("--remove-bad", action="store_true",
+                    help="delete the files that are not BDC ZIPs")
+    ve.set_defaults(func=cmd_verify)
 
     args = ap.parse_args()
     require_curl()
