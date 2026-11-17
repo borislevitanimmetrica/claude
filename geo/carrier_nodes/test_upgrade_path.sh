@@ -139,11 +139,15 @@ echo
 psql -X -q <<'SQL'
 INSERT INTO ovt_places_usa_ip_trace (ip, hops) VALUES
  ('1.1.1.1','[{"ip":"113.115.207.1","host":"113.115.207.atginternet.com"},{"ip":"113.115.207.2","host":"113.115.207.atginternet.com"},{"ip":"68.85.1.1","host":"po-1-rur201.westroxbury.ma.boston.comcast.net"}]'::jsonb),
- ('1.1.1.2','[{"ip":"68.85.1.2","host":"po-1-rur201.westroxbury.ma.boston.comcast.net"},{"ip":"24.58.1.1","host":"dynamic-acc-1-2-3.hsd1.adln.ca.frontiernet.net"}]'::jsonb);
+ ('1.1.1.2','[{"ip":"68.85.1.2","host":"po-1-rur201.westroxbury.ma.boston.comcast.net"},{"ip":"24.58.1.1","host":"dynamic-acc-1-2-3.hsd1.adln.ca.frontiernet.net"}]'::jsonb),
+ ('2.2.2.1','[{"ip":"203.0.113.5","host":"r1.odd.example.net"},{"ip":"198.51.100.5","host":"r2.odd.example.net"},{"ip":"192.0.2.5","host":"r3.odd.example.net"}]'::jsonb);
 INSERT INTO ip2city_dbiplite_probe_tbl (network, isp, org, "as") VALUES
  ('68.85.0.0/16','Comcast Cable Communications, LLC','Comcast Cable','AS7922 Comcast Cable Communications, LLC'),
  ('24.58.0.0/16','Frontier Communications','Frontier','AS5650 Frontier Communications of America, Inc.'),
- ('113.115.0.0/16','ATG Internet','ATG','AS64999 ATG');
+ ('113.115.0.0/16','ATG Internet','ATG','AS64999 ATG'),
+ ('203.0.113.0/24','The','The','AS64500 The'),
+ ('198.51.100.0/24','US','USA Inc','AS64501 Co'),
+ ('192.0.2.0/24','!!!','---','AS64502 LLC');
 INSERT INTO rdap_registrant_tbl (start_ip, end_ip, registrant) VALUES
  ('68.85.0.0','68.85.255.255','Comcast Cable Communications, LLC'),
  ('24.58.0.0','24.58.255.255','Frontier Communications Corporation');
@@ -200,6 +204,13 @@ pairs=$(psql -X -qtAc "SELECT count(*) FROM carrier_node_tbl WHERE hostname = '1
 echo "    rows for the hostname that used to break the load: $pairs"
 if [ "$pairs" != "2" ]; then
     echo "FAILED: expected 2 address rows for that hostname"
+    exit 1
+fi
+echo
+odd=$(psql -X -qtAc "SELECT count(*) FROM carrier_name_observed_tbl WHERE name IN ('The','US','USA Inc','!!!','---')")
+echo "    names that strip to nothing, kept as observations: $odd"
+if [ "$odd" -lt 5 ]; then
+    echo "FAILED: a name whose corporate words strip to nothing was dropped"
     exit 1
 fi
 echo

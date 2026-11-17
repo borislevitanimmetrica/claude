@@ -154,11 +154,15 @@ CREATE TABLE IF NOT EXISTS carrier_name_observed_tbl (
                                    'ipapi_as', 'rdap', 'bdc')),
     name         text NOT NULL,
 
+    -- Nullable. A name consisting only of punctuation normalises to nothing,
+    -- and such a row is still worth keeping as an observation: it simply
+    -- matches nothing. Making it NOT NULL turned one unusable name into an
+    -- aborted run.
     -- A normalised form for comparison across sources. Lower-cased,
     -- punctuation stripped, and the corporate suffixes removed that differ
     -- between sources for the same company: LLC against L.L.C. against
     -- Inc against Incorporated.
-    name_norm    text NOT NULL,
+    name_norm    text,
 
     -- The AS number where the source supplies one. This is the strongest
     -- join key available and it is why ipapi_as is kept as its own source
@@ -172,6 +176,24 @@ CREATE TABLE IF NOT EXISTS carrier_name_observed_tbl (
     observed_at  timestamptz NOT NULL DEFAULT now(),
     PRIMARY KEY (source, name)
 );
+
+-- MIGRATION: drop NOT NULL on name_norm for installs created before
+-- 2026-11-17. CREATE TABLE IF NOT EXISTS leaves an existing table alone, so
+-- the change above does not reach a database that already has this table.
+DO $$
+BEGIN
+    IF to_regclass('carrier_name_observed_tbl') IS NOT NULL
+       AND EXISTS (SELECT 1 FROM information_schema.columns
+                   WHERE table_name = 'carrier_name_observed_tbl'
+                     AND column_name = 'name_norm'
+                     AND is_nullable = 'NO')
+    THEN
+        ALTER TABLE carrier_name_observed_tbl
+            ALTER COLUMN name_norm DROP NOT NULL;
+        RAISE NOTICE 'name_norm on carrier_name_observed_tbl is now nullable; a name of only punctuation normalises to nothing and must not abort the run';
+    END IF;
+END
+$$;
 
 CREATE INDEX IF NOT EXISTS carrier_name_observed_norm_idx
     ON carrier_name_observed_tbl (name_norm);
@@ -313,17 +335,35 @@ $$;
 -- that genuinely differ between registries. It does NOT drop words like
 -- cable, communications or broadband, because those distinguish real
 -- companies and dropping them would merge distinct carriers.
+-- THE FALLBACK IS NOT COSMETIC. Removing corporate-form words can empty a
+-- name completely: ip-api carries an org of literally 'The', and 'US',
+-- 'Inc' and 'The Group' do the same. The first version returned NULL for
+-- those and the NOT NULL column rejected the row, which aborted the whole
+-- file on Boris's data after 1,480 rows had already gone in.
+--
+-- So when stripping the corporate words leaves nothing, the punctuation-only
+-- normalisation is returned instead. A name of 'The' then normalises to
+-- 'the', which will not match anything useful, and that is the correct
+-- outcome: it is not a carrier name. What matters is that it does not stop
+-- the file or vanish from the observation table.
 CREATE OR REPLACE FUNCTION carrier_name_norm(t text) RETURNS text AS $$
-    SELECT nullif(btrim(regexp_replace(
-               regexp_replace(
-                   regexp_replace(lower(coalesce(t, '')), '[^a-z0-9 ]+', ' ', 'g'),
+    WITH base AS (
+        SELECT nullif(btrim(regexp_replace(
+                   regexp_replace(lower(coalesce(t, '')),
+                                  '[^a-z0-9 ]+', ' ', 'g'),
+                   ' {2,}', ' ', 'g')), '') AS b
+    ),
+    stripped AS (
+        SELECT nullif(btrim(regexp_replace(regexp_replace(b,
                    '\y(llc|l l c|inc|incorporated|corp|corporation|co|company|ltd|limited|lp|llp|plc|holdings|group|usa|us|the|dba|fka)\y',
-                   ' ', 'g'),
-               ' {2,}', ' ', 'g')), '');
+                   ' ', 'g'), ' {2,}', ' ', 'g')), '') AS sv, b
+        FROM base
+    )
+    SELECT coalesce(sv, b) FROM stripped;
 $$ LANGUAGE sql IMMUTABLE;
 
 COMMENT ON FUNCTION carrier_name_norm(text) IS
-    'Conservative name normalisation for cross-source comparison. Removes punctuation and corporate-form words only. Deliberately keeps cable, communications, broadband and similar, because those distinguish real companies and removing them would merge distinct carriers.';
+    'Conservative name normalisation for cross-source comparison. Removes punctuation and corporate-form words only, and KEEPS cable, communications, broadband and similar because those distinguish real companies. If removing the corporate words would empty the name, as it does for an org of The or US, the punctuation-only form is returned instead; returning NULL there once aborted a whole run.';
 
 TRUNCATE carrier_name_observed_tbl;
 

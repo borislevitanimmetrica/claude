@@ -847,3 +847,69 @@ evidence about a carrier is not a reason to revisit a decision about it.
 Known and harmless: a carrier with an approved BDC pairing can still show a
 second unapproved row carrying no BDC candidate. It proposes nothing and can
 be ignored or suppressed on request.
+
+### Bug nine: a carrier name that normalises to nothing
+
+The run reached section 3 and aborted:
+
+    ERROR: null value in column "name_norm" of relation
+           "carrier_name_observed_tbl" violates not-null constraint
+    DETAIL: Failing row contains (ipapi_org, The, null, ...)
+
+ip-api carries an org of literally "The". carrier_name_norm strips corporate
+words, "the" is one of them, so the result was an empty string, nullif made
+it NULL, and the NOT NULL column rejected it after 1,480 rows had already
+been inserted. "US", "Inc" and "The Group" do the same.
+
+Fixed in two places. The function now falls back to the punctuation-only
+normalisation when stripping the corporate words would empty the name, so
+"The" becomes "the" and matches nothing useful, which is the correct outcome
+for a string that is not a carrier name. And name_norm is nullable, because a
+name of pure punctuation normalises to nothing and such a row is still worth
+holding as an observation. Measured after the fix: The, US and USA Inc
+normalise to the, us and usa inc; "!!!" and "---" normalise to NULL and are
+retained.
+
+A migration drops the NOT NULL for installs that already have the table,
+since CREATE TABLE IF NOT EXISTS would not have.
+
+Both cases are now in test_upgrade_path.sh, which fails if a name that
+strips to nothing is dropped.
+
+### Step 2 is working. The first real numbers, from Boris's corpus
+
+22,790 hostname and address pairs over 22,302 distinct hostnames, so 488
+pairs are extra addresses on a hostname already counted.
+
+    located                                       5,103 hostnames  102 domains  725 sites
+    clli code, needs clli_resolve                 2,409 hostnames   53 domains  644 codes
+    regex matched, code not in ruleset hints        629 hostnames   69 domains  285 codes
+    domain has rules but none matched             3,867 hostnames  135 domains
+    no rule for this domain                      10,294 hostnames 3,910 domains
+
+Per carrier, the ones that matter:
+
+    comcast.net        2,958 hostnames  2,014 located     464 sites
+    charter.com        1,725 hostnames    480 clli        306 sites
+    spectrum.com       1,589 hostnames      0             0 sites, NO RULES
+    cogentco.com         963 hostnames    935 located     116 sites
+    frontiernet.net      577 hostnames    475 clli        156 sites
+    verizon-gni.net      384 hostnames    361 clli         59 sites
+    verizon.net          355 hostnames    351 clli         18 sites
+    cox.net              281 hostnames      0             0 sites, NO RULES
+    twelve99-cust.net    222 hostnames      0             0 sites, NO RULES
+
+The frontiernet fix worked: 475 CLLI codes and 156 sites where the previous
+run had zero of both.
+
+2,409 hostnames across 644 CLLI codes are waiting on clli_resolve, and they
+include almost all of Charter, Frontier and both Verizon domains. That is now
+the single highest-value remaining piece of step 2.
+
+spectrum.com at 1,589 hostnames, cox.net at 281 and twelve99-cust.net at 222
+have NO rules in the CAIDA ruleset at all, which matches what
+geo/landmarks/isp_node_feasibility.md recorded as uncovered operators. Those
+need rules written from observed hostnames or they contribute nothing.
+
+ip-api identified a range for 21,060 of the 22,790 node addresses, 17,716
+with an isp and 17,041 with an AS string, across 3,908 domains.
