@@ -324,6 +324,25 @@ def decode(hostname, compiled, hints):
         if not m or not m.groups():
             continue
         groups = [(g or "").lower() for g in m.groups()]
+
+        # THE CONCATENATION IS A CANDIDATE TOO, and omitting it cost a whole
+        # carrier. frontiernet.net's rules capture the place and the state
+        # SEPARATELY:
+        #   ^.+\.([a-z]{4})\.([a-z]{2})\.frontiernet\.net$
+        # against a hostname like ...adln.ca.frontiernet.net. But its 324
+        # hints are six-character CLLI codes, adlnca being the first, which
+        # is the two groups joined. Trying only adln and ca resolved nothing,
+        # which is why Boris's run showed frontiernet.net with 457 hostnames,
+        # 146 distinct codes and ZERO locations.
+        #
+        # The joined form is tried FIRST when there are several groups,
+        # because it is the more specific reading: six characters of CLLI
+        # beat a bare four-character place token.
+        candidates = list(groups)
+        if len(groups) > 1:
+            joined = "".join(groups)
+            if joined and joined not in candidates:
+                candidates.insert(0, joined)
         # STATE DISAMBIGUATION, AND WHY IT IS NOT OPTIONAL.
         #
         # MEASURED 2026-11-17: comcast.net/springfield has SEVEN hints, in
@@ -351,7 +370,7 @@ def decode(hostname, compiled, hints):
             return (cands[0], len(cands),
                     "only candidate" if len(cands) == 1 else "highest tp")
 
-        resolved = [(g,) + pick(g) for g in groups if g in dom_hints]
+        resolved = [(g,) + pick(g) for g in candidates if g in dom_hints]
 
         if not resolved:
             if unresolved is None:
@@ -363,8 +382,9 @@ def decode(hostname, compiled, hints):
             continue
 
         if len(resolved) > 1:
-            # Prefer the hint that is not a bare state code, since a
-            # two-letter group is the state in every multi-group rule seen.
+            # Prefer the longest code: the joined six-character CLLI over a
+            # bare four-character place token, and either over a two-letter
+            # state code.
             resolved.sort(key=lambda gh: (len(gh[0]) == 2, -len(gh[0])))
         code, h, nhints, how = resolved[0]
         out["code_hint_count"] = nhints
@@ -393,6 +413,10 @@ def decode(hostname, compiled, hints):
 
     if unresolved is not None:
         rx, groups = unresolved
+        if len(groups) > 1:
+            j = "".join(groups)
+            if j:
+                groups = [j] + list(groups)
         # Report the longest group: in a (state, place) pair the place is the
         # informative half and the state is two characters.
         cand = sorted(groups, key=lambda g: (len(g) == 2, -len(g)))
@@ -428,6 +452,10 @@ KNOWN = [
      "disambiguation: springfield has seven hints 4,032 km apart and the "
      "correct answer for a hostname carrying ma is Springfield MA, not the "
      "higher-scoring Springfield IL"),
+    ("dynamic-acc-1-2-3.hsd1.adln.ca.frontiernet.net", "adlnca",
+     "frontiernet.net rules capture place and state as SEPARATE groups while "
+     "its 324 hints are the six-character concatenation. Boris's run showed "
+     "this domain with 457 hostnames, 146 codes and zero locations"),
     ("ggr2.n54ny.ip.att.net", None,
      "geo/traceroute_hostname_rules.sql: cited as transit-behaving att.net"),
 ]

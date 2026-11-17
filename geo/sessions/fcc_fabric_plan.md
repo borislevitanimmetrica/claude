@@ -685,3 +685,45 @@ the /download/pub-acc-sys/ path no longer exists. FCC ASR and ULS, which
 would give exact coordinates for licensed fixed wireless sites, need their
 CURRENT bulk-download URLs found. Still unassessed, now for a different
 reason.
+
+### The frontiernet.net anomaly explained, and it was a fourth bug of mine
+
+Boris's partial run showed frontiernet.net with 457 hostnames, 146 distinct
+codes and ZERO located, ZERO clli pending, while the ruleset holds 324 CLLI
+hints for that domain at ppv 0.990. Diagnosed 2026-11-17 by reading the rules
+rather than guessing:
+
+    ^.+\.([a-z]{4})\.([a-z]{2})\.frontiernet\.net$
+
+captures the place and the state as SEPARATE groups, from a hostname of the
+form ...adln.ca.frontiernet.net. The hints are six-character CLLI codes,
+adlnca being the first. So the code is the two groups JOINED, and trying adln
+and ca individually resolves nothing.
+
+Fixed: the concatenation of all capture groups is now a candidate code, tried
+before the individual groups because six characters of CLLI is a more
+specific reading than a bare four-character place token. Verified:
+dynamic-acc-1-2-3.hsd1.adln.ca.frontiernet.net now returns adlnca.
+
+33 domains have multi-group rules whose hints are longer than any single
+group, so this was not one carrier's quirk. By router count the largest
+affected are comcast.net 255,906, windstream.net 16,956 with 281 CLLI hints,
+frontiernet.net 15,357 with 324, comcastbusiness.net 9,328, ntt.net 3,784,
+rr.com 1,525 with 233, ziplyfiber.com 1,282.
+
+Also confirmed from the ruleset, consistent with
+geo/landmarks/isp_node_feasibility.md: uniti.net and twelve99-cust.net are
+NOT in the ruleset at all, which is why they showed 143 and 111 hostnames
+with zero sites. That is a gap in CAIDA's coverage, not a bug here.
+
+### Running total of bugs in step 2, all found by running it
+
+1. Read only capture group 1, so Comcast returned a bare state code.
+2. Assumed a code was unique within a domain; 213 pairs repeat.
+3. Chose between ambiguous codes by score, which put Springfield MA in
+   Illinois, 4,032 km away.
+4. Built INSERT text into a psql argument, which died at 22,790 hostnames.
+5. Never tried the concatenation of capture groups, which cost
+   frontiernet.net, windstream.net and 31 other domains entirely.
+
+Not one of these was visible by reading the code.
