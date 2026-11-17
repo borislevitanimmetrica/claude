@@ -26,11 +26,25 @@ the live service rather than recalled:
       The trailing 1 is required: 0 answers "the id does not exist" and
       omitting it answers "Path Not Found".
 
-BROWSER HEADERS ARE NOT OPTIONAL. Those paths sit behind Akamai bot
-protection. Plain curl with no User-Agent and no Referer gets HTTP 403 with an
-Akamai script in the body. With a browser User-Agent and a Referer of the
-download page they answer 200. That is why this shells out to curl with those
-headers set rather than using urllib, which was tried and refused.
+AKAMAI SITS IN FRONT OF THESE PATHS, AND I GOT THE REASON WRONG ONCE
+
+The first version of this file said browser headers were what made the
+difference, because a bare curl had returned 403 and a curl with a browser
+User-Agent and Referer had returned 200. THAT WAS AN OVER-GENERALISATION FROM
+ONE OBSERVATION. Re-tested an hour later from the same host, a request with no
+headers at all returned 200. Meanwhile the identical script with the headers
+set was refused outright from Boris's machine with an Akamai Access Denied
+page.
+
+So the decision is made per client, not per header, and I cannot predict it
+from either side. The headers are still sent, because they cost nothing and
+match what the download page itself sends, but they are not the mechanism.
+geo/fcc_bdc/bdc_access_probe.sh is what establishes what a given machine can
+actually reach, and --warmup and --catalog-tsv are the two things that help
+when parts of it are refused.
+
+curl is used rather than urllib because urllib was refused where curl was not,
+on the one host where both were tried.
 
 There is a second, documented API at /api/public/map/downloads/ which wants
 credentials; it answers 401 and is NOT used here. Nothing in this script
@@ -115,6 +129,45 @@ SATELLITE_CODES = {"60", "61"}
 
 CURL_HEADERS = ["-H", f"User-Agent: {UA}", "-H", f"Referer: {REFERER}"]
 
+# Set by --warmup. Akamai sits in front of these paths and refuses some
+# clients outright; loading the HTML download page first can leave cookies
+# that the API calls are then accepted with. Whether it helps is a property of
+# the client, not of the service, so it is an option rather than the default
+# and geo/fcc_bdc/bdc_access_probe.sh is what establishes which you need.
+COOKIE_JAR = None
+
+
+def cookie_args():
+    if not COOKIE_JAR:
+        return []
+    return ["-b", COOKIE_JAR, "-c", COOKIE_JAR]
+
+
+def warm_up(jar):
+    """Load the HTML download page to collect whatever cookies it sets."""
+    global COOKIE_JAR
+    r = subprocess.run(["curl", "-sS", "-o", os.devnull, "-w", "%{http_code}",
+                        "-m", "90", "-c", jar, "-H", f"User-Agent: {UA}",
+                        "-H", "Accept: text/html,application/xhtml+xml,"
+                              "application/xml;q=0.9,*/*;q=0.8",
+                        "-H", "Accept-Language: en-US,en;q=0.9",
+                        REFERER],
+                       capture_output=True, text=True)
+    code = r.stdout.strip()
+    names = []
+    if os.path.isfile(jar):
+        with open(jar) as f:
+            for line in f:
+                p = line.rstrip("\n").split("\t")
+                if len(p) >= 6 and p[5]:
+                    names.append(p[5])
+    print(f"warmup: fetched the download page, http={code}, "
+          f"cookies captured: {', '.join(sorted(set(names))) or 'none'}")
+    if not names:
+        print("  No cookies, so the warmup has given the API calls nothing "
+              "extra. If they are refused, the warmup is not the fix.")
+    COOKIE_JAR = jar
+
 
 def require_curl():
     try:
@@ -126,7 +179,8 @@ def require_curl():
 
 def curl_json(url, what):
     """GET a JSON document, with the browser headers that get past Akamai."""
-    r = subprocess.run(["curl", "-sS", "-m", "180", *CURL_HEADERS, url],
+    r = subprocess.run(["curl", "-sS", "-m", "180", *cookie_args(),
+                        *CURL_HEADERS, url],
                        capture_output=True, text=True)
     if r.returncode != 0:
         sys.exit(f"curl failed fetching {what}:\n{r.stderr.strip()}")
@@ -140,7 +194,8 @@ def curl_json(url, what):
 def remote_size(file_id):
     """content-length for one file, or None. Uses HEAD, which is allowed."""
     url = f"{FILE_URL}/{file_id}/1"
-    r = subprocess.run(["curl", "-sS", "-I", "-m", "90", *CURL_HEADERS, url],
+    r = subprocess.run(["curl", "-sS", "-I", "-m", "90", *cookie_args(),
+                        *CURL_HEADERS, url],
                        capture_output=True, text=True)
     if r.returncode != 0:
         return None
@@ -234,8 +289,53 @@ def fetch_catalog(args):
     return rows
 
 
+def load_catalog_tsv(path):
+    """Read the committed catalogue instead of calling the API.
+
+    geo/fcc_bdc/bdc_catalog_fixed.tsv holds the 442 Nationwide fixed
+    availability entries. It exists because the catalogue endpoint is refused
+    from some clients by Akamai while the file endpoint is not, and in that
+    case nothing about the download needs an API call: the file ids are all
+    that is required and they are here.
+    """
+    rows = []
+    with open(path) as f:
+        header = f.readline().rstrip("\n").split("\t")
+        need = ["id", "technology_code", "technology_code_desc",
+                "state_fips", "state_name", "file_name"]
+        missing = [c for c in need if c not in header]
+        if missing:
+            sys.exit(f"{path} is missing column(s) {missing}. Expected a "
+                     f"tab-separated file with: {', '.join(need)}")
+        idx = {c: header.index(c) for c in need}
+        for n, line in enumerate(f, 2):
+            line = line.rstrip("\n")
+            if not line:
+                continue
+            p = line.split("\t")
+            if len(p) != len(header):
+                sys.exit(f"{path} line {n} has {len(p)} fields, expected "
+                         f"{len(header)}; nothing was downloaded")
+            r = {c: p[idx[c]] for c in need}
+            # The filters and the reporting both read these, so the shape
+            # has to match what the API returns.
+            r["data_type"] = "Fixed Broadband"
+            r["data_category"] = "Nationwide"
+            r["file_type"] = "csv"
+            r["download_available"] = "Yes"
+            rows.append(r)
+    if not rows:
+        sys.exit(f"{path} held no rows; nothing was downloaded")
+    print(f"catalogue read from {path}: {len(rows):,} fixed availability "
+          f"entries, no API call needed")
+    return rows
+
+
 def load_catalog(args):
-    """Use the saved catalogue if present, otherwise fetch it."""
+    """The committed TSV if asked for, then a saved copy, then the API."""
+    tsv = getattr(args, "catalog_tsv", None)
+    if tsv:
+        return load_catalog_tsv(tsv)
     path = catalog_path(args.dest)
     if os.path.isfile(path):
         with open(path) as f:
@@ -385,10 +485,10 @@ def cmd_print_curl(args):
 
 
 def cmd_fetch(args):
+    os.makedirs(args.dest, exist_ok=True)
     rows = load_catalog(args)
     write_tech_file(rows, args.dest)
     want = fixed_rows(rows, args)
-    os.makedirs(args.dest, exist_ok=True)
 
     print(f"\n{len(want)} file(s) selected, across "
           f"{len({r['state_fips'] for r in want})} jurisdiction(s)")
@@ -431,7 +531,8 @@ def cmd_fetch(args):
         t0 = time.monotonic()
         res = subprocess.run(["curl", "-sS", "-L", "-m", "3600",
                               "--retry", "3", "--retry-delay", "5",
-                              *CURL_HEADERS, "-o", part, url],
+                              *cookie_args(), *CURL_HEADERS,
+                              "-o", part, url],
                              capture_output=True, text=True)
         if res.returncode != 0:
             failed += 1
@@ -490,6 +591,16 @@ def main():
                        help="directory for the files and the catalogue")
         p.add_argument("--filing",
                        help="process_uuid of a vintage; default is the newest")
+        p.add_argument("--catalog-tsv",
+                       help="read the committed catalogue at "
+                            "geo/fcc_bdc/bdc_catalog_fixed.tsv instead of "
+                            "calling the catalogue API, for when Akamai "
+                            "refuses the API but not the files")
+        p.add_argument("--warmup", metavar="JAR", nargs="?",
+                       const="/tmp/bdc_cookies.txt",
+                       help="load the HTML download page first and reuse its "
+                            "cookies; run bdc_access_probe.sh to find out "
+                            "whether this machine needs it")
         if with_filters:
             p.add_argument("--state", nargs="+",
                            help="limit to these states, by FIPS or full name")
@@ -526,6 +637,8 @@ def main():
 
     args = ap.parse_args()
     require_curl()
+    if getattr(args, "warmup", None):
+        warm_up(args.warmup)
     args.func(args)
 
 

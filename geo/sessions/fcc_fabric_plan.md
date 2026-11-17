@@ -237,10 +237,27 @@ recalled:
     GET /nbm/map/api/getNBMDataDownloadFile/{id}/1
         the file, as a ZIP; the trailing 1 is required
 
-Browser headers are mandatory. Those paths sit behind Akamai and answer 403
-to a plain curl; with a browser User-Agent and a Referer of the download page
-they answer 200. Python urllib was refused even with a User-Agent, so the
-script shells out to curl.
+RETRACTED, 2026-11-17, same day: I wrote here that browser headers were
+mandatory, on the evidence of one bare curl returning 403 and one
+header-carrying curl returning 200. That was the same mistake as the ip-api
+over-generalisation. Re-tested an hour later from the same host, a request
+with NO headers returned 200; and the script WITH the headers was refused
+from Boris's machine with an Akamai Access Denied page, reference
+18.9209c617.1794920849.54c297c1.
+
+What is actually established: Akamai fronts these paths and decides per
+client. I cannot predict from one host what another will be served. The
+headers are kept because they match the download page and cost nothing, but
+they are not the mechanism. curl is used rather than urllib because urllib
+was refused where curl was not, on the one host where both were tried.
+
+Three things exist because of this:
+
+- geo/fcc_bdc/bdc_access_probe.sh reports what a given machine can reach,
+  endpoint by endpoint, with and without a cookie warmup.
+- geo/fcc_bdc/bdc_catalog_fixed.tsv is the 442-row catalogue, COMMITTED, so
+  the downloader needs no catalogue API call. Used with --catalog-tsv.
+- --warmup loads the HTML download page first and reuses its cookies.
 
 The separately documented /api/public/map/downloads/ API wants credentials and
 answers 401. It is NOT used and nothing here authenticates.
