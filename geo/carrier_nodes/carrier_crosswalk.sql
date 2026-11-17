@@ -230,7 +230,10 @@ CREATE TABLE IF NOT EXISTS carrier_crosswalk_tbl (
     note         text,
     proposed_at  timestamptz NOT NULL DEFAULT now(),
 
-    UNIQUE (itdk_domain, asn)
+    -- Several BDC candidates per domain is the normal case, not an error:
+    -- a carrier files under several brands and only Boris can choose. So
+    -- the uniqueness is on the full proposal, not on the domain.
+    UNIQUE (itdk_domain, asn, bdc_provider_id)
 );
 
 CREATE INDEX IF NOT EXISTS carrier_crosswalk_domain_idx
@@ -561,7 +564,12 @@ SELECT coalesce(m.isp, m.domain),
        CASE WHEN b.provider_id IS NULL THEN NULL
             WHEN carrier_name_norm(b.brand_name)
                  = carrier_name_norm(m.isp) THEN 'normalised name equal'
-            ELSE 'normalised name contained' END,
+            WHEN carrier_name_norm(b.brand_name) LIKE
+                 '%' || carrier_name_norm(m.isp) || '%'
+              OR carrier_name_norm(m.isp) LIKE
+                 '%' || carrier_name_norm(b.brand_name) || '%'
+                 THEN 'normalised name contained'
+            ELSE 'first word only, WEAK' END,
        m.nodes
 FROM measured m
 LEFT JOIN LATERAL (
@@ -577,8 +585,19 @@ LEFT JOIN bdc_provider_shim b
         OR carrier_name_norm(b.brand_name) LIKE
            '%' || carrier_name_norm(m.isp) || '%'
         OR carrier_name_norm(m.isp) LIKE
-           '%' || carrier_name_norm(b.brand_name) || '%')
-ON CONFLICT (itdk_domain, asn) DO NOTHING;
+           '%' || carrier_name_norm(b.brand_name) || '%'
+        -- THE FIRST-WORD TIER, and why it is here despite being weak.
+        -- Equality and containment proposed Frontier Communications for
+        -- frontiernet.net but MISSED Frontier Fiber, a second brand of the
+        -- same carrier. Missing a brand defeats the purpose: separating
+        -- FIOS from xDSL requires every brand a carrier files under.
+        -- So a shared first significant word also proposes, labelled
+        -- 'first word only, WEAK' so it is visibly the weakest basis.
+        -- It will propose wrong pairs too, which is what approval is for.
+        OR (split_part(carrier_name_norm(b.brand_name), ' ', 1)
+            = split_part(carrier_name_norm(m.isp), ' ', 1)
+            AND length(split_part(carrier_name_norm(m.isp), ' ', 1)) >= 4))
+ON CONFLICT (itdk_domain, asn, bdc_provider_id) DO NOTHING;
 
 
 \echo
@@ -605,8 +624,27 @@ SELECT carrier_id   AS id,
        nodes,
        bdc_basis
 FROM carrier_crosswalk_tbl
-ORDER BY nodes DESC, itdk_domain, bdc_brand_name
-LIMIT 120;
+ORDER BY nodes DESC, itdk_domain,
+         CASE bdc_basis
+             WHEN 'normalised name equal'     THEN 1
+             WHEN 'normalised name contained' THEN 2
+             WHEN 'first word only, WEAK'     THEN 3
+             ELSE 4
+         END,
+         bdc_brand_name
+LIMIT 200;
+
+\echo
+\echo Proposals by strength of basis. Equal is strongest, first word is
+\echo weakest and will contain wrong pairs.
+\echo
+
+SELECT coalesce(bdc_basis, 'no BDC candidate found') AS bdc_basis,
+       count(*)                     AS rows,
+       count(DISTINCT itdk_domain)  AS domains
+FROM carrier_crosswalk_tbl
+GROUP BY bdc_basis
+ORDER BY count(*) DESC;
 
 \echo
 \echo Summary of what needs deciding:

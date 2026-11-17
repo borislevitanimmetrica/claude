@@ -727,3 +727,60 @@ with zero sites. That is a gap in CAIDA's coverage, not a bug here.
    frontiernet.net, windstream.net and 31 other domains entirely.
 
 Not one of these was visible by reading the code.
+
+### Bug six: the node table was keyed on hostname alone
+
+The approval list came back empty because `apply` wrote NOTHING. It failed on
+Boris's corpus with a duplicate key on hostname
+113.115.207.atginternet.com, and since COPY is one transaction, nothing
+landed at all.
+
+Cause: the query selects DISTINCT on the PAIR (hostname, address) while the
+table was keyed on hostname alone. ONE HOSTNAME ANSWERS ON SEVERAL
+ADDRESSES, because router interfaces share a PTR.
+
+The fix keeps every pair rather than collapsing to one row per hostname, and
+that is not merely a key change. Step 6 ascribes IP addresses shown by ip-api
+to a node, so the address-to-node pairs ARE the link that step needs.
+carrier_node_tbl now has a surrogate key and a unique index on
+(hostname, coalesce(node_ip, '0.0.0.0')), the coalesce because node_ip is
+nullable for the lasthop source and PostgreSQL before 15 treats NULLs as
+distinct in a UNIQUE constraint, which would admit duplicates on exactly the
+rows needing protection.
+
+schema.sql detects the old single-column key and drops the table, with the
+pre-mortem that it is written only by `apply`, which rebuilds it in under a
+second, and nothing references it. Verified: the migration fires, the exact
+failing hostname loads as three rows for one hostname, and a second run does
+not duplicate.
+
+Coverage now counts DISTINCT hostname and reports addresses separately, so
+the two are no longer conflated.
+
+### The name matcher missed secondary brands, which defeats the purpose
+
+Equality and containment proposed Frontier Communications for
+frontiernet.net and MISSED Frontier Fiber, a second brand of the same
+carrier. Separating FIOS from xDSL requires every brand a carrier files
+under, so missing one defeats the purpose of the exercise.
+
+Added a third tier: a shared first significant word of four characters or
+more also proposes, labelled 'first word only, WEAK'. It will propose wrong
+pairs, which is what approval is for. Proposals are now reported grouped by
+strength of basis, strongest first, and the uniqueness moved from
+(itdk_domain, asn) to (itdk_domain, asn, bdc_provider_id) because several
+candidates per domain is the normal case rather than an error.
+
+Verified: frontiernet.net now proposes both brands, Frontier Communications
+as 'normalised name equal' and Frontier Fiber as 'first word only, WEAK'.
+
+### What Boris's database holds, from his run
+
+    ip2city_dbiplite_probe_tbl   2,097,870 rows
+    rdap_registrant_tbl             30,501 rows
+    bdc_provider_tbl                   722 rows, 677 distinct brand names
+    carrier_node_tbl                     0, because apply had failed
+
+722 provider rows with the BDC load still in progress. All four ip-api
+columns this file needs are present on the deployed table, verified by the
+runtime check rather than assumed: network cidr, isp text, org text, as text.

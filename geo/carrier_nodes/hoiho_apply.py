@@ -594,8 +594,28 @@ WHERE last_hop_hostname IS NOT NULL AND last_hop_hostname <> ''
 """
     print(f"reading hostnames from ovt_places_usa_ip_trace, "
           f"source {args.source}")
-    rows = [l.split("|") for l in psql("-qtAF|", "-c", sql).splitlines() if l]
-    print(f"  {len(rows):,} distinct hostname and address pairs")
+    raw = [l.split("|") for l in psql("-qtAF|", "-c", sql).splitlines() if l]
+
+    # Dedupe on the exact pair that the unique index covers, so a repeat in
+    # the source cannot become a COPY failure. The counts are reported
+    # because the gap between pairs and hostnames is itself informative:
+    # a hostname on many addresses is one router with many interfaces.
+    seen = set()
+    rows = []
+    for host, ip in raw:
+        key = (host.strip().lower(), ip or "")
+        if key in seen:
+            continue
+        seen.add(key)
+        rows.append((host, ip))
+    hosts = {h.strip().lower() for h, _ in rows}
+    print(f"  {len(raw):,} rows read, {len(rows):,} distinct hostname and "
+          f"address pairs, {len(hosts):,} distinct hostnames")
+    if len(rows) > len(hosts):
+        print(f"  {len(rows) - len(hosts):,} pairs are additional addresses "
+              f"on a hostname already counted. Router interfaces share a "
+              f"PTR, so this is expected and both are kept: step 6 needs "
+              f"the addresses.")
     if not rows:
         print("  Nothing to decode. On Boris's database this table holds "
               "30,226 traces with 28,180 hostnames; an empty result means "
@@ -620,7 +640,8 @@ WHERE last_hop_hostname IS NOT NULL AND last_hop_hostname <> ''
             "corroborated_by, status")
     psql_copy_csv("carrier_node_tbl", cols, batch)
 
-    print(f"\n{len(batch):,} rows written. Outcome by status:")
+    print(f"\n{len(batch):,} rows written for {len(hosts):,} distinct "
+          f"hostnames. Outcome by status:")
     for k, v in sorted(stats.items(), key=lambda x: -x[1]):
         print(f"  {v:>8,}  {k}")
 
@@ -629,7 +650,8 @@ def cmd_coverage(args):
     print("What the ruleset can say about the hostnames actually held.\n")
     print(psql("-c", """
 SELECT status,
-       count(*)                                  AS hostnames,
+       count(DISTINCT hostname)                  AS hostnames,
+       count(*)                                  AS host_address_pairs,
        count(DISTINCT domain)                    AS domains,
        count(DISTINCT code)                      AS codes
 FROM carrier_node_tbl
@@ -638,9 +660,10 @@ ORDER BY count(*) DESC"""))
     print("\nBy carrier, the twenty with the most hostnames held.\n")
     print(psql("-c", """
 SELECT coalesce(domain, 'no domain')      AS domain,
-       count(*)                           AS hostnames,
-       count(*) FILTER (WHERE lat IS NOT NULL)        AS located,
-       count(*) FILTER (WHERE hint_type = 'clli')     AS clli_pending,
+       count(DISTINCT hostname)           AS hostnames,
+       count(DISTINCT node_ip)            AS addresses,
+       count(DISTINCT hostname) FILTER (WHERE lat IS NOT NULL)    AS located,
+       count(DISTINCT hostname) FILTER (WHERE hint_type = 'clli') AS clli_pending,
        count(DISTINCT code)                           AS distinct_sites
 FROM carrier_node_tbl
 GROUP BY domain
