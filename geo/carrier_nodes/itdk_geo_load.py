@@ -23,27 +23,48 @@ only ever decoded the 22,790 hostnames in Boris's traceroute corpus, while
 the ITDK file covers every node in the topology. Either way, the work was
 already done and published.
 
-THE PART THAT IS NOT MOOT, AND IT IS THE WHOLE POINT
+ALL THREE METHODS ARE USED. MY CIRCULARITY OBJECTION WAS WRONG
 
-99.77 per cent of those coordinates come from MAXMIND, which is IP
-geolocation of a router address. For this project that is CIRCULAR and must
-not be used.
+I first marked the 99.77 per cent of rows whose method is maxmind as
+unusable, on the grounds that ip-api.com and MaxMind are the same kind of
+source, so locating a node by MaxMind and then observing ip-api resolutions
+congregating there proves nothing.
 
-The purpose, in Boris's words, is "to relate the customer-connecting carrier
-nodes at which ip-api.com resolutions congregate to the ZIP codes of the
-connected customers". ip-api.com and MaxMind are both commercial IP
-geolocation services working from the same kinds of input. Locating a node
-by MaxMind and then observing that ip-api resolutions congregate there would
-demonstrate nothing about the physical world: it would show that two
-geolocation vendors agree, which they would whether or not the node is
-there. The congregation has to be evidence, and it stops being evidence the
-moment the thing it is measured against is itself an IP geolocation guess.
+Boris, 2026-11-18: "You've lost track of what we are doing. We are combining
+ITDK and Fabric data to determine which census tracts, and therefore ZIP
+codes, are served through which headends/COs... So long as MaxMind vaguely
+correctly identifies the location of the headends/COs, which it apparently
+does, the plan works even if MaxMind is slightly out of date (we are not
+chasing individual nodes, only their places of concentration - headends/COs.
+The constantly relocating IP ranges also don't bother us because this part of
+the system is agnostic as to them."
 
-So this loader records the method on every row and loads all three, but it
-marks maxmind rows as unusable_circular and the view below excludes them.
-hoiho and ix are independent of ip-api: hoiho reads the operator's own DNS
-naming, and ix is the known location of an internet exchange facility.
-Together they are 178,117 nodes, against the 5,109 we had.
+He is right and the error was mine. I conflated two different uses of a
+coordinate:
+
+  AS A MEASUREMENT of where a building physically is. Here MaxMind's quality
+  would matter, and my worry would be reasonable.
+
+  AS A JOIN KEY associating customer IP addresses with the infrastructure
+  they are served through. Here the two sources sharing a systematic bias is
+  harmless and actually helps: if MaxMind places both the router and its
+  customers' addresses at the same approximate spot, they still match each
+  other, and the bias CANCELS in the join rather than compounding.
+
+Step 6 of the plan uses the coordinate the second way. The geographic truth
+is carried by the Fabric and BDC coverage data, which is authoritative and
+address-level; the node coordinate only has to be good enough to identify a
+concentration and to match ip-api clusters to it. Nothing in the chain uses
+"ip-api congregates here" as evidence of where the headend is.
+
+Concentration is also why individual node error is tolerable. One node's
+coordinate is noisy; the centroid of many nodes at one facility is not, and
+it is the facility we want.
+
+So no method is excluded. Every row records which method produced it, and
+method_agreement below MEASURES how far maxmind sits from hoiho and ix on
+the nodes where more than one method has an answer, which is the way to
+check "vaguely correctly" rather than assume it in either direction.
 
 WHAT IT NEEDS, AND THE SIZES, MEASURED BY HEAD REQUEST
 
@@ -76,7 +97,7 @@ GEO_FILE = "midar-iff-snmp-tnt.nodes.geo.bz2"
 IFACES_FILE = "midar-iff-snmp-tnt.ifaces.bz2"
 UA = "trugeo-research/1.0 (topology research; via project repo)"
 
-USABLE = ("hoiho", "ix")
+INDEPENDENT = ("hoiho", "ix")
 
 
 def psql(*args):
@@ -259,14 +280,13 @@ CREATE TABLE IF NOT EXISTS itdk_node_geo_tbl (
     lat         double precision,
     lon         double precision,
     method      text NOT NULL,
-    usable      boolean NOT NULL,
     loaded_at   timestamptz NOT NULL DEFAULT now());
 CREATE TABLE IF NOT EXISTS itdk_iface_tbl (
     address     inet PRIMARY KEY,
     node_id     text NOT NULL);
 CREATE INDEX IF NOT EXISTS itdk_iface_node_ix ON itdk_iface_tbl (node_id);
-COMMENT ON COLUMN itdk_node_geo_tbl.usable IS
-  'False for method maxmind. MaxMind is IP geolocation of the router address, and this project measures where ip-api.com resolutions congregate, so using a MaxMind coordinate as the ground truth would compare one geolocation vendor against another and prove nothing about the physical world.'""")
+COMMENT ON COLUMN itdk_node_geo_tbl.method IS
+  'hoiho reads the operator DNS naming, ix is a known exchange facility, maxmind is IP geolocation of the router address. ALL THREE ARE USED. The coordinate is a join key associating customer addresses with the infrastructure serving them, not a measurement of where a building is, so a bias shared with ip-api cancels in the join instead of compounding. Recorded so agreement between methods can be measured.'""")
 
     # PASS ONE: ifaces, keeping only our addresses, to learn their node_ids.
     print("pass 1 of 2: ifaces, finding the node_id of each of our "
@@ -334,22 +354,20 @@ COMMENT ON COLUMN itdk_node_geo_tbl.usable IS
                     continue
                 gkept += 1
                 by_method[method] = by_method.get(method, 0) + 1
-                usable = "t" if method in USABLE else "f"
                 yield ("\t".join([node_id, cont, country, region, city,
-                                  repr(lat), repr(lon), method, usable])
+                                  repr(lat), repr(lon), method])
                        + "\n")
 
     psql("-qc", "TRUNCATE itdk_node_geo_tbl")
     psql_copy("\\copy itdk_node_geo_tbl (node_id, continent, country, "
-              "region, city, lat, lon, method, usable) FROM STDIN",
+              "region, city, lat, lon, method) FROM STDIN",
               geo_lines())
     print(f"  {gseen:,} geo lines read, {gkept:,} kept, in "
           f"{(time.monotonic() - t1) / 60:.1f} min", flush=True)
 
     print("\nby method, for OUR nodes:", flush=True)
     for m in sorted(by_method, key=lambda k: -by_method[k]):
-        mark = "usable" if m in USABLE else "CIRCULAR, excluded"
-        print(f"    {m:<10} {by_method[m]:>8,}  {mark}", flush=True)
+        print(f"    {m:<10} {by_method[m]:>8,}", flush=True)
 
     psql("-qc", """
 CREATE OR REPLACE VIEW itdk_node_located AS
@@ -357,9 +375,9 @@ SELECT i.address, g.node_id, g.method, g.city, g.region, g.country,
        g.lat, g.lon
 FROM itdk_iface_tbl i
 JOIN itdk_node_geo_tbl g USING (node_id)
-WHERE g.usable AND g.lat IS NOT NULL;
+WHERE g.lat IS NOT NULL;
 COMMENT ON VIEW itdk_node_located IS
-  'Node addresses with an ITDK location from a method that is INDEPENDENT of IP geolocation: hoiho reads the operator DNS naming, ix is a known exchange facility. MaxMind rows are excluded because this project measures where ip-api.com resolutions congregate and MaxMind is the same kind of source as ip-api.'""")
+  'Every node address with an ITDK location, from any method. The coordinate is used as a join key associating customer addresses with the infrastructure serving them, so a bias shared with ip-api cancels in the join; it is not used as a measurement of where a building physically is. method is carried through so any consumer can weigh it.'""")
 
     print()
     print(psql("-c", """
@@ -367,6 +385,150 @@ SELECT method, count(*) AS addresses,
        count(DISTINCT node_id) AS nodes,
        count(DISTINCT city) AS cities
 FROM itdk_node_located GROUP BY 1 ORDER BY 2 DESC"""))
+    return 0
+
+
+def cmd_agreement(args):
+    """How far apart the methods put the SAME node. Tests "vaguely correctly".
+
+    Boris's premise is that MaxMind identifies headend and CO locations
+    vaguely correctly, and that this is sufficient because the plan wants
+    places of concentration rather than individual nodes. That premise is
+    measurable rather than arguable, and this measures it.
+
+    A node can appear with more than one method across the ITDK's three
+    input files, and where it does, the separation between them is a direct
+    read on how far MaxMind sits from a location derived independently, by
+    the operator's own DNS naming or by a known exchange facility.
+
+    What the number means: a separation of a few kilometres is consistent
+    with MaxMind resolving to a city or facility centroid, which is fine for
+    identifying a concentration. A separation of hundreds of kilometres
+    would mean MaxMind is resolving to a registered head office or a
+    national centroid, which would put a headend in the wrong metropolitan
+    area and assign its tracts to the wrong facility. Those two cases need
+    telling apart, and only the data can do it.
+    """
+    if psql_q("SELECT to_regclass('itdk_node_geo_tbl') IS NOT NULL") != "t":
+        sys.exit("itdk_node_geo_tbl does not exist. Run load first.")
+
+    print("Separation between methods on the same node, where the ITDK has "
+          "more than one answer.\n")
+    print(psql("-c", """
+WITH mm AS (
+  SELECT node_id, lat, lon FROM itdk_node_geo_tbl WHERE method = 'maxmind'
+), ind AS (
+  SELECT node_id, method, lat, lon FROM itdk_node_geo_tbl
+  WHERE method IN ('hoiho', 'ix')
+), d AS (
+  SELECT i.method,
+         6371 * sqrt(pow(radians(m.lat - i.lat), 2) +
+                     pow(radians(m.lon - i.lon) * cos(radians(i.lat)), 2))
+           AS km
+  FROM ind i JOIN mm m USING (node_id)
+)
+SELECT method,
+       count(*)                                        AS nodes_compared,
+       round(avg(km)::numeric, 1)                      AS mean_km,
+       round((percentile_cont(0.5) WITHIN GROUP (ORDER BY km))::numeric, 1)
+                                                       AS median_km,
+       round((percentile_cont(0.9) WITHIN GROUP (ORDER BY km))::numeric, 1)
+                                                       AS p90_km,
+       round(max(km)::numeric, 1)                      AS worst_km,
+       count(*) FILTER (WHERE km <= 10)                AS within_10km,
+       count(*) FILTER (WHERE km > 100)                AS over_100km
+FROM d GROUP BY 1 ORDER BY 2 DESC"""))
+
+    print("If nodes_compared is 0, the ITDK merge kept ONE method per node "
+          "and this cannot be measured from these files alone. That is "
+          "itself worth knowing: it would mean there is no internal "
+          "cross-check available and the premise has to be tested another "
+          "way, for instance against the rate centres clli_resolve "
+          "already located.\n")
+
+    # A SECOND, INDEPENDENT CHECK that does not need two methods per node.
+    # clli_resolve.py located rate centres from the Local Calling Guide,
+    # which is neither MaxMind nor ip-api. Where a node has both, the
+    # separation is a read on MaxMind against a published tariff geography.
+    if psql_q("SELECT to_regclass('clli_site_tbl') IS NOT NULL") == "t":
+        print("Against the rate centres located from the Local Calling "
+              "Guide, which is independent of both MaxMind and ip-api:\n")
+        print(psql("-c", """
+WITH j AS (
+  SELECT l.method,
+         6371 * sqrt(pow(radians(s.rc_lat - l.lat), 2) +
+                     pow(radians(s.rc_lon - l.lon) * cos(radians(l.lat)), 2))
+           AS km
+  FROM carrier_node_tbl n
+  JOIN itdk_node_located l ON l.address = n.node_ip
+  JOIN clli_site_tbl s ON s.clli6 = n.code
+  WHERE n.hint_type = 'clli' AND s.rc_lat IS NOT NULL
+)
+SELECT method, count(*) AS nodes,
+       round(avg(km)::numeric, 1) AS mean_km,
+       round((percentile_cont(0.5) WITHIN GROUP (ORDER BY km))::numeric, 1)
+         AS median_km,
+       round(max(km)::numeric, 1) AS worst_km,
+       count(*) FILTER (WHERE km <= 25) AS within_25km
+FROM j GROUP BY 1 ORDER BY 2 DESC"""))
+        print("A rate centre is a tariff geography, so some separation is "
+              "expected even when both are right. Tens of kilometres is "
+              "unremarkable; hundreds is not.")
+    return 0
+
+
+def cmd_concentration(args):
+    """Places of concentration: the candidate headends and COs.
+
+    This is step 2 of the plan, "compile headend and central-office
+    locations of routing and switching equipment", and Boris's point that
+    the unit of interest is the CONCENTRATION rather than the node.
+
+    Nodes are grouped by carrier and by exact coordinate. Exact grouping is
+    the right first cut rather than a distance clustering, because
+    geolocation sources resolve many addresses to one facility or city
+    centroid, so the repeated coordinate IS the concentration. A coarser
+    grouping is given as well for the cases where a facility is spread over
+    several nearby points.
+    """
+    if psql_q("SELECT to_regclass('itdk_node_located') IS NOT NULL") != "t":
+        sys.exit("itdk_node_located does not exist. Run load first.")
+
+    psql("-qc", """
+CREATE OR REPLACE VIEW itdk_concentration AS
+SELECT split_part(n.hostname, '.', -2) || '.' ||
+       split_part(n.hostname, '.', -1)        AS carrier_domain,
+       l.lat, l.lon, l.city, l.region, l.country,
+       string_agg(DISTINCT l.method, '+' ORDER BY l.method) AS methods,
+       count(DISTINCT n.node_ip)              AS node_addresses,
+       count(DISTINCT n.hostname)             AS hostnames,
+       count(DISTINCT l.node_id)              AS nodes
+FROM carrier_node_tbl n
+JOIN itdk_node_located l ON l.address = n.node_ip
+GROUP BY 1, 2, 3, 4, 5, 6;
+COMMENT ON VIEW itdk_concentration IS
+  'Candidate headend and central office sites: carrier plus a coordinate at which several of its nodes concentrate. The concentration is the unit of interest, not the individual node, because one node coordinate is noisy while a repeated coordinate identifies a facility. methods shows which ITDK geolocation methods contributed.'""")
+
+    print("Concentrations carrying the most node addresses. These are the "
+          "candidate serving sites step 4 measures distances from.\n")
+    print(psql("-c", f"""
+SELECT carrier_domain, city, region, methods, node_addresses, hostnames,
+       round(lat::numeric, 4) AS lat, round(lon::numeric, 4) AS lon
+FROM itdk_concentration
+WHERE node_addresses >= {int(args.min_nodes)}
+ORDER BY node_addresses DESC, carrier_domain
+LIMIT {int(args.limit)}"""))
+
+    print("\nPer carrier, how many distinct concentrations:\n")
+    print(psql("-c", f"""
+SELECT carrier_domain,
+       count(*)                                       AS sites,
+       sum(node_addresses)                            AS node_addresses,
+       count(*) FILTER (WHERE node_addresses >= {int(args.min_nodes)})
+                                                      AS sites_above_min,
+       max(node_addresses)                            AS biggest_site
+FROM itdk_concentration
+GROUP BY 1 ORDER BY node_addresses DESC LIMIT {int(args.limit)}"""))
     return 0
 
 
@@ -489,6 +651,20 @@ def main():
 
     c = sub.add_parser("compare", help="our decode against the ITDK's own")
     c.set_defaults(func=cmd_compare)
+
+    a = sub.add_parser("agreement",
+                       help="how far apart the methods put the same node, "
+                            "which is how to test 'vaguely correctly'")
+    a.set_defaults(func=cmd_agreement)
+
+    k = sub.add_parser("concentration",
+                       help="places of concentration: candidate headends "
+                            "and COs, which is step 2 of the plan")
+    k.add_argument("--min-nodes", type=int, default=3,
+                   help="a concentration must carry at least this many node "
+                        "addresses, default 3")
+    k.add_argument("--limit", type=int, default=30)
+    k.set_defaults(func=cmd_concentration)
 
     s = sub.add_parser("selftest", help="parse real published lines")
     s.set_defaults(func=cmd_selftest)
