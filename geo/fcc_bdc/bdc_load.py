@@ -100,8 +100,30 @@ def psql_copy(copy_sql, stream):
     p = subprocess.Popen(cmd, stdin=subprocess.PIPE, stderr=subprocess.PIPE,
                          text=True)
     broke = False
+    sent = 0
+    t0 = time.monotonic()
+    last = t0
     try:
-        shutil.copyfileobj(stream, p.stdin, 1 << 20)
+        # COPIED IN CHUNKS WITH PROGRESS, not shutil.copyfileobj.
+        #
+        # Boris, 2026-11-17: "I asked you for frequent feedback in all
+        # operations." He is right, and this was the worst offender in the
+        # project: a five million row state file streams for minutes having
+        # printed one line before it and one after. From outside that is
+        # indistinguishable from a hang, and he has twice had to ask whether
+        # a job was still alive.
+        while True:
+            block = stream.read(1 << 22)
+            if not block:
+                break
+            p.stdin.write(block)
+            sent += len(block)
+            now = time.monotonic()
+            if now - last >= 5:
+                rate = sent / max(now - t0, 0.001)
+                print(f"      {sent / 1e6:,.0f} MB streamed, "
+                      f"{rate / 1e6:.1f} MB/s", flush=True)
+                last = now
     except BrokenPipeError:
         # psql died before consuming the input; its stderr says why.
         broke = True
@@ -353,6 +375,8 @@ def cmd_load(args):
 
     total_loaded = 0
     failed = []
+    done = 0
+    run_start = time.monotonic()
     for path in args.files:
         name = os.path.basename(path)
         existing = already.get(name, 0)
@@ -360,7 +384,14 @@ def cmd_load(args):
             # Skipped quietly and counted, rather than a line each for
             # hundreds of files.
             continue
-        print(f"\n{name}", flush=True)
+        done += 1
+        elapsed = time.monotonic() - run_start
+        eta = ""
+        if done > 1 and elapsed > 0:
+            per = elapsed / (done - 1)
+            eta = (f", about {(len(todo) - done + 1) * per / 60:.0f} min "
+                   f"left at the current rate")
+        print(f"\n[{done} of {len(todo)}] {name}{eta}", flush=True)
         try:
             stream = open_csv(path)
             check_header(stream, path)
@@ -483,6 +514,118 @@ ORDER BY count(DISTINCT tract_geoid) DESC
 LIMIT 25"""))
 
 
+def count_csv_rows(path):
+    """Data lines in the CSV inside path, excluding the header.
+
+    Reads the whole file. There is no shortcut: a ZIP records the
+    uncompressed BYTE size of a member, not its line count.
+    """
+    stream = open_csv(path)
+    try:
+        n = -1
+        for _ in stream:
+            n += 1
+        return max(n, 0)
+    finally:
+        stream.close()
+
+
+def cmd_verify(args):
+    """Compare what each download contains against what was loaded.
+
+    WHY THIS IS NEEDED, and it is not a nicety.
+
+    A load that fails partway can leave a file RECORDED as loaded with fewer
+    rows than it holds, and the skip-if-already-loaded rule then skips it on
+    every future run. The missing rows are invisible: no error, no warning,
+    just a state that looks finished.
+
+    DEMONSTRATED 2026-11-17. With 33,632 of 323,859 rows present for one
+    file, `load` reported "2 already loaded, 0 to do" and did nothing. Only
+    --replace repaired it.
+
+    The occasion was real: a rename broke a running load, after which
+    bdc_42_Other_fixed_broadband_J26_10nov2026.zip was recorded with exactly
+    ONE row. One row may be correct, because the Other technology files are
+    tiny, but NOTHING IN THE DATABASE COULD SAY WHICH. This can, by reading
+    the file.
+    """
+    require_schema()
+    lean = schema_is_lean()
+    already = loaded_counts(lean)
+
+    files = args.files
+    print(f"reading {len(files)} file(s) and comparing with the database.")
+    print("This decompresses every file, so it takes a while. Progress is "
+          "reported every ten files.\n")
+    print(f"{'file':<56} {'in_file':>10} {'loaded':>10} {'diff':>9}  state")
+
+    ok = short = over = absent = 0
+    problems = []
+    t0 = time.monotonic()
+
+    for i, path in enumerate(files, 1):
+        name = os.path.basename(path)
+        if i == 1 or i % 10 == 0:
+            el = time.monotonic() - t0
+            eta = ""
+            if i > 1:
+                eta = (f", about {(len(files) - i) * el / (i - 1) / 60:.0f} "
+                       f"min left")
+            print(f"  ... {i} of {len(files)}, {el / 60:.1f} min "
+                  f"elapsed{eta}", flush=True)
+
+        try:
+            in_file = count_csv_rows(path)
+        except (ValueError, zipfile.BadZipFile, OSError) as exc:
+            print(f"{name[:56]:<56} {'unreadable':>10} "
+                  f"{already.get(name, 0):>10,} {'':>9}  {exc}", flush=True)
+            problems.append(f"{name}: unreadable, {exc}")
+            continue
+
+        loaded = already.get(name)
+        if loaded is None:
+            absent += 1
+            state = "NOT LOADED"
+        elif loaded == in_file:
+            ok += 1
+            state = "ok"
+        elif loaded < in_file:
+            short += 1
+            state = "SHORT, rows missing"
+            problems.append(f"{name}: {in_file - loaded:,} rows missing")
+        else:
+            over += 1
+            state = "MORE than the file holds"
+            problems.append(f"{name}: {loaded - in_file:,} rows too many")
+
+        if loaded != in_file or args.all:
+            print(f"{name[:56]:<56} {in_file:>10,} "
+                  f"{(loaded or 0):>10,} {(loaded or 0) - in_file:>9,}  "
+                  f"{state}", flush=True)
+
+    print(f"\n{ok} match, {short} SHORT, {over} with too many, "
+          f"{absent} not loaded, in {(time.monotonic() - t0) / 60:.1f} min")
+
+    if short or over:
+        print("\nA SHORT file is the dangerous case: it counts as loaded, so "
+              "it is skipped on every future run and its missing rows never "
+              "arrive. Reload exactly these:")
+        for pr in problems[:25]:
+            print(f"  {pr}")
+        print("\n  python3 geo/fcc_bdc/bdc_load.py load --replace --files "
+              "<the files named above>")
+        print("\n--replace deletes only that file's rows and loads it again. "
+              "Nothing else is touched.")
+        sys.exit(1)
+
+    if absent:
+        print(f"\n{absent} file(s) not loaded yet. Run the load again; it "
+              f"skips the complete ones.")
+    if not problems:
+        print("\nEvery loaded file matches its contents exactly.")
+
+
 def cmd_status(args):
     require_schema()
     rel = report_relation()
@@ -543,6 +686,15 @@ def main():
     te = sub.add_parser("technologies",
                         help="report the technology codes present, from data")
     te.set_defaults(func=cmd_technologies)
+
+    ve = sub.add_parser("verify",
+                        help="read every download and compare its row count "
+                             "with what is loaded; the only way to detect a "
+                             "file recorded as loaded but short")
+    ve.add_argument("--files", nargs="+", required=True)
+    ve.add_argument("--all", action="store_true",
+                    help="list every file, not only the mismatches")
+    ve.set_defaults(func=cmd_verify)
 
     st = sub.add_parser("status", help="rows, states, tracts and providers held")
     st.add_argument("--check-overlap", action="store_true",

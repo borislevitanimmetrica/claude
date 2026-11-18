@@ -1375,3 +1375,62 @@ reported at the end.
 Verified: first run reports "0 already loaded, 2 to do" and names the first
 file; second run reports "2 already loaded, 0 to do" and that both were
 skipped; and the log is non-empty within five seconds of starting.
+
+## 2026-11-17: frequent feedback, and a silently short file
+
+Boris: "I asked you for frequent feedback in all operations." He had asked
+for that from the beginning and I had been ignoring it in the place it
+mattered most.
+
+### What was silent
+
+The load printed one line before a COPY and one after. A five million row
+state file streams for minutes in between. From outside, that is
+indistinguishable from a hang, and he has now had to ask three times whether
+a job was alive.
+
+Fixed:
+
+- psql_copy streams in 4 MB chunks and reports megabytes and MB/s every five
+  seconds, instead of handing the whole thing to shutil.copyfileobj.
+- Each file is announced as "[n of N] name" with an ETA from the observed
+  rate, so position in the run is always visible.
+- The skip decision is one query for all files rather than one per file, and
+  the counts of already-loaded and remaining are printed, flushed, before
+  any work starts. Previously 241 already-loaded files meant 241 silent psql
+  subprocesses first.
+- resume_load.sh runs the loader with python3 -u. Python block-buffers
+  stdout to a file: measured 0 bytes after two seconds without it.
+- verify reports progress every ten files with an ETA, since it decompresses
+  everything.
+
+### The silently short file, which is a correctness problem not a cosmetic one
+
+The log showed bdc_42_Other_fixed_broadband_J26_10nov2026.zip holding
+exactly ONE row. That is the file that errored when the rename broke the
+load. One row may be correct, because the Other technology files are tiny,
+but NOTHING IN THE DATABASE COULD DISTINGUISH a complete load from a
+truncated one.
+
+Worse, DEMONSTRATED by experiment: with 33,632 of 323,859 rows present,
+`load` reported "2 already loaded, 0 to do" and did nothing at all. A file
+left short by a failed load is skipped on every future run and its missing
+rows never arrive. No error, no warning.
+
+bdc_load.py verify reads each download, counts its data lines and compares
+with what is loaded. Verified three ways: all-match reports ok; a file
+missing 290,227 rows is reported SHORT by name with the --replace command to
+repair it, and the subcommand exits nonzero; and a file not loaded at all is
+counted separately.
+
+The availability INSERT is a single statement and therefore atomic, so a
+file should be all-or-nothing. verify checks that invariant rather than
+trusting it, which is the right posture given it has already been violated
+once by an external event.
+
+### Run order after a load
+
+    sh geo/fcc_bdc/resume_load.sh
+    python3 geo/fcc_bdc/bdc_load.py verify --files /home/boris/geo/bdc/*.zip
+
+The second is not optional after an interrupted load.
