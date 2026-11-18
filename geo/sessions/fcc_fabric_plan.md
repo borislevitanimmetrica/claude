@@ -980,3 +980,89 @@ do instead of measuring what it did: the argument-list limit, the hostname
 key, the two upgrade-path failures. This one is the clearest instance: I
 formed two plausible mechanical explanations, implemented both, and neither
 was the cause. Reading the plan took one command and settled it.
+
+## 2026-11-17: Boris's rulings on the carrier crosswalk
+
+He reviewed the list and returned it in three groups. The annotations first
+arrived as an image truncated at the right edge; I reported what I could read
+and what I could not rather than inferring, and he then sent the text. Three
+of my readings from the image were WRONG and the text corrected them:
+
+- avglens.com, which I had read as avgens.com
+- hobbsnm.org, which I had missed entirely, so it is EIGHT not-an-ISP
+  domains rather than seven
+- AS397866, which I had read as AS39780
+
+### The model error, which mattered more than the misreadings
+
+I had built the Windstream group as alias_to: fold several domains into one
+parent carrier label. WRONG. Each of the five domains maps to FIFTEEN named
+Windstream subsidiaries, which are state-level legal entities filing
+separately in BDC: Accucomm Telecom, Alabama, Arkansas, Communications,
+Florida, Georgia Communications, Georgia, Georgia Telephone, Iowa
+Communications, Kentucky East, Kentucky West, Lexcom Communications,
+Missouri, Montezuma and Standard.
+
+A single alias cannot express one domain to many providers, and shipping it
+would have discarded fourteen fifteenths of the mapping. Replaced with
+use_bdc_name, which permits many rows per domain, and carrier_resolved now
+returns one row per domain AND provider. Verified: uniti.net yields 15 rows.
+
+### The three decision types
+
+    use_bdc_name     value is a BDC provider name, verbatim. Many per
+                     domain is normal.
+    use_bdc_of_asn   value is an ASN. Boris: "use the NAME IN BDC of the
+                     operator of the shown ASN". The ASN is the lookup key,
+                     not the answer, so my first attempt at this as
+                     use_as_name was also wrong.
+    not_an_isp       the domain leaves the crosswalk entirely.
+
+### How an ASN becomes a BDC name
+
+BDC filings carry no AS number, so there is no join. What exists is measured:
+the ip-api "as" string per range is of the form
+'AS7922 Comcast Cable Communications, LLC', so an ASN yields its operator
+name from data already held. That name is then matched against BDC brand
+names and the candidates reported.
+
+Verified on seeded data mirroring the real strings:
+
+| domain | ASN | operator observed | BDC name resolved |
+| --- | --- | --- | --- |
+| bright.net | 7106 | Windstream Communications LLC | Windstream Communications, LLC. |
+| earthlinkbusiness.net | 397866 | EarthLink Holdings Corp | EarthLink Holdings Corp |
+| lrmutual.com | n/a | named directly | Mutual Telephone Company |
+
+A name Boris gave that is NOT found in bdc_provider_tbl is kept with a null
+provider_id and labelled 'named by Boris, NOT FOUND in bdc_provider_tbl',
+because the BDC load may simply not have reached that provider yet and
+silently dropping a ruling would look like a decision never made. Measured on
+the fixture: 11 of uniti.net's 15 names were not yet loaded and all 11 were
+reported rather than lost.
+
+### Files
+
+- geo/carrier_nodes/decisions_2026_11_17.tsv, his rulings as data, committed
+  so there is no transcription or paste risk.
+- geo/carrier_nodes/carrier_decisions.sql, the decision table and the
+  carrier_resolved view that steps 4 to 7 should join to.
+- geo/carrier_nodes/load_decisions.py, which accepts either a per-row file or
+  the GROUP form his sheet actually uses, where a decision name on its own
+  line applies to every following row.
+
+### Three more bugs, all caught by executing rather than reading
+
+- PRIMARY KEY (itdk_domain, decision, coalesce(value, '')) is a SYNTAX ERROR:
+  PostgreSQL does not allow an expression in a primary key. Replaced with a
+  surrogate key and a unique index on the expression. I had run the
+  text-level check_sql.sh on this file but NOT run_sql_validation.sh, which
+  executes it and would have caught this in one second.
+- carrier_decisions.sql depended on carrier_name_norm and
+  carrier_crosswalk_tbl from carrier_crosswalk.sql, and failed 210 lines in
+  with "function carrier_name_norm does not exist". Now a guard at the top
+  names every missing prerequisite and the order to run them in.
+- That guard was itself broken: array_var || 'text' makes PostgreSQL read the
+  string as an array literal, giving "malformed array literal". Needs
+  ::text. It only surfaced because I tested the FAILURE path, which the
+  normal run never reaches.
