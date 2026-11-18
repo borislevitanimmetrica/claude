@@ -1434,3 +1434,65 @@ once by an external event.
     python3 geo/fcc_bdc/bdc_load.py verify --files /home/boris/geo/bdc/*.zip
 
 The second is not optional after an interrupted load.
+
+## 2026-11-17: a guard that cannot guard, for the third time
+
+I added a check for a leftover staging table written as:
+
+    SELECT CASE WHEN to_regclass('bdc_stage_tbl') IS NULL THEN '-1'
+           ELSE (SELECT count(*) FROM bdc_stage_tbl) END
+
+It fails with "relation bdc_stage_tbl does not exist" whenever the table is
+absent, which is the normal case. A TABLE NAMED ANYWHERE IN A STATEMENT IS
+RESOLVED WHEN THE STATEMENT IS PARSED. The CASE never gets the chance to
+short-circuit.
+
+THIS IS THE THIRD INSTANCE OF THE SAME CLASS in this project:
+
+  1. bdc_carrier_shim in carrier_crosswalk.sql, where a to_regclass guard in
+     a LEFT JOIN's ON clause could not stop the planner resolving the table.
+  2. DROP TABLE ... CASCADE in resolve_asn.sql removing carrier_resolved,
+     twice before that in schema_v2.sql and carrier_nodes/schema.sql.
+  3. This.
+
+The rule, stated so it generalises: a PostgreSQL guard expressed INSIDE a
+statement cannot protect against the absence of an object that statement
+names. The guard must be a separate statement, or a DO block, or a shim
+table built beforehand.
+
+Fixed as two queries: existence first, count only if it exists. Verified
+with and without the table present, and verified that a second load of the
+same file still skips rather than duplicating, 14 rows staying 14.
+
+### What else that test run established
+
+At a realistic shape, 4,117 ITDK domains against 1,802 BDC carriers:
+
+    equal          3,921
+    contained     22,603
+    first word  7,392,310
+    total       7,418,834
+
+The hard stop fired correctly: the strong tiers alone are 26,524, above the
+20,000 limit, so NO BDC pairings were inserted and the crosswalk delivered
+only the 4,117 measured ITDK, ip-api and RDAP rows.
+
+SO THE BDC COLUMN WILL BE EMPTY ON BORIS'S RUN, and for a reason worth his
+attention rather than a bug: ip-api carrier names and BDC brand names
+over-match each other badly at this scale. 7.4 million first-word pairs is
+not a tuning problem, it is the matcher being wrong for this data.
+
+That needs his decision, and the options are not equivalent:
+  - raise the threshold and accept a long list
+  - drop the first-word tier entirely and keep equality and containment
+  - require the ASN to agree as well, which would make the match measured
+    rather than nominal
+The third is the only one that improves the evidence rather than the volume.
+
+### Still unexplained
+
+Boris: "No BDC load is running because your code errors on the partial
+file." I CANNOT REPRODUCE IT. Both my working copy and the committed
+a2eeb78 load, skip and resume cleanly against a partially-loaded directory
+including a one-row file and a leftover staging table. The error text is
+needed; guessing at it has already cost two round trips today.

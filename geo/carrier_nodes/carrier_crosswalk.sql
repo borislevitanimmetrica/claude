@@ -731,6 +731,19 @@ LIMIT 30;
 -- INSERT additionally skips any pairing that duplicates an approved row.
 DELETE FROM carrier_crosswalk_tbl WHERE NOT approved;
 
+-- The approved pairings, as an indexable key set. Built before the DELETE's
+-- effect matters because only approved rows survive it anyway.
+DROP TABLE IF EXISTS approved_key;
+CREATE TEMP TABLE approved_key AS
+SELECT coalesce(itdk_domain, '')   AS itdk_domain,
+       coalesce(asn, -1)           AS asn,
+       coalesce(bdc_provider_id, -1) AS bdc_provider_id
+FROM carrier_crosswalk_tbl
+WHERE approved;
+
+CREATE INDEX ON approved_key (itdk_domain, asn, bdc_provider_id);
+ANALYZE approved_key;
+
 \echo
 \echo ---- 4a. HOW MANY proposals WOULD be made, counted before inserting
 \echo
@@ -852,12 +865,22 @@ LEFT JOIN bdc_carrier_shim b
         -- 'first word only, WEAK' so it is visibly the weakest basis.
         -- It will propose wrong pairs too, which is what approval is for.
         OR (b.brand_first = m.isp_first AND length(m.isp_first) >= 4))
+  -- AN EQUALITY ANTI-JOIN against a materialised key set, not a correlated
+  -- NOT EXISTS using IS NOT DISTINCT FROM.
+  --
+  -- IS NOT DISTINCT FROM cannot use an index, so that subquery became a
+  -- sequential scan of carrier_crosswalk_tbl evaluated once per candidate
+  -- row. On Boris's data this INSERT hit the ten minute statement timeout.
+  --
+  -- approved_key below is a tiny temp table with coalesced columns and a
+  -- real index, so the same test is an index lookup. It is the third time
+  -- in this file's history that a correlated subquery had to become a join;
+  -- the pattern is now explicit.
   AND NOT EXISTS (
-      SELECT 1 FROM carrier_crosswalk_tbl x
-      WHERE x.approved
-        AND x.itdk_domain IS NOT DISTINCT FROM m.domain
-        AND x.asn IS NOT DISTINCT FROM m.asn
-        AND x.bdc_provider_id IS NOT DISTINCT FROM b.provider_id)
+      SELECT 1 FROM approved_key k
+      WHERE k.itdk_domain = coalesce(m.domain, '')
+        AND k.asn = coalesce(m.asn, -1)
+        AND k.bdc_provider_id = coalesce(b.provider_id, -1))
   -- THE GUARD. When the proposal count would exceed 20,000 the weak
   -- first-word tier is dropped, keeping only equality and containment. A
   -- list of 177,577 rows is not an approval list, and the first-word tier is

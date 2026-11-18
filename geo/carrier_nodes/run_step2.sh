@@ -84,6 +84,35 @@ psql_file() {
     psql -X -P pager=off -v ON_ERROR_STOP=1 -f "$1"
 }
 
+# A RUNNING BDC LOAD MAKES THIS BOTH SLOW AND WRONG.
+#
+# The crosswalk reads bdc_carrier_tbl. While bdc_load.py is filling it, any
+# answer is partial, and the two jobs fight for the same disk. On 2026-11-17
+# the proposal INSERT hit its ten minute timeout with a load running
+# alongside it.
+#
+# Reported, not blocked: a partial crosswalk is still useful for the ITDK,
+# ip-api and RDAP columns, which do not depend on BDC at all.
+busy=$(psql -X -qtA -c "
+SELECT count(*) FROM pg_stat_activity
+WHERE datname = current_database()
+  AND pid <> pg_backend_pid()
+  AND state <> 'idle'
+  AND (query ILIKE '%bdc_availability%' OR query ILIKE '%bdc_stage%')" 2>/dev/null)
+
+if [ "${busy:-0}" -gt 0 ]; then
+    echo "NOTE: a BDC load appears to be running ($busy active statement(s)"
+    echo "touching the availability tables)."
+    echo
+    echo "The crosswalk reads bdc_carrier_tbl, so its BDC column will be"
+    echo "PARTIAL until that load finishes, and the two jobs compete for the"
+    echo "same disk. The ITDK, ip-api and RDAP columns are unaffected."
+    echo
+    echo "Continuing. Re-run this after the load finishes for the full"
+    echo "picture."
+    echo
+fi
+
 echo "Step 2 of the FCC plan, in dependency order."
 echo "Logs under $LOGDIR, one per step."
 echo

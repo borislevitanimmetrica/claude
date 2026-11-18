@@ -365,6 +365,34 @@ def cmd_load(args):
             sys.exit(f"not a file: {f}")
 
     already = loaded_counts(lean)
+
+    # LEFTOVER STAGING STATE, reported rather than silently dropped.
+    #
+    # bdc_stage_tbl is a real UNLOGGED table, not a TEMP one, so a load
+    # killed mid-COPY leaves it behind holding part of a file. The code has
+    # always dropped it before reusing it, but it did so silently, which
+    # means a crashed previous run looked identical to a clean start.
+    # TWO QUERIES, NOT ONE WITH A GUARD. A table named anywhere in a
+    # statement is resolved when the statement is PARSED, so
+    #   SELECT CASE WHEN to_regclass('bdc_stage_tbl') IS NULL THEN '-1'
+    #          ELSE (SELECT count(*) FROM bdc_stage_tbl) END
+    # fails with "relation bdc_stage_tbl does not exist" whenever it does
+    # not exist, which is the normal case. The CASE never gets the chance to
+    # short-circuit. That is the third time this class of mistake has
+    # appeared in this project; the other two were a LEFT JOIN target and a
+    # DROP CASCADE.
+    exists = psql_q("SELECT to_regclass('bdc_stage_tbl') IS NOT NULL")
+    leftover = psql_q("SELECT count(*) FROM bdc_stage_tbl") \
+        if exists == "t" else "0"
+    if leftover and leftover.isdigit() and int(leftover) > 0:
+        print(f"NOTE: a staging table was left behind holding "
+              f"{int(leftover):,} rows, which means the previous run was "
+              f"interrupted mid-copy. It is dropped and the file it came "
+              f"from will be loaded again from the start. No availability "
+              f"rows were affected: the insert from staging is a single "
+              f"statement and either completed or did not.", flush=True)
+        psql("-qc", "DROP TABLE IF EXISTS bdc_stage_tbl")
+
     names = [os.path.basename(p) for p in args.files]
     todo = [n for n in names if not already.get(n)]
     print(f"{len(args.files)} file(s) to consider: "
@@ -372,6 +400,22 @@ def cmd_load(args):
           flush=True)
     if todo:
         print(f"first to load: {todo[0]}", flush=True)
+
+    # FILES RECORDED WITH SUSPICIOUSLY FEW ROWS. A file left short by an
+    # interrupted load counts as loaded and is skipped forever, so it is
+    # named here even though this cannot tell short from genuinely small
+    # without reading the file. `verify` reads the files and can.
+    thin = sorted((n for n in names
+                   if 0 < (already.get(n) or 0) < 100),
+                  key=lambda n: already.get(n) or 0)
+    if thin:
+        print(f"\n{len(thin)} loaded file(s) hold fewer than 100 rows. Some "
+              f"are genuinely tiny, the Other technology files especially, "
+              f"but a file left short by an interrupted load looks exactly "
+              f"the same from here and WILL BE SKIPPED. Run `verify` to "
+              f"tell them apart:", flush=True)
+        for n in thin[:10]:
+            print(f"    {already.get(n):>6,} rows  {n}", flush=True)
 
     total_loaded = 0
     failed = []
