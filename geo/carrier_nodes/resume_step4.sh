@@ -260,13 +260,49 @@ SELECT count(*)                                        AS carriers,
 FROM carrier_crosswalk_tbl" 2>&1
 
 echo
-echo "THE PROPOSAL COUNTS, which is the open question on this step:"
-grep -iE 'proposals would be|no BDC pairing|SKIPPED|equal_rows|total_rows' \
-    "$LOGDIR/step2_4.log" 2>/dev/null | head -12 | sed 's/^/    /'
+echo "THE PROPOSAL COUNTS AND THE VERDICT:"
 echo
-echo "If that says no BDC pairing was inserted, the hard stop fired: more"
-echo "than 20,000 proposals even from the equality and containment tiers."
-echo "The measured columns are still there and are unaffected. The matcher"
-echo "policy is yours to set and is not changed by this script."
+# MATCH THE NOTICE, NOT THE HEADING.
+#
+# The first version of this grep looked for 'proposals would be', 'SKIPPED'
+# and the column names. On Boris's 2026-11-18 run it printed the section
+# heading and the column header and NOT ONE NUMBER, because the verdict
+# arrives two ways and neither was matched: a result row that is bare
+# numbers plus a verdict string, and a RAISE NOTICE whose wording differs
+# per branch. The three branch wordings are 'STOP. Even the strong tiers',
+# 'Proposals would be' and 'Proposals: N rows, all tiers included'. Only the
+# second was in the pattern.
+#
+# Reporting a heading with no figures under it is worse than reporting
+# nothing: it reads as though the figures were absent.
+grep -iE 'NOTICE|^ *[0-9]+ *\| *[0-9]+|all tiers included|STOP\.' \
+    "$LOGDIR/step2_4.log" 2>/dev/null | head -8 | sed 's/^/    /'
+echo
+echo "Read the verdict as follows."
+echo "  all tiers included    the count was under 20,000 and every"
+echo "                        proposal was inserted"
+echo "  tier is SKIPPED       over 20,000, so the weak first-word tier was"
+echo "                        dropped and only the strong tiers inserted"
+echo "  STOP                  over 20,000 from the strong tiers alone, so"
+echo "                        NO BDC pairing was inserted at all"
+echo
+echo "The measured ITDK, ip-api and RDAP columns are unaffected in every"
+echo "case. The matcher policy is yours and is not changed by this script."
+echo
+approved=$(psql -X -qtAc "SELECT count(*) FROM carrier_crosswalk_tbl WHERE approved" 2>/dev/null)
+proposals=$(psql -X -qtAc "SELECT count(*) FROM carrier_crosswalk_tbl WHERE bdc_brand_name IS NOT NULL AND NOT approved" 2>/dev/null)
+if [ "${approved:-0}" = "0" ] && [ "${proposals:-0}" != "0" ]; then
+    echo "NOTHING IS APPROVED YET, and that is by design rather than a fault."
+    echo "${proposals} BDC name pairing(s) are proposals. approved is false"
+    echo "until you say otherwise, and nothing downstream should join"
+    echo "through an unapproved row, so the crosswalk is NOT yet usable as a"
+    echo "carrier identity source."
+    echo
+    echo "Your 87 rulings are a different mechanism: they live in"
+    echo "carrier_decision_tbl and drive carrier_resolved_tbl, which step 6"
+    echo "has just refilled. They do not set approved on crosswalk rows."
+    echo
+    echo "The approval list is section 5 of $LOGDIR/step2_4.log"
+fi
 echo
 echo "Full approval list: $LOGDIR/step2_4.log, section 5."
