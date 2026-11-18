@@ -59,6 +59,7 @@ import csv
 import gzip
 import io
 import os
+import re
 import shutil
 import subprocess
 import sys
@@ -951,6 +952,139 @@ def count_csv_rows(path):
         stream.close()
 
 
+STATE_FIPS_RE = re.compile(r"^bdc_(\d{2})_")
+
+
+def fips_of(name):
+    m = STATE_FIPS_RE.match(name)
+    return m.group(1) if m else None
+
+
+def cmd_states(args):
+    """Per state FIPS: what is on disk against what the database records.
+
+    READ ONLY, AND IT TAKES NO LOCK. Safe to run while a load is in
+    progress, which is the situation it was written for. It does not
+    decompress anything, so it returns in seconds; `verify` is the one that
+    reads the files and it costs minutes.
+
+    WHY THIS EXISTS
+
+    Boris, 2026-11-18: "BDC load skipped territories 32-45. Territories
+    starting with 45 (partial) are being loaded."
+
+    A file is skipped when bdc_source_file_tbl.row_count is above zero for
+    it, so a file can be skipped for two quite different reasons and the log
+    looks the same either way: it genuinely loaded, or it was recorded with
+    a count that does not match the file. This separates them as far as it
+    can without decompressing, and it also names the files that are on disk
+    and not recorded AT ALL, which is the case a skip count cannot show.
+
+    I am not going to tell you WHY 32 to 45 were missed until the numbers
+    say so. The two candidates I can think of are a file that was not yet
+    downloaded when the running loader expanded its glob, and a file
+    recorded with a row_count from a load that did not finish. They look
+    different here: the first is "on disk, not recorded", the second is
+    "recorded, count suspicious". The output distinguishes them.
+    """
+    require_schema()
+    lean = schema_is_lean()
+    already = loaded_counts(lean)
+
+    names = [os.path.basename(p) for p in args.files]
+    lo, hi = args.from_fips, args.to_fips
+
+    rows = []
+    for n in sorted(names):
+        f = fips_of(n)
+        if f is None:
+            rows.append((None, n, already.get(n)))
+            continue
+        if lo and f < lo:
+            continue
+        if hi and f > hi:
+            continue
+        rows.append((f, n, already.get(n)))
+
+    if not rows:
+        print(f"No files given match FIPS {lo or '00'} to {hi or '99'}. "
+              f"{len(names)} file(s) were supplied.")
+        return
+
+    by_fips = {}
+    for f, n, cnt in rows:
+        by_fips.setdefault(f, []).append((n, cnt))
+
+    print(f"FIPS range {lo or '00'} to {hi or '99'}, "
+          f"{len(rows)} file(s) on disk in range\n")
+    print(f"{'fips':<6}{'on_disk':>8}{'recorded':>10}{'not_rec':>9}"
+          f"{'zero':>7}{'thin':>7}  rows_recorded")
+
+    missing = []
+    thin_files = []
+    zero_files = []
+    for f in sorted(by_fips, key=lambda x: (x is None, x)):
+        fl = by_fips[f]
+        rec = [(n, c) for n, c in fl if c is not None]
+        notrec = [n for n, c in fl if c is None]
+        zero = [n for n, c in rec if c == 0]
+        thin = [n for n, c in rec if 0 < c < 100]
+        total = sum(c for _, c in rec)
+        missing.extend(notrec)
+        zero_files.extend(zero)
+        thin_files.extend(thin)
+        print(f"{f or '??':<6}{len(fl):>8}{len(rec):>10}{len(notrec):>9}"
+              f"{len(zero):>7}{len(thin):>7}  {total:>14,}")
+
+    print()
+    if missing:
+        print(f"{len(missing)} FILE(S) ON DISK WITH NO RECORD AT ALL. These "
+              f"were never loaded, not even partly. A running loader expands "
+              f"its --files glob ONCE at startup, so a file that finished "
+              f"downloading after that is not in its list and will not be "
+              f"picked up however long the load runs.")
+        for n in missing[:40]:
+            print(f"    {n}")
+        if len(missing) > 40:
+            print(f"    ... and {len(missing) - 40} more")
+        print()
+    if zero_files:
+        print(f"{len(zero_files)} file(s) are recorded with ZERO rows, which "
+              f"counts as not loaded and will be retried by a normal load:")
+        for n in zero_files[:20]:
+            print(f"    {n}")
+        print()
+    if thin_files:
+        print(f"{len(thin_files)} file(s) are recorded with fewer than 100 "
+              f"rows. The Other technology files are genuinely tiny, so this "
+              f"is not by itself wrong, and only reading the file settles "
+              f"it. `verify` on just these is cheap:")
+        for n in thin_files[:20]:
+            print(f"    {already.get(n):>6,} rows  {n}")
+        print()
+
+    if missing:
+        print("TO LOAD THE UNRECORDED FILES, and nothing else. This adds "
+              "rows for files that have none and does not touch any file "
+              "already loaded, so there is nothing to undo:")
+        print("    sh geo/fcc_bdc/reload_states.sh "
+              f"--from {lo or '00'} --to {hi or '99'}")
+        print()
+        print("DO NOT RUN IT WHILE ANOTHER LOAD IS RUNNING. The loader "
+              "currently on your machine predates the advisory lock, so it "
+              "will not refuse a second one and the two would share one "
+              "staging table. Wait for the running load to finish. Check "
+              "with, one short line per loader:")
+        print("    pgrep -f bdc_load.py | xargs -r -n1 ps -o pid=,etime=,"
+              "comm= -p | awk '$3 ~ /^python/'")
+    else:
+        print("Every file in range is recorded. If rows are still missing "
+              "the counts are wrong rather than absent, and `verify` on this "
+              "range is what shows that, by reading the files:")
+        print(f"    python3 -u geo/fcc_bdc/bdc_load.py verify --files "
+              f"$(ls /home/boris/geo/bdc/bdc_{lo or ''}*.zip)")
+
+
 def cmd_verify(args):
     """Compare what each download contains against what was loaded.
 
@@ -1116,6 +1250,17 @@ def main():
     ve.add_argument("--all", action="store_true",
                     help="list every file, not only the mismatches")
     ve.set_defaults(func=cmd_verify)
+
+    sa = sub.add_parser("states",
+                        help="per state FIPS, what is on disk against what "
+                             "is recorded. Read only, takes no lock, safe "
+                             "to run during a load")
+    sa.add_argument("--files", nargs="+", required=True)
+    sa.add_argument("--from", dest="from_fips", default=None,
+                    help="lowest two-digit state FIPS to report, e.g. 32")
+    sa.add_argument("--to", dest="to_fips", default=None,
+                    help="highest two-digit state FIPS to report, e.g. 45")
+    sa.set_defaults(func=cmd_states)
 
     st = sub.add_parser("status", help="rows, states, tracts and providers held")
     st.add_argument("--check-overlap", action="store_true",
