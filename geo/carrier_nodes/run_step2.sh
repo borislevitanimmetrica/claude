@@ -88,9 +88,55 @@ echo "Step 2 of the FCC plan, in dependency order."
 echo "Logs under $LOGDIR, one per step."
 echo
 
+# PREREQUISITES NAMED UP FRONT, rather than failing five steps in. The chain
+# needs the BDC carrier table and the trace corpus; neither is built by step
+# 2 and both come from elsewhere in the project.
+missing=$(psql -X -qtA -c "
+SELECT string_agg(t, ', ')
+FROM (SELECT 'bdc_carrier_tbl' AS t WHERE to_regclass('bdc_carrier_tbl') IS NULL
+      UNION ALL
+      SELECT 'ip2city_dbiplite_probe_tbl' WHERE to_regclass('ip2city_dbiplite_probe_tbl') IS NULL
+      UNION ALL
+      SELECT 'ovt_places_usa_ip_trace' WHERE to_regclass('ovt_places_usa_ip_trace') IS NULL) z" 2>/dev/null)
+
+if [ -n "$missing" ]; then
+    echo "MISSING PREREQUISITE TABLE(S): $missing"
+    echo
+    echo "Nothing has been run. These are not built by step 2:"
+    echo "  bdc_carrier_tbl             from geo/fcc_bdc/schema_v2.sql, then"
+    echo "                              loaded by geo/fcc_bdc/bdc_load.py"
+    echo "  ip2city_dbiplite_probe_tbl  the ip-api probe estate"
+    echo "  ovt_places_usa_ip_trace     the traceroute corpus"
+    echo
+    echo "schema_v2.sql TRUNCATES bdc_carrier_tbl when it recreates the"
+    echo "availability table, so it is NOT run automatically here."
+    exit 1
+fi
+
+# THE RENAME IS NOT A PREREQUISITE and must not stop the chain.
+#
+# It takes ACCESS EXCLUSIVE, so it cannot run while bdc_load.py is writing.
+# On 2026-11-17 it queued behind that load and blocked it. The file now gives
+# up after two seconds, and this step treats that as a SKIP rather than a
+# failure, because every later step works against either table name: they
+# read bdc_carrier_tbl if it exists and the crosswalk reports an absent BDC
+# source rather than failing.
+#
+# So a running load defers the rename and costs nothing else.
 if [ -f geo/fcc_bdc/rename_provider_to_carrier.sql ]; then
-    run "rename bdc_provider_tbl if still present" \
-        psql_file geo/fcc_bdc/rename_provider_to_carrier.sql
+    step=$((step + 1))
+    printf 'STEP %s  %-44s' "$step" "rename bdc_provider_tbl if free to do so"
+    if psql_file geo/fcc_bdc/rename_provider_to_carrier.sql \
+            > "$LOGDIR/step2_${step}.log" 2>&1; then
+        echo "ok"
+    else
+        echo "deferred"
+        echo "    The rename could not take its lock, so nothing was changed."
+        echo "    Something else is using the table, almost certainly the BDC"
+        echo "    load. This is NOT a failure and the chain continues."
+        grep -iE 'pid|could not get the lock' "$LOGDIR/step2_${step}.log" \
+            | head -4 | sed 's/^/    /'
+    fi
 fi
 
 run "carrier_nodes schema, may drop carrier_node_tbl" \

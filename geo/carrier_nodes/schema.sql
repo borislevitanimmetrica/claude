@@ -59,6 +59,20 @@
 -- THE CAIDA RULESET
 -- ---------------------------------------------------------------------------
 
+-- A LOCK TIMEOUT. This file issues DDL, including a DROP of
+-- carrier_node_tbl when it migrates the key, and DDL takes ACCESS
+-- EXCLUSIVE. A WAITING AccessExclusiveLock request sits at the head of the
+-- lock queue and blocks every later request on that table, so a queued DDL
+-- statement stalls writers as well as itself.
+--
+-- On 2026-11-17 a rename in geo/fcc_bdc/rename_provider_to_carrier.sql ran
+-- against a table a live bdc_load.py was writing to. It eventually took the
+-- lock, the running loader still held the old table name in memory, and the
+-- next file failed. Five seconds refuses to queue behind a busy table.
+SET lock_timeout = '5s';
+SET statement_timeout = '10min';
+
+
 CREATE TABLE IF NOT EXISTS hoiho_rule_tbl (
     domain           text PRIMARY KEY,
 

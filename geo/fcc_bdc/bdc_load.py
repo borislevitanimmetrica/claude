@@ -185,10 +185,30 @@ def schema_is_lean():
                   "FROM information_schema.columns "
                   "WHERE table_name = 'bdc_availability_tbl' "
                   "AND column_name IN ('source_file', 'source_file_id', "
-                  "'carrier_key', 'brand_name')")
+                  "'carrier_key', 'provider_key', 'brand_name')")
     present = set((cols or "").split(",")) - {""}
     lean = {"source_file_id", "carrier_key"} <= present
     wide = "source_file" in present and "brand_name" in present
+
+    # THE PRE-RENAME SHAPE, named explicitly. bdc_provider_tbl was renamed to
+    # bdc_carrier_tbl on 2026-11-17 and the column provider_key to
+    # carrier_key. A loader built after that rename cannot write to a
+    # database before it, and the first version of this check reported only
+    # "matches neither", which is true but useless.
+    #
+    # This is exactly what broke Boris's load: the rename happened while a
+    # load was running, the running process still wrote the old names, and
+    # the next file failed. The message now says what to run.
+    if {"source_file_id", "provider_key"} <= present:
+        sys.exit("bdc_availability_tbl still has the PRE-RENAME column "
+                 "provider_key, which this loader no longer writes. Nothing "
+                 "was loaded and nothing was changed. Run the rename first, "
+                 "then this command again:\n"
+                 "  psql -X -P pager=off -f "
+                 "geo/fcc_bdc/rename_provider_to_carrier.sql\n"
+                 "It is idempotent, it carries the data over, and files "
+                 "already loaded will be skipped when you resume.")
+
     if lean and not wide:
         return True
     if wide and not lean:

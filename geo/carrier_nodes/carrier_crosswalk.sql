@@ -57,6 +57,12 @@
 -- if a genuinely long statement is ever wanted.
 SET statement_timeout = '10min';
 
+-- A LOCK TIMEOUT alongside the statement timeout. A queued DDL request
+-- blocks writers as well as itself; see the note in
+-- geo/fcc_bdc/rename_provider_to_carrier.sql for what that cost on
+-- 2026-11-17.
+SET lock_timeout = '5s';
+
 -- TIMING IS ON because its absence cost Boris ten minutes of not knowing
 -- whether the file was working or hung. With it, the statement that is slow
 -- names itself. This is cheap and should be the default in any analysis file

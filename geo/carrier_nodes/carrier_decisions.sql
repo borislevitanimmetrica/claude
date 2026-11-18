@@ -99,6 +99,12 @@
 -- with a message.
 SET statement_timeout = '10min';
 
+-- A LOCK TIMEOUT alongside the statement timeout. A queued DDL request
+-- blocks writers as well as itself; see the note in
+-- geo/fcc_bdc/rename_provider_to_carrier.sql for what that cost on
+-- 2026-11-17.
+SET lock_timeout = '5s';
+
 -- THIS FILE DEPENDS ON carrier_crosswalk.sql HAVING RUN, because the
 -- carrier_name_norm function and carrier_crosswalk_tbl are both defined
 -- there. Checked rather than assumed: running this first produced

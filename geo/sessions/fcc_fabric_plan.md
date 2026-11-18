@@ -1237,3 +1237,65 @@ CAIDA ruleset reported "Run hoiho_apply.py fetch first" and went no further.
 Also found while testing it: the \i of resolve_asn.sql sat next to the ASN
 table declarations, but that file now also fills carrier_resolved_tbl, which
 is declared further down. Moved the include below all three declarations.
+
+## 2026-11-17: the rename broke a running load. What went wrong and the fix
+
+Boris: "The BDC load errored at bdc_42_Other_fixed_broadband_J26_10nov2026.zip
+because the table into which it was loading had been renamed."
+
+I caused that. I knew his BDC load was running, I had written comments in two
+files saying so, and I still handed him a DDL rename that takes ACCESS
+EXCLUSIVE on a table that load writes to. The rename waited, eventually got
+the lock between the loader's per-file transactions, and committed. The
+running Python process still held the old table and column names in memory,
+so its next file failed.
+
+Two separate faults:
+
+  1. No lock_timeout, so the rename queued. A WAITING AccessExclusiveLock
+     request sits at the head of the lock queue and blocks every later
+     request on that table, so for the time it was queued it was also
+     stalling the loader it was waiting for.
+
+  2. Renaming a table out from under a live writer is wrong even when the
+     lock is free, because a long-running process holds its SQL as strings.
+
+### What was added
+
+geo/fcc_bdc/rename_provider_to_carrier.sql now SETs lock_timeout to 2
+seconds, prints the sessions holding a lock on the affected tables BEFORE
+attempting anything, and on timeout raises a message saying nothing was
+changed, naming bdc_load.py as the likely holder, and noting that the rest of
+step 2 does not depend on the rename. VERIFIED by holding a ROW EXCLUSIVE
+lock in another session: the rename gave up after 2 seconds, the table was
+untouched at 1,802 rows, and the holder was never blocked longer than that.
+
+run_step2.sh treats a deferred rename as a SKIP, not a failure, and says so,
+because every later step works against either table name.
+
+lock_timeout and statement_timeout are now set in all five SQL files that
+issue DDL or long queries: carrier_nodes/schema.sql, fcc_bdc/schema_v2.sql,
+rename_provider_to_carrier.sql, carrier_crosswalk.sql, carrier_decisions.sql.
+
+bdc_load.py now recognises the PRE-RENAME shape specifically. Before, a
+loader built after the rename met a database before it and reported only
+"matches neither schema.sql nor schema_v2.sql", which is true and useless.
+It now says the column is still provider_key, that nothing was changed, and
+names the rename file to run, adding that completed files are skipped on
+resume. VERIFIED both ways: refuses with that message before the rename,
+loads 323,873 rows after it.
+
+run_step2.sh also names its prerequisites up front, bdc_carrier_tbl,
+ip2city_dbiplite_probe_tbl and ovt_places_usa_ip_trace, rather than failing
+at step 5. It states that schema_v2.sql is NOT run automatically because it
+truncates bdc_carrier_tbl.
+
+### And a careless edit of my own
+
+While adding the lock timeout I used a scripted replacement that matched the
+words "CREATE IF NOT EXISTS" inside a COMMENT SENTENCE in
+carrier_nodes/schema.sql and spliced the new header into the middle of it,
+leaving fragments as live SQL and a syntax error at line 95. I had run the
+text-level check_sql.sh, which passed, and not executed the file. Repaired,
+and every file is now EXECUTED as part of verification rather than only
+text-checked.
