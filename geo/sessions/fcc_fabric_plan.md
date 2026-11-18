@@ -1299,3 +1299,42 @@ leaving fragments as live SQL and a syntax error at line 95. I had run the
 text-level check_sql.sh, which passed, and not executed the file. Repaired,
 and every file is now EXECUTED as part of verification rather than only
 text-checked.
+
+## 2026-11-17: a 135-character command line, and a log that never existed
+
+Boris pasted the resume command. The job started, printing a pid, and then
+tail reported the log file did not exist. Residue from the paste, the
+fragment "ll.log 2>&1", was visible on his prompt line BEFORE the cd.
+
+The command was one line of 135 characters:
+
+    nohup python3 geo/fcc_bdc/bdc_load.py load --files /home/boris/geo/bdc/*.zip > /home/boris/geo/logs/bdc_load_resume.log 2>&1 &
+
+It wrapped in his terminal, part of it was taken as a separate command, and
+the redirect never attached. The background job started without it.
+
+Long single-line commands are a known hazard in his paste path, alongside
+the mid-line hash and the backslash conversion already recorded in my
+standing orders. I had been keeping those two rules and ignoring line length.
+
+### geo/fcc_bdc/resume_load.sh
+
+The long line now lives in a file and he pastes one short one. The script
+also does three things the raw command could not:
+
+- It CHECKS THE SCHEMA before starting. If bdc_availability_tbl still has
+  the pre-rename column provider_key it stops, says nothing was started, and
+  names the rename file. That is the exact state that killed his load, and
+  it is better caught in a second than four hours in.
+- It refuses when the directory holds no zip files.
+- After starting it CONFIRMS THE LOG FILE EXISTS and prints its first lines,
+  so a redirect that did not attach is visible immediately rather than when
+  tail fails.
+
+Verified all three paths: refuses on the pre-rename shape with the rename
+command named; refuses on an empty directory; and on the correct shape
+starts, the log exists, and the load completes with 323,873 rows.
+
+Also measured: the longest line in the script is 130 characters, but that
+file is PULLED rather than pasted, so its line lengths do not matter. What
+matters is that the line Boris pastes is now 28 characters.
