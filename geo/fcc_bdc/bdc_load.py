@@ -336,10 +336,20 @@ def loaded_counts(lean):
     and had no way to tell the difference between progress and a hang.
     """
     if lean:
-        sql = ("SELECT f.source_file, count(a.source_file_id) "
-               "FROM bdc_source_file_tbl f "
-               "LEFT JOIN bdc_availability_tbl a USING (source_file_id) "
-               "GROUP BY f.source_file")
+        # READ row_count FROM THE SMALL TABLE, do not aggregate the big one.
+        #
+        # The first version of this joined bdc_source_file_tbl to
+        # bdc_availability_tbl and grouped, which is a FULL SCAN of a table
+        # holding tens of millions of rows. It replaced 333 cheap indexed
+        # lookups with one very expensive query, so the loader sat silent for
+        # over a minute before printing anything. row_count is written by
+        # insert_lean at load time and the table has one row per file.
+        #
+        # coalesce to 0 rather than NULL so a file registered but with no
+        # rows inserted, which is what an interrupted load leaves, counts as
+        # NOT loaded and is retried.
+        sql = ("SELECT source_file, coalesce(row_count, 0) "
+               "FROM bdc_source_file_tbl")
     else:
         sql = ("SELECT source_file, count(*) FROM bdc_availability_tbl "
                "GROUP BY source_file")

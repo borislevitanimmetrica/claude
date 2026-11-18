@@ -1496,3 +1496,58 @@ file." I CANNOT REPRODUCE IT. Both my working copy and the committed
 a2eeb78 load, skip and resume cleanly against a partially-loaded directory
 including a one-row file and a leftover staging table. The error text is
 needed; guessing at it has already cost two round trips today.
+
+## 2026-11-17: "Debug BEFORE you issue code"
+
+Boris said that, and the record justifies it. Bugs HE found rather than I
+did, in one day:
+
+    the psql argument-list limit, at 22,790 hostnames
+    carrier_node_tbl keyed on hostname when one hostname has many addresses
+    a dependent view blocking DROP TABLE, twice
+    a UNIQUE constraint CREATE TABLE IF NOT EXISTS never applied
+    NOT IN against a subquery, which cannot become an anti-join
+    a CASE guard naming a table that may not exist
+    a skip query that full-scans tens of millions of rows
+    a 135-character command line that wrapped and lost its redirect
+    stdout buffering that made a working job look dead
+
+EVERY ONE of those was reproducible without him, given a fixture resembling
+his database rather than a toy. I had been using him as the test harness.
+
+### The silent minute, diagnosed
+
+The loader printed nothing for over a minute before its first line. Cause:
+loaded_counts joined bdc_source_file_tbl to bdc_availability_tbl and grouped,
+a FULL SCAN of tens of millions of rows. I had introduced that myself when
+replacing 333 cheap indexed lookups with "one query", which is usually the
+right instinct and was wrong here.
+
+bdc_source_file_tbl.row_count already holds the number, written by
+insert_lean at load time, in a table with one row per file. MEASURED after
+the change: startup 142 ms against over 60 seconds.
+
+coalesce(row_count, 0) rather than NULL, so a file registered but with no
+rows inserted, which is what an interrupted load leaves, counts as NOT
+loaded and is retried.
+
+### geo/fcc_bdc/test_load_at_scale.sh
+
+Builds a fixture that looks like his database and asserts against it:
+
+    4,000,000 availability rows, so a full scan is measurably slow
+    241 files already recorded as loaded
+    a file recorded with FEWER rows than it holds
+    a leftover bdc_stage_tbl, what a killed run leaves
+    the post-rename schema
+    real downloaded zip files, not synthetic CSVs
+
+Six assertions, all passing: startup is prompt rather than reading as a
+hang; a second load of the same file does not duplicate it, 4,323,859 rows
+either way; a short file is reported by verify and warned about by the
+loader; --replace repairs exactly one file and verify then passes; leftover
+staging is reported; and the pre-rename schema is refused with the rename
+file named.
+
+This is the harness that should have existed before any of today's commands
+were issued.
