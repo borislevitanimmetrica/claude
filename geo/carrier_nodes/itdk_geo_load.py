@@ -112,6 +112,13 @@ def psql_q(sql):
     return psql("-qtA", "-c", sql).strip()
 
 
+def lit(s):
+    """Quote a value for inclusion in SQL text."""
+    if s is None:
+        return "NULL"
+    return "'" + str(s).replace("'", "''") + "'"
+
+
 def psql_copy(copy_sql, line_iter):
     """Stream lines into psql for a \\copy FROM STDIN."""
     p = subprocess.Popen(
@@ -477,6 +484,214 @@ FROM j GROUP BY 1 ORDER BY 2 DESC"""))
     return 0
 
 
+def find_latlon_tables():
+    """Discover tables carrying coordinates and an address or network key.
+
+    NOT A GUESS AT COLUMN NAMES. Standing order 1, and the specific lesson
+    of four wasted round trips in this project: rdap_registrant instead of
+    rdap_registrant_tbl, a registrant_zip that never existed, a sampled_ip
+    taken from an INSERT in main.go and absent from the deployed table, and
+    a ran_at that is really traced_at. Every one was a name taken from a
+    source file and assumed to apply.
+
+    So this reads information_schema and reports what is actually there.
+    """
+    sql = """
+WITH c AS (
+  SELECT table_name, column_name, data_type
+  FROM information_schema.columns
+  WHERE table_schema NOT IN ('pg_catalog', 'information_schema')
+)
+SELECT t.table_name,
+       string_agg(DISTINCT t.lat_col, ',')  AS lat_cols,
+       string_agg(DISTINCT t.lon_col, ',')  AS lon_cols,
+       string_agg(DISTINCT t.key_col, ',')  AS key_cols
+FROM (
+  SELECT a.table_name,
+         CASE WHEN a.column_name ~* '^(lat|latitude)$' THEN a.column_name END AS lat_col,
+         CASE WHEN a.column_name ~* '^(lon|lng|long|longitude)$' THEN a.column_name END AS lon_col,
+         CASE WHEN a.data_type IN ('cidr', 'inet')
+                OR a.column_name ~* '(^|_)(ip|network|range|addr|address)(_|$)'
+              THEN a.column_name END AS key_col
+  FROM c a
+) t
+WHERE t.lat_col IS NOT NULL OR t.lon_col IS NOT NULL OR t.key_col IS NOT NULL
+GROUP BY t.table_name
+HAVING count(t.lat_col) > 0 AND count(t.lon_col) > 0
+ORDER BY t.table_name"""
+    out = []
+    for line in psql("-qtAF|", "-c", sql).splitlines():
+        parts = line.split("|")
+        if len(parts) >= 4 and parts[0].strip():
+            out.append(tuple(p.strip() for p in parts[:4]))
+    return out
+
+
+def cmd_sources(args):
+    """What coordinate sources this database actually holds.
+
+    Read only. Run it before divergence so the column names used there come
+    from the catalogue rather than from my recollection.
+    """
+    print("Tables carrying both a latitude and a longitude column:\n")
+    found = find_latlon_tables()
+    if not found:
+        print("  NONE FOUND.")
+        print()
+        print("  That is the answer to the question I asked rather than a "
+              "failure: if no table here holds ip-api latitude and "
+              "longitude, the MaxMind against ip-api comparison cannot be "
+              "made from this database and the ip-api coordinates would "
+              "have to be probed or imported first.")
+        print()
+        print("  What the ip-api probe estate does hold:")
+        print(psql("-c", """
+SELECT column_name, data_type
+FROM information_schema.columns
+WHERE table_name = 'ip2city_dbiplite_probe_tbl'
+ORDER BY ordinal_position"""))
+        return 1
+    print(f"  {'table':<34}{'lat':<12}{'lon':<12}key columns")
+    for t, la, lo, k in found:
+        print(f"  {t:<34}{la:<12}{lo:<12}{k}")
+    print()
+    print("Use --table with divergence to choose one of these.")
+    return 0
+
+
+def cmd_divergence(args):
+    """MaxMind against ip-api, on the same node addresses.
+
+    WHY THIS IS THE RIGHT MEASUREMENT
+
+    Boris, 2026-11-18: "MaxMind and ip-api.com or any two competitors could
+    diverge by several kilometers. But headends/COs are more sparse in such
+    areas as well, and gaps in carrier coverage are larger, so the risk is
+    tolerable of misidentifying the headend/CO that serves a census tract
+    (this is conjecture from observation; the actual data is the test)." And
+    on a headend landing in the wrong municipality: "If this happens,
+    distance between MaxMind and ip-api.com coordinates should decide."
+
+    So divergence between the two vendors is the quality signal. Where they
+    agree, either will do and the concentration is trustworthy. Where they
+    diverge badly, that concentration is the one to pin down independently,
+    which is what he asked the street address search for.
+
+    This does NOT decide which vendor is right. Neither is ground truth and
+    the separation alone cannot say which one moved. What it does is RANK
+    the concentrations by how much doubt there is, weighted by how many node
+    addresses sit at each, so the independent work goes where it pays.
+    """
+    if psql_q("SELECT to_regclass('itdk_node_located') IS NOT NULL") != "t":
+        sys.exit("itdk_node_located does not exist. Run load first.")
+
+    found = find_latlon_tables()
+    chosen = None
+    if args.table:
+        for t in found:
+            if t[0] == args.table:
+                chosen = t
+        if chosen is None:
+            sys.exit(f"{args.table} does not have both a latitude and a "
+                     f"longitude column, or does not exist. Run `sources` "
+                     f"to see what does.")
+    elif len(found) == 1:
+        chosen = found[0]
+    elif not found:
+        sys.exit("No table here holds both a latitude and a longitude "
+                 "column, so there are no ip-api coordinates to compare "
+                 "against. Run `sources` for what the probe estate does "
+                 "hold. Nothing was changed.")
+    else:
+        print("Several tables hold coordinates. Choose one with --table:\n")
+        for t, la, lo, k in found:
+            print(f"  {t:<34} lat={la} lon={lo} key={k}")
+        return 2
+
+    tbl, lat_c, lon_c, keys = chosen
+    # Prefer a cidr or inet key, since the probe estate is keyed by network.
+    key = None
+    for cand in keys.split(","):
+        cand = cand.strip()
+        if not cand:
+            continue
+        dt = psql_q(f"SELECT data_type FROM information_schema.columns "
+                    f"WHERE table_name = {lit(tbl)} "
+                    f"AND column_name = {lit(cand)}")
+        if dt in ("cidr", "inet"):
+            key = cand
+            key_type = dt
+            break
+    if key is None:
+        sys.exit(f"{tbl} has coordinates but no cidr or inet column to join "
+                 f"node addresses on. Columns offered: {keys}")
+
+    print(f"Comparing the ITDK coordinate against {tbl}.{lat_c}/{lon_c}, "
+          f"joined on {tbl}.{key} ({key_type}).\n")
+    print("Most specific containing network wins, ORDER BY masklen DESC "
+          "LIMIT 1, the same convention as the rest of this project.\n")
+
+    psql("-qc", f"""
+CREATE OR REPLACE VIEW itdk_vendor_divergence AS
+SELECT l.address, l.node_id, l.method, l.city, l.region,
+       l.lat AS itdk_lat, l.lon AS itdk_lon,
+       v.{lat_c} AS vendor_lat, v.{lon_c} AS vendor_lon,
+       6371 * sqrt(pow(radians(v.{lat_c} - l.lat), 2) +
+                   pow(radians(v.{lon_c} - l.lon) * cos(radians(l.lat)), 2))
+         AS km_apart
+FROM itdk_node_located l
+CROSS JOIN LATERAL (
+    SELECT x.{lat_c}, x.{lon_c}
+    FROM {tbl} x
+    WHERE x.{key} >>= l.address
+      AND x.{lat_c} IS NOT NULL AND x.{lon_c} IS NOT NULL
+    ORDER BY masklen(x.{key}) DESC
+    LIMIT 1) v;
+COMMENT ON VIEW itdk_vendor_divergence IS
+  'Separation between the ITDK node coordinate and the ip-api coordinate of the most specific network containing that address. A quality signal, not a verdict: neither vendor is ground truth and the separation cannot say which one moved. Large separation marks the concentrations worth pinning down independently.'""")
+
+    print(psql("-c", """
+SELECT method,
+       count(*)                                          AS addresses,
+       round(avg(km_apart)::numeric, 1)                  AS mean_km,
+       round((percentile_cont(0.5) WITHIN GROUP (ORDER BY km_apart))::numeric, 1) AS median_km,
+       round((percentile_cont(0.9) WITHIN GROUP (ORDER BY km_apart))::numeric, 1) AS p90_km,
+       count(*) FILTER (WHERE km_apart <= 5)             AS within_5km,
+       count(*) FILTER (WHERE km_apart > 25)             AS over_25km,
+       count(*) FILTER (WHERE km_apart > 100)            AS over_100km
+FROM itdk_vendor_divergence GROUP BY 1 ORDER BY 2 DESC"""))
+
+    print("\nTHE WORKLIST. Concentrations where the two vendors disagree "
+          "most, ordered by how many node addresses sit there, which is "
+          "where an independent street address pays. Single node sites are "
+          f"excluded at --min-nodes {int(args.min_nodes)}: one node in a "
+          "headend does not move the result.\n")
+    print(psql("-c", f"""
+WITH c AS (
+  SELECT split_part(n.hostname, '.', -2) || '.' ||
+         split_part(n.hostname, '.', -1)      AS carrier_domain,
+         d.city, d.region, d.method,
+         count(DISTINCT d.address)            AS node_addresses,
+         round(avg(d.km_apart)::numeric, 1)   AS mean_km_apart,
+         round(max(d.km_apart)::numeric, 1)   AS worst_km,
+         round(avg(d.itdk_lat)::numeric, 4)   AS itdk_lat,
+         round(avg(d.itdk_lon)::numeric, 4)   AS itdk_lon
+  FROM itdk_vendor_divergence d
+  JOIN carrier_node_tbl n ON n.node_ip = d.address
+  GROUP BY 1, 2, 3, 4
+)
+SELECT * FROM c
+WHERE node_addresses >= {int(args.min_nodes)}
+  AND mean_km_apart >= {float(args.min_km)}
+ORDER BY node_addresses DESC, mean_km_apart DESC
+LIMIT {int(args.limit)}"""))
+    print("\nThese rows are the street-address target list: a concentration "
+          "carrying many nodes whose two commercial sources disagree. That "
+          "is a far shorter list than every CLLI code, and it is ordered by "
+          "how much the answer would change.")
+    return 0
+
+
 def cmd_concentration(args):
     """Places of concentration: the candidate headends and COs.
 
@@ -665,6 +880,21 @@ def main():
                         "addresses, default 3")
     k.add_argument("--limit", type=int, default=30)
     k.set_defaults(func=cmd_concentration)
+
+    so = sub.add_parser("sources",
+                        help="what coordinate sources this database holds, "
+                             "read from the catalogue not guessed")
+    so.set_defaults(func=cmd_sources)
+
+    dv = sub.add_parser("divergence",
+                        help="MaxMind against ip-api on the same addresses, "
+                             "and the street-address worklist it implies")
+    dv.add_argument("--table", help="which coordinate table to compare "
+                                    "against; see `sources`")
+    dv.add_argument("--min-nodes", type=int, default=3)
+    dv.add_argument("--min-km", type=float, default=5.0)
+    dv.add_argument("--limit", type=int, default=40)
+    dv.set_defaults(func=cmd_divergence)
 
     s = sub.add_parser("selftest", help="parse real published lines")
     s.set_defaults(func=cmd_selftest)
