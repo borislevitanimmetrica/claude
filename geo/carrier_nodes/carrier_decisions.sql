@@ -108,8 +108,8 @@ BEGIN
     IF to_regclass('carrier_crosswalk_tbl') IS NULL THEN
         missing := missing || 'table carrier_crosswalk_tbl'::text;
     END IF;
-    IF to_regclass('bdc_provider_tbl') IS NULL THEN
-        missing := missing || 'table bdc_provider_tbl'::text;
+    IF to_regclass('bdc_carrier_tbl') IS NULL THEN
+        missing := missing || 'table bdc_carrier_tbl'::text;
     END IF;
     IF array_length(missing, 1) > 0 THEN
         RAISE EXCEPTION
@@ -199,44 +199,58 @@ COMMENT ON COLUMN carrier_decision_tbl.value IS
 --      the result is a candidate and the count of candidates is reported.
 -- ---------------------------------------------------------------------------
 
-CREATE OR REPLACE VIEW asn_operator AS
-SELECT nullif(regexp_replace("as", '^AS([0-9]+).*$', '\1'), "as")::integer
-           AS asn,
-       btrim(regexp_replace("as", '^AS[0-9]+\s*', '')) AS as_operator,
-       count(*) AS ranges
-FROM ip2city_dbiplite_probe_tbl
-WHERE "as" IS NOT NULL AND "as" <> ''
-  AND "as" ~ '^AS[0-9]+'
-GROUP BY 1, 2;
+-- ---------------------------------------------------------------------------
+-- ASN TO BDC CARRIER NAME: the tables
+--
+-- Declared here and FILLED by geo/carrier_nodes/resolve_asn.sql, which
+-- TRUNCATEs and re-inserts rather than dropping and recreating.
+--
+-- That distinction is the fix for a bug I have now made three times in one
+-- session: DROP TABLE ... CASCADE silently removes dependent views.
+-- carrier_resolved depends on asn_bdc_name_tbl, so dropping the table took
+-- the view with it and the next query failed with "relation
+-- carrier_resolved does not exist". TRUNCATE touches no dependency.
+-- ---------------------------------------------------------------------------
 
-COMMENT ON VIEW asn_operator IS
-    'AS number to operator name, read from the ip-api "as" strings already held per range. This is the only ASN-to-company mapping this project has, and it is observation rather than registry data.';
+CREATE TABLE IF NOT EXISTS asn_operator_tbl (
+    asn              integer PRIMARY KEY,
+    as_operator      text,
+    ranges           bigint,
+    as_operator_norm text
+);
 
-CREATE OR REPLACE VIEW asn_bdc_name AS
-SELECT o.asn,
-       o.as_operator,
-       o.ranges,
-       b.provider_id        AS bdc_provider_id,
-       b.brand_name         AS bdc_brand_name,
-       CASE WHEN carrier_name_norm(b.brand_name)
-                 = carrier_name_norm(o.as_operator)
-                 THEN 'normalised name equal'
-            ELSE 'normalised name contained' END AS match_basis
-FROM (SELECT asn, as_operator, ranges,
-             row_number() OVER (PARTITION BY asn ORDER BY ranges DESC) AS rn
-      FROM asn_operator) o
-LEFT JOIN bdc_provider_tbl b
-    ON carrier_name_norm(b.brand_name) IS NOT NULL
-   AND carrier_name_norm(o.as_operator) IS NOT NULL
-   AND (carrier_name_norm(b.brand_name) = carrier_name_norm(o.as_operator)
-        OR carrier_name_norm(b.brand_name) LIKE
-           '%' || carrier_name_norm(o.as_operator) || '%'
-        OR carrier_name_norm(o.as_operator) LIKE
-           '%' || carrier_name_norm(b.brand_name) || '%')
-WHERE o.rn = 1;
+CREATE INDEX IF NOT EXISTS asn_operator_norm_idx
+    ON asn_operator_tbl (as_operator_norm);
 
-COMMENT ON VIEW asn_bdc_name IS
-    'For a given ASN, the operator name observed in ip-api and the BDC brand names whose normalised form equals or contains it. The BDC half is a NAME COMPARISON with no key behind it, so several rows per ASN means several candidates and none is chosen here.';
+COMMENT ON TABLE asn_operator_tbl IS
+    'AS number to operator name, read from the ip-api "as" strings already held per range, for the ASNs named in a use_bdc_of_asn decision ONLY. A table rather than a view because as an unrestricted view it cost 195 seconds per reference at 2,097,870 probe rows. Filled by geo/carrier_nodes/resolve_asn.sql.';
+
+CREATE TABLE IF NOT EXISTS asn_bdc_name_tbl (
+    asn              integer NOT NULL,
+    as_operator      text,
+    ranges           bigint,
+    bdc_provider_id  integer,
+    bdc_brand_name   text,
+    match_basis      text
+);
+
+CREATE INDEX IF NOT EXISTS asn_bdc_name_asn_idx
+    ON asn_bdc_name_tbl (asn);
+
+COMMENT ON TABLE asn_bdc_name_tbl IS
+    'For each ASN named in a use_bdc_of_asn decision, the operator observed in ip-api and the BDC brand names whose normalised form equals or contains it. The BDC half is a NAME COMPARISON with no key behind it, so several rows for one ASN means several candidates and none is chosen here.';
+
+\echo
+\echo ---- Filling them for the ASNs under decision
+\echo
+\echo On the FIRST run of this file carrier_decision_tbl is empty, so these
+\echo come out empty. load_decisions.py re-runs the same file after loading,
+\echo which is when they fill.
+\echo
+
+\i geo/carrier_nodes/resolve_asn.sql
+
+
 
 
 -- ---------------------------------------------------------------------------
@@ -266,10 +280,10 @@ named AS (
            b.frn,
            b.brand_name,
            CASE WHEN b.provider_id IS NULL
-                THEN 'named by Boris, NOT FOUND in bdc_provider_tbl'
+                THEN 'named by Boris, NOT FOUND in bdc_carrier_tbl'
                 ELSE 'named by Boris, matched in BDC' END AS basis
     FROM carrier_decision_tbl d
-    LEFT JOIN bdc_provider_tbl b ON b.brand_name = d.value
+    LEFT JOIN bdc_carrier_tbl b ON b.brand_name = d.value
     WHERE d.decision = 'use_bdc_name'
 ),
 -- Domains whose BDC name comes from the operator of a stated ASN.
@@ -284,7 +298,7 @@ by_asn AS (
                      || ', NO BDC name matched it'
                 ELSE 'BDC name of the operator of AS' || d.value END AS basis
     FROM carrier_decision_tbl d
-    LEFT JOIN asn_bdc_name a ON a.asn = nullif(d.value, '')::integer
+    LEFT JOIN asn_bdc_name_tbl a ON a.asn = nullif(d.value, '')::integer
     WHERE d.decision = 'use_bdc_of_asn'
 ),
 decided AS (
@@ -328,7 +342,7 @@ WHERE dd.itdk_domain NOT IN (SELECT itdk_domain FROM carrier_crosswalk_tbl)
   AND dd.itdk_domain NOT IN (SELECT itdk_domain FROM dropped);
 
 COMMENT ON VIEW carrier_resolved IS
-    'The crosswalk after Boris decisions are applied. ONE ROW PER DOMAIN AND BDC PROVIDER: a domain mapped to fifteen Windstream subsidiaries yields fifteen rows, because a tract served by any of them should see that domains nodes. Domains ruled not an ISP are absent. label_basis says which rule produced the name, including when a name Boris gave was not found in bdc_provider_tbl. Steps 4 to 7 should join to this, not to carrier_crosswalk_tbl.';
+    'The crosswalk after Boris decisions are applied. ONE ROW PER DOMAIN AND BDC PROVIDER: a domain mapped to fifteen Windstream subsidiaries yields fifteen rows, because a tract served by any of them should see that domains nodes. Domains ruled not an ISP are absent. label_basis says which rule produced the name, including when a name Boris gave was not found in bdc_carrier_tbl. Steps 4 to 7 should join to this, not to carrier_crosswalk_tbl.';
 
 
 \echo
@@ -378,7 +392,7 @@ SELECT d.itdk_domain,
        left(a.bdc_brand_name, 26)    AS bdc_brand_candidate,
        a.match_basis
 FROM carrier_decision_tbl d
-LEFT JOIN asn_bdc_name a ON a.asn = nullif(d.value, '')::integer
+LEFT JOIN asn_bdc_name_tbl a ON a.asn = nullif(d.value, '')::integer
 WHERE d.decision = 'use_bdc_of_asn'
 ORDER BY d.itdk_domain, a.bdc_brand_name;
 
@@ -400,7 +414,7 @@ SELECT d.itdk_domain, d.value AS asn_given,
             ELSE 'several candidates, needs a choice'
        END AS state
 FROM carrier_decision_tbl d
-LEFT JOIN asn_bdc_name a ON a.asn = nullif(d.value, '')::integer
+LEFT JOIN asn_bdc_name_tbl a ON a.asn = nullif(d.value, '')::integer
 WHERE d.decision = 'use_bdc_of_asn'
 GROUP BY d.itdk_domain, d.value
 ORDER BY d.itdk_domain;

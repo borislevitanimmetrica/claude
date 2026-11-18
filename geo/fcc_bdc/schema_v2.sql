@@ -32,6 +32,11 @@
 -- is still correct and still works; this is a size trade, not a fix.
 
 
+-- The rename of bdc_provider_tbl to bdc_carrier_tbl lives in
+-- geo/fcc_bdc/rename_provider_to_carrier.sql, which renames and nothing
+-- else. It is NOT here because this file drops and truncates, and a rename
+-- should never require running a file that can also empty a table.
+
 -- ---------------------------------------------------------------------------
 -- GUARD
 -- ---------------------------------------------------------------------------
@@ -93,17 +98,17 @@ COMMENT ON TABLE bdc_source_file_tbl IS
 -- other carriers separate by brand.
 -- ---------------------------------------------------------------------------
 
-CREATE TABLE IF NOT EXISTS bdc_provider_tbl (
-    provider_key serial      PRIMARY KEY,
+CREATE TABLE IF NOT EXISTS bdc_carrier_tbl (
+    carrier_key serial      PRIMARY KEY,
     frn          text,
     provider_id  integer,
     brand_name   text,
     UNIQUE (frn, provider_id, brand_name)
 );
 
-COMMENT ON TABLE bdc_provider_tbl IS
+COMMENT ON TABLE bdc_carrier_tbl IS
     'One row per distinct filer identity, being the combination of FRN, FCC provider_id and consumer brand name. Referenced by bdc_availability_tbl so those three values are stored once rather than on every availability row.';
-COMMENT ON COLUMN bdc_provider_tbl.brand_name IS
+COMMENT ON COLUMN bdc_carrier_tbl.brand_name IS
     'Part of the key, not a label: one provider_id can file under several brands, and the brand distinguishes networks that technology alone does not.';
 
 
@@ -117,7 +122,7 @@ COMMENT ON COLUMN bdc_provider_tbl.brand_name IS
 --   loaded_at     moved to bdc_source_file_tbl, where it belongs: every row
 --                 from one file was loaded at the same moment.
 --   source_file   replaced by source_file_id.
---   frn,          replaced by provider_key.
+--   frn,          replaced by carrier_key.
 --   provider_id,
 --   brand_name
 --   state_fips    derivable as left(block_geoid, 2), and state_usps already
@@ -147,13 +152,28 @@ DROP TABLE IF EXISTS bdc_availability_tbl;
 -- is cleared for the same reason, and it is safe to clear precisely because
 -- the only table that referenced these rows no longer exists. Both are
 -- rebuilt by bdc_load.py from the files themselves.
-TRUNCATE bdc_source_file_tbl, bdc_provider_tbl RESTART IDENTITY;
+-- Report what is about to be emptied, with counts. This statement is
+-- reachable only when the guard above found bdc_availability_tbl empty, so
+-- these two tables describe nothing, but a silent TRUNCATE of a table
+-- holding 1,802 carriers is not something to discover afterwards.
+DO $$
+DECLARE c bigint; f bigint;
+BEGIN
+    SELECT count(*) INTO c FROM bdc_carrier_tbl;
+    SELECT count(*) INTO f FROM bdc_source_file_tbl;
+    IF c > 0 OR f > 0 THEN
+        RAISE NOTICE 'About to TRUNCATE bdc_carrier_tbl (% rows) and bdc_source_file_tbl (% rows). They are rebuilt by bdc_load.py from the downloads, and the availability table they describe is empty, so they currently describe nothing.', c, f;
+    END IF;
+END
+$$;
+
+TRUNCATE bdc_source_file_tbl, bdc_carrier_tbl RESTART IDENTITY;
 
 CREATE TABLE bdc_availability_tbl (
     source_file_id smallint NOT NULL
         REFERENCES bdc_source_file_tbl (source_file_id),
-    provider_key   integer  NOT NULL
-        REFERENCES bdc_provider_tbl (provider_key),
+    carrier_key   integer  NOT NULL
+        REFERENCES bdc_carrier_tbl (carrier_key),
 
     location_id    bigint,
     technology     smallint,
@@ -176,7 +196,7 @@ CREATE TABLE bdc_availability_tbl (
 CREATE INDEX IF NOT EXISTS bdc_availability_tract_idx
     ON bdc_availability_tbl (tract_geoid);
 CREATE INDEX IF NOT EXISTS bdc_availability_provider_tech_idx
-    ON bdc_availability_tbl (provider_key, technology);
+    ON bdc_availability_tbl (carrier_key, technology);
 CREATE INDEX IF NOT EXISTS bdc_availability_source_file_idx
     ON bdc_availability_tbl (source_file_id);
 
@@ -187,7 +207,7 @@ CREATE INDEX IF NOT EXISTS bdc_availability_source_file_idx
 -- national load is not.
 
 COMMENT ON TABLE bdc_availability_tbl IS
-    'FCC Broadband Data Collection fixed availability, from the PUBLIC per-state per-technology downloads. One row per filed availability record. Carrier and source file are referenced rather than repeated; see bdc_provider_tbl and bdc_source_file_tbl.';
+    'FCC Broadband Data Collection fixed availability, from the PUBLIC per-state per-technology downloads. One row per filed availability record. Carrier and source file are referenced rather than repeated; see bdc_carrier_tbl and bdc_source_file_tbl.';
 COMMENT ON COLUMN bdc_availability_tbl.block_geoid IS
     'Census block GEOID, 15 characters, TEXT so leading zeros survive. State FIPS is characters 1-2, county 1-5, tract 1-11. Storing it as a number misfiles every state whose FIPS begins with a zero.';
 COMMENT ON COLUMN bdc_availability_tbl.technology IS
@@ -223,7 +243,7 @@ SELECT a.source_file_id,
        a.tract_geoid
 FROM bdc_availability_tbl a
 JOIN bdc_source_file_tbl  f USING (source_file_id)
-JOIN bdc_provider_tbl     p USING (provider_key);
+JOIN bdc_carrier_tbl     p USING (carrier_key);
 
 COMMENT ON VIEW bdc_availability IS
     'bdc_availability_tbl with the file name, carrier identity and derived geographies spelled out, so queries written against the earlier wide table still work. state_fips and county_geoid are computed here rather than stored.';

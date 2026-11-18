@@ -58,7 +58,7 @@
 \echo
 \echo A zero here is not a failure, it is a dependency not yet met, and it
 \echo tells you which columns of the final list will be empty. The BDC load
-\echo was still running when this file was written, so bdc_provider_tbl may
+\echo was still running when this file was written, so bdc_carrier_tbl may
 \echo legitimately be short or absent.
 \echo
 
@@ -75,8 +75,8 @@ SELECT 'rdap_registrant_tbl (RDAP)',
        to_regclass('rdap_registrant_tbl') IS NOT NULL,
        NULL
 UNION ALL
-SELECT 'bdc_provider_tbl (FCC BDC)',
-       to_regclass('bdc_provider_tbl') IS NOT NULL,
+SELECT 'bdc_carrier_tbl (FCC BDC)',
+       to_regclass('bdc_carrier_tbl') IS NOT NULL,
        NULL;
 
 \echo
@@ -89,7 +89,7 @@ DECLARE n bigint; t text;
 BEGIN
     FOREACH t IN ARRAY ARRAY['ip2city_dbiplite_probe_tbl',
                              'rdap_registrant_tbl',
-                             'bdc_provider_tbl',
+                             'bdc_carrier_tbl',
                              'carrier_node_tbl']
     LOOP
         IF to_regclass(t) IS NULL THEN
@@ -102,6 +102,22 @@ BEGIN
 END
 $$;
 
+
+\echo
+\echo ---- 0a. IS THERE ANYTHING TO CROSSWALK
+\echo
+
+DO $$
+DECLARE n bigint;
+BEGIN
+    SELECT count(*) INTO n FROM carrier_node_tbl;
+    IF n = 0 THEN
+        RAISE WARNING 'carrier_node_tbl IS EMPTY, so every section below will produce zero rows and the approval list will be blank. This is the expected state immediately after geo/carrier_nodes/schema.sql migrates that table, which DROPS and recreates it. Run this first:  python3 geo/carrier_nodes/hoiho_apply.py apply';
+    ELSE
+        RAISE NOTICE 'carrier_node_tbl holds % hostname and address pairs', n;
+    END IF;
+END
+$$;
 
 \echo
 \echo ---- 0b. The COLUMNS this file needs, verified not assumed
@@ -506,15 +522,15 @@ CREATE INDEX ON node_rdap (domain);
 
 DO $$
 BEGIN
-    IF to_regclass('bdc_provider_tbl') IS NULL THEN
-        RAISE NOTICE 'bdc_provider_tbl absent; apply geo/fcc_bdc/schema_v2.sql and load the downloads first. The BDC columns will be empty.';
+    IF to_regclass('bdc_carrier_tbl') IS NULL THEN
+        RAISE NOTICE 'bdc_carrier_tbl absent; apply geo/fcc_bdc/schema_v2.sql and load the downloads first. The BDC columns will be empty.';
         RETURN;
     END IF;
 
     INSERT INTO carrier_name_observed_tbl
            (source, name, name_norm, nodes, domains)
     SELECT 'bdc', brand_name, carrier_name_norm(brand_name), 0, 0
-    FROM bdc_provider_tbl
+    FROM bdc_carrier_tbl
     WHERE brand_name IS NOT NULL AND brand_name <> ''
     GROUP BY brand_name
     ON CONFLICT (source, name) DO NOTHING;
@@ -611,13 +627,13 @@ WHERE rn = 1;
 CREATE INDEX ON domain_rdap (domain);
 ANALYZE domain_rdap;
 
--- A shim over bdc_provider_tbl, because a table named in a LEFT JOIN is
+-- A shim over bdc_carrier_tbl, because a table named in a LEFT JOIN is
 -- resolved by the planner whether or not a to_regclass guard in the ON
 -- clause would be false. So the guard has to happen before the query is
 -- parsed, which means building a table of the right shape either way.
 DO $$
 BEGIN
-    DROP TABLE IF EXISTS bdc_provider_shim;
+    DROP TABLE IF EXISTS bdc_carrier_shim;
     -- brand_norm and brand_first are MATERIALISED, not computed in the
     -- join. MEASURED 2026-11-17 at Boris's scale, 4,117 domains against 749
     -- providers: calling carrier_name_norm inside the ON clause took 169
@@ -626,20 +642,20 @@ BEGIN
     -- function doing four regexp_replace passes each. Precomputed once per
     -- row it is 4,866 calls and the join runs in under a second. Both
     -- return the identical 442,326 pairs.
-    CREATE TEMP TABLE bdc_provider_shim (
+    CREATE TEMP TABLE bdc_carrier_shim (
         provider_id integer, frn text, brand_name text,
         brand_norm text, brand_first text);
-    CREATE INDEX ON bdc_provider_shim (brand_norm);
-    CREATE INDEX ON bdc_provider_shim (brand_first);
-    IF to_regclass('bdc_provider_tbl') IS NOT NULL THEN
-        INSERT INTO bdc_provider_shim
+    CREATE INDEX ON bdc_carrier_shim (brand_norm);
+    CREATE INDEX ON bdc_carrier_shim (brand_first);
+    IF to_regclass('bdc_carrier_tbl') IS NOT NULL THEN
+        INSERT INTO bdc_carrier_shim
                (provider_id, frn, brand_name, brand_norm, brand_first)
         SELECT provider_id, frn, brand_name,
                carrier_name_norm(brand_name),
                split_part(carrier_name_norm(brand_name), ' ', 1)
-        FROM bdc_provider_tbl
+        FROM bdc_carrier_tbl
         WHERE brand_name IS NOT NULL AND brand_name <> '';
-        RAISE NOTICE 'bdc_provider_shim filled from bdc_provider_tbl';
+        RAISE NOTICE 'bdc_carrier_shim filled from bdc_carrier_tbl';
     END IF;
 
     -- ANALYZE IS NOT OPTIONAL HERE, and omitting it was the whole problem.
@@ -650,10 +666,10 @@ BEGIN
     -- data with both sides analysed took 639 MILLISECONDS. The join shape,
     -- the LIKE patterns and the NOT EXISTS were all innocent, which is why
     -- precomputing the normalisation alone did not fix it.
-    ANALYZE bdc_provider_shim;
+    ANALYZE bdc_carrier_shim;
     IF true THEN
     ELSE
-        RAISE NOTICE 'bdc_provider_tbl absent; BDC columns will be empty';
+        RAISE NOTICE 'bdc_carrier_tbl absent; BDC columns will be empty';
     END IF;
 END
 $$;
@@ -711,7 +727,7 @@ FROM (
              ELSE 'firstword'
            END AS tier
     FROM measured m
-    JOIN bdc_provider_shim b
+    JOIN bdc_carrier_shim b
       ON m.isp_norm IS NOT NULL AND b.brand_norm IS NOT NULL
      AND (b.brand_norm = m.isp_norm
           OR b.brand_norm LIKE '%' || m.isp_norm || '%'
@@ -754,7 +770,7 @@ SELECT left(m.isp_norm, 40) AS ipapi_name_normalised,
        count(DISTINCT m.domain)      AS itdk_domains_with_this_name,
        left(string_agg(DISTINCT b.brand_name, ', '), 60) AS example_brands
 FROM measured m
-JOIN bdc_provider_shim b
+JOIN bdc_carrier_shim b
   ON m.isp_norm IS NOT NULL AND b.brand_norm IS NOT NULL
  AND (b.brand_norm = m.isp_norm
       OR b.brand_norm LIKE '%' || m.isp_norm || '%'
@@ -794,7 +810,7 @@ SELECT coalesce(m.isp, m.domain),
        m.nodes
 FROM measured m
 LEFT JOIN domain_rdap rd ON rd.domain = m.domain
-LEFT JOIN bdc_provider_shim b
+LEFT JOIN bdc_carrier_shim b
     ON m.isp_norm IS NOT NULL
    AND b.brand_norm IS NOT NULL
    AND (b.brand_norm = m.isp_norm

@@ -185,9 +185,9 @@ def schema_is_lean():
                   "FROM information_schema.columns "
                   "WHERE table_name = 'bdc_availability_tbl' "
                   "AND column_name IN ('source_file', 'source_file_id', "
-                  "'provider_key', 'brand_name')")
+                  "'carrier_key', 'brand_name')")
     present = set((cols or "").split(",")) - {""}
-    lean = {"source_file_id", "provider_key"} <= present
+    lean = {"source_file_id", "carrier_key"} <= present
     wide = "source_file" in present and "brand_name" in present
     if lean and not wide:
         return True
@@ -235,7 +235,7 @@ def insert_lean(name):
                 f"({lit(name)}) ON CONFLICT (source_file) DO NOTHING")
 
     psql("-qc",
-         "INSERT INTO bdc_provider_tbl (frn, provider_id, brand_name) "
+         "INSERT INTO bdc_carrier_tbl (frn, provider_id, brand_name) "
          "SELECT DISTINCT nullif(frn, ''), nullif(provider_id, '')::integer, "
          "nullif(brand_name, '') FROM bdc_stage_tbl "
          "WHERE block_geoid ~ '^[0-9]{15}$' "
@@ -243,11 +243,11 @@ def insert_lean(name):
 
     psql("-qc",
          "INSERT INTO bdc_availability_tbl ("
-         "source_file_id, provider_key, location_id, technology, "
+         "source_file_id, carrier_key, location_id, technology, "
          "max_advertised_download_speed, max_advertised_upload_speed, "
          "low_latency, business_residential_code, state_usps, block_geoid, "
          "h3_res8_id) "
-         "SELECT f.source_file_id, p.provider_key, "
+         "SELECT f.source_file_id, p.carrier_key, "
          "nullif(s.location_id, '')::bigint, "
          "nullif(s.technology, '')::smallint, "
          "nullif(s.max_advertised_download_speed, '')::integer, "
@@ -257,7 +257,7 @@ def insert_lean(name):
          "nullif(s.state_usps, ''), s.block_geoid, nullif(s.h3_res8_id, '') "
          "FROM bdc_stage_tbl s "
          "JOIN bdc_source_file_tbl f ON f.source_file = " + lit(name) + " "
-         "JOIN bdc_provider_tbl p "
+         "JOIN bdc_carrier_tbl p "
          "  ON p.frn IS NOT DISTINCT FROM nullif(s.frn, '') "
          " AND p.provider_id IS NOT DISTINCT FROM "
          "     nullif(s.provider_id, '')::integer "
@@ -389,7 +389,7 @@ def cmd_load(args):
 def report_relation():
     """The relation the reporting queries should read.
 
-    Under schema_v2 the carrier columns live in bdc_provider_tbl and the
+    Under schema_v2 the carrier columns live in bdc_carrier_tbl and the
     bdc_availability view puts them back under their original names, so one
     copy of each query serves both schemas.
     """

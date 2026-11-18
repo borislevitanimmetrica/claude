@@ -61,6 +61,7 @@ import io
 import os
 import subprocess
 import sys
+import time
 
 NEEDS_VALUE = {"use_bdc_name", "use_bdc_of_asn", "use_bdc_provider",
                "reject_bdc_provider"}
@@ -257,6 +258,27 @@ DO UPDATE SET note = excluded.note, decided_at = now()""")
 
     n = psql_q("SELECT count(*) FROM carrier_decision_tbl")
     print(f"\ncarrier_decision_tbl now holds {n} decision(s)")
+
+    # REBUILD the ASN resolution, because it is derived from the decisions
+    # that were just loaded. carrier_decisions.sql builds it too, but on
+    # that pass the decision table is still empty.
+    #
+    # Restricted to the ASNs under decision, so this is milliseconds. As an
+    # unrestricted VIEW it measured 195 SECONDS at Boris's row counts, which
+    # is why the loader appeared to hang.
+    path = os.path.join(os.path.dirname(os.path.abspath(__file__)),
+                        "resolve_asn.sql")
+    if os.path.isfile(path):
+        print("rebuilding the ASN resolution from the new decisions ...",
+              flush=True)
+        t0 = time.monotonic()
+        psql("-q", "-f", path)
+        print(f"  done in {time.monotonic() - t0:.1f}s")
+    else:
+        print(f"WARNING: {path} not found, so asn_operator_tbl and "
+              f"asn_bdc_name_tbl were NOT rebuilt and any use_bdc_of_asn "
+              f"decision will not resolve. Re-run "
+              f"geo/carrier_nodes/carrier_decisions.sql.")
     print("\nEffect on the crosswalk:")
     print(psql("-c", """
 SELECT (SELECT count(DISTINCT itdk_domain) FROM carrier_crosswalk_tbl)

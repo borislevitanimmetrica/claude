@@ -117,8 +117,8 @@ CREATE TABLE ip2city_dbiplite_probe_tbl (
 CREATE TABLE rdap_registrant_tbl (
     start_ip inet, end_ip inet, registrant text);
 
-CREATE TABLE bdc_provider_tbl (
-    provider_key serial PRIMARY KEY, frn text, provider_id integer,
+CREATE TABLE bdc_carrier_tbl (
+    carrier_key serial PRIMARY KEY, frn text, provider_id integer,
     brand_name text, UNIQUE (frn, provider_id, brand_name));
 SQL
 
@@ -151,7 +151,7 @@ INSERT INTO ip2city_dbiplite_probe_tbl (network, isp, org, "as") VALUES
 INSERT INTO rdap_registrant_tbl (start_ip, end_ip, registrant) VALUES
  ('68.85.0.0','68.85.255.255','Comcast Cable Communications, LLC'),
  ('24.58.0.0','24.58.255.255','Frontier Communications Corporation');
-INSERT INTO bdc_provider_tbl (frn, provider_id, brand_name) VALUES
+INSERT INTO bdc_carrier_tbl (frn, provider_id, brand_name) VALUES
  ('0001234567',130317,'Xfinity'),
  ('0003333333',130400,'Frontier Communications'),
  ('0003333334',130401,'Frontier Fiber');

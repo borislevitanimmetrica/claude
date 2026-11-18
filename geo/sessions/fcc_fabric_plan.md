@@ -418,7 +418,7 @@ Three values were repeated on every row to say one of a few thousand things:
 - source_file, a 58-character name, became a smallint referencing
   bdc_source_file_tbl. Nine files here; 333 nationally.
 - frn, provider_id and brand_name became an integer referencing
-  bdc_provider_tbl. Twenty-seven distinct providers across these two states.
+  bdc_carrier_tbl. Twenty-seven distinct providers across these two states.
   The three are kept together as the key because one provider_id files under
   several brands.
 - state_fips and county_geoid were stored generated columns and are now
@@ -644,7 +644,7 @@ Also fixed: node_rdap was created inside a conditional block but referenced
 unconditionally later, so an absent rdap_registrant_tbl aborted the file at
 the point it was meant to degrade. And a table named in a LEFT JOIN is
 resolved by the planner whether or not a to_regclass guard in the ON clause
-would be false, so bdc_provider_tbl is reached through a temp shim built
+would be false, so bdc_carrier_tbl is reached through a temp shim built
 before the query is parsed.
 
 ### A column set I have NOT verified
@@ -778,7 +778,7 @@ as 'normalised name equal' and Frontier Fiber as 'first word only, WEAK'.
 
     ip2city_dbiplite_probe_tbl   2,097,870 rows
     rdap_registrant_tbl             30,501 rows
-    bdc_provider_tbl                   722 rows, 677 distinct brand names
+    bdc_carrier_tbl                   722 rows, 677 distinct brand names
     carrier_node_tbl                     0, because apply had failed
 
 722 provider rows with the BDC load still in progress. All four ip-api
@@ -932,7 +932,7 @@ second with the normalisation precomputed, both returning the identical
 the thing making the file hang: the whole file still took 225 seconds after
 it.
 
-SECOND, WRONG: that bdc_provider_shim had no statistics, being built inside a
+SECOND, WRONG: that bdc_carrier_shim had no statistics, being built inside a
 DO block, so the planner was choosing badly. ANALYZE was genuinely missing
 and is now added. The file still took 230 seconds.
 
@@ -1034,8 +1034,8 @@ Verified on seeded data mirroring the real strings:
 | earthlinkbusiness.net | 397866 | EarthLink Holdings Corp | EarthLink Holdings Corp |
 | lrmutual.com | n/a | named directly | Mutual Telephone Company |
 
-A name Boris gave that is NOT found in bdc_provider_tbl is kept with a null
-provider_id and labelled 'named by Boris, NOT FOUND in bdc_provider_tbl',
+A name Boris gave that is NOT found in bdc_carrier_tbl is kept with a null
+provider_id and labelled 'named by Boris, NOT FOUND in bdc_carrier_tbl',
 because the BDC load may simply not have reached that provider yet and
 silently dropping a ruling would look like a decision never made. Measured on
 the fixture: 11 of uniti.net's 15 names were not yet loaded and all 11 were
@@ -1066,3 +1066,97 @@ reported rather than lost.
   string as an array literal, giving "malformed array literal". Needs
   ::text. It only surfaced because I tested the FAILURE path, which the
   normal run never reaches.
+
+## 2026-11-17: bdc_provider_tbl renamed, and why the loader appeared to hang
+
+### The rename
+
+Boris: "bdc_provider_tbl should be renamed bdc_carrier_tbl. We have
+heretofore used carrier to denote ISPs and provider to denote hosting and
+cloud services." The table lists ISPs, so it is carriers. I had used
+provider because the FCC's own column is provider_id.
+
+Renamed repo-wide: bdc_provider_tbl to bdc_carrier_tbl, bdc_provider_shim to
+bdc_carrier_shim, and the surrogate key provider_key to carrier_key.
+provider_id KEEPS ITS NAME, because it is the FCC's column in the BDC
+download and renaming it would break the correspondence to the source file
+that the loader and every comment depend on. Verified the rename did not
+touch it: 9 occurrences in schema_v2.sql and 14 in bdc_load.py, before and
+after.
+
+geo/fcc_bdc/rename_provider_to_carrier.sql does the migration and NOTHING
+ELSE: no DROP, no TRUNCATE, no DELETE. It is deliberately NOT inside
+schema_v2.sql, which drops and truncates, because a rename should never
+require running a file that can also empty a table. Verified: 1,804 rows
+before, 1,804 after, and running it twice is a no-op.
+
+While looking at that, found schema_v2.sql TRUNCATES bdc_carrier_tbl. It is
+entitled to, being a schema replacement guarded on the availability table
+being empty, but a silent truncate of a table holding 1,802 carriers is not
+something to discover afterwards. It now reports the counts it will remove.
+
+### Why load_decisions.py produced no output for minutes
+
+MEASURED at Boris's row counts, 2,097,870 probe rows and 1,802 BDC carriers:
+
+    asn_operator as a view        1.8 seconds
+    asn_bdc_name as a view      195 seconds
+    carrier_resolved              2.6 ms, ONLY because his decision table
+                                  was still empty so nothing drove the join
+
+asn_bdc_name compared every distinct ASN against every BDC carrier calling
+carrier_name_norm inside LIKE patterns, 7.2 million pairs in the fixture. As
+a VIEW it re-ran on every reference, and carrier_resolved references it, so
+the moment decisions existed the loader drove straight into it.
+
+THIS IS THE SAME MISTAKE measured and fixed in carrier_crosswalk.sql earlier
+the same day, normalisation inside a join, which I did not generalise.
+
+Fixed three ways: the normalisation is precomputed per row; the tables are
+materialised rather than views; and only the ASNs that actually appear in a
+use_bdc_of_asn decision are resolved, THREE on his rulings rather than
+several thousand. Result: 10.2 seconds including the 2.1 million row scan,
+against 195 seconds per reference.
+
+### DROP TABLE CASCADE, for the third time in one session
+
+resolve_asn.sql first dropped and recreated its two tables. carrier_resolved
+depends on asn_bdc_name_tbl, so the CASCADE took the view with it and the
+next query failed with "relation carrier_resolved does not exist". The same
+mechanism had already bitten geo/fcc_bdc/schema_v2.sql and
+geo/carrier_nodes/schema.sql earlier the same day.
+
+The tables are now declared once in carrier_decisions.sql and only ever
+TRUNCATEd and refilled. TRUNCATE touches no dependency. resolve_asn.sql
+contains no DROP at all.
+
+### Two ordering traps now signposted
+
+carrier_nodes/schema.sql DROPS and recreates carrier_node_tbl when it
+migrates the key, so the crosswalk afterwards sees an empty table and
+produces a blank approval list. That is exactly what happened to Boris: his
+crosswalk reported zero everything because the schema file had just emptied
+that table. The crosswalk now RAISES A WARNING naming the command to run
+first.
+
+And resolve_asn.sql is driven by decisions loaded after carrier_decisions.sql
+runs, so load_decisions.py re-runs that same file itself rather than leaving
+the tables empty.
+
+### An over-match the fixture exposed
+
+An operator named 'Operator 7106' also matched 'Operator 7', 'Operator 71'
+and 'Operator 710' by containment, giving one ASN three carrier labels.
+Containment is now kept only where no exact normalised match exists for that
+ASN. Verified both ways: with no exact name present, three containment
+candidates; with 'Operator 7106' added to BDC, exactly one row at
+'normalised name equal'.
+
+### Correct order to run
+
+    psql -f geo/fcc_bdc/rename_provider_to_carrier.sql
+    psql -f geo/carrier_nodes/schema.sql
+    python3 geo/carrier_nodes/hoiho_apply.py apply
+    psql -f geo/carrier_nodes/carrier_crosswalk.sql
+    psql -f geo/carrier_nodes/carrier_decisions.sql
+    python3 geo/carrier_nodes/load_decisions.py load --file ...
