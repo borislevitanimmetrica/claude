@@ -164,17 +164,63 @@ if [ "$CHECK_ONLY" -eq 1 ]; then
 fi
 
 step=3
+
+# A HEARTBEAT WHILE EACH STEP RUNS.
+#
+# Boris, repeatedly, most recently 2026-11-17: "I asked you for frequent
+# feedback in all operations", and before that "sh does not return anything
+# in one minute."
+#
+# The crosswalk step took FOURTEEN MINUTES on his corpus, and the version of
+# this runner that printed only ok or FAILED showed nothing at all for the
+# whole of it. From outside that is indistinguishable from a hang, and he has
+# now had to ask whether a job was alive more than once.
+#
+# So each step runs in the background and this polls it: elapsed seconds, how
+# many lines the step's log has reached, and the last line of it. The log is
+# where the real detail goes; this is enough to tell progress from a hang.
+HEARTBEAT=${HEARTBEAT:-15}
+
 run() {
     step=$((step + 1))
     label=$1
     shift
     log="$LOGDIR/step2_${step}.log"
-    printf 'STEP %s  %-44s' "$step" "$label"
-    if "$@" > "$log" 2>&1; then
-        echo "ok"
+    printf 'STEP %s  %s\n' "$step" "$label"
+    : > "$log"
+    "$@" > "$log" 2>&1 &
+    cmdpid=$!
+    t0=$(date +%s)
+    # POLLED EVERY SECOND, PRINTED EVERY HEARTBEAT SECONDS. Sleeping the
+    # whole heartbeat between checks overstates the finish time by up to one
+    # interval: a seven second step was reported as "ok in 10s" with a three
+    # second heartbeat. The elapsed time printed here is read by me as
+    # evidence about query cost, so it has to be the real one.
+    next=$HEARTBEAT
+    while kill -0 "$cmdpid" 2>/dev/null; do
+        sleep 1
+        el=$(($(date +%s) - t0))
+        if [ "$el" -lt "$next" ]; then
+            continue
+        fi
+        next=$((el + HEARTBEAT))
+        kill -0 "$cmdpid" 2>/dev/null || break
+        lines=$(wc -l < "$log" | tr -d ' ')
+        last=$(tail -1 "$log" 2>/dev/null | cut -c1-58)
+        if [ -n "$last" ]; then
+            printf '    %ss, %s log lines. Last: %s\n' "$el" "$lines" "$last"
+        else
+            printf '    %ss, no output yet. Still running.\n' "$el"
+        fi
+    done
+    wait "$cmdpid"
+    rc=$?
+    el=$(($(date +%s) - t0))
+    if [ "$rc" -eq 0 ]; then
+        printf '    ok in %ss\n' "$el"
         return 0
     fi
-    echo "FAILED"
+    printf '    FAILED after %ss\n' "$el"
     echo
     echo "Step $step failed. The chain stops here so a half-built result is"
     echo "not mistaken for a finished one. From $log:"
