@@ -265,25 +265,134 @@ def delete_file_rows(name, lean):
                 f"WHERE source_file = {lit(name)}")
 
 
-def insert_lean(name):
-    """Insert from staging into the normalised tables.
+STAGE = "bdc_stage_tbl"
+STAGE_META = "bdc_stage_meta_tbl"
 
-    Order matters: the file row and the provider rows must exist before the
+# Returned when the staging table holds rows but nothing records which file
+# they belong to. Distinct from (None, 0), which means genuinely nothing
+# staged, because the two call for opposite actions: reuse versus stop.
+UNKNOWN_STAGED = ("?", -1)
+
+
+def ensure_stage_meta():
+    """The one-row table that records which file the staging table holds.
+
+    Needed because the staging table has no source_file column: the FCC CSV
+    does not carry one, and adding it to staging would mean writing the same
+    literal onto every one of several million rows during the copy.
+
+    WHY NOT NAME THE STAGING TABLE AFTER THE PROCESS
+
+    My previous attempt at the two-loaders bug used bdc_stage_<pid>_tbl.
+    That does stop the collision, but it also makes resume IMPOSSIBLE: a new
+    process has a new pid and can never find the table the dead one left.
+    The two changes were in direct conflict and the per-pid naming was
+    defeating the resume Boris asked for. The lock stops the collision; a
+    fixed name keeps the resume. Per-pid naming is withdrawn.
+
+    The `only_row` column with its CHECK is what keeps this to one row.
+    """
+    psql("-qc",
+         f"CREATE TABLE IF NOT EXISTS {STAGE_META} ("
+         "  only_row boolean PRIMARY KEY DEFAULT true CHECK (only_row), "
+         "  source_file text NOT NULL, "
+         "  staged_rows bigint NOT NULL, "
+         "  csv_bytes bigint, "
+         "  loader_pid integer, "
+         "  staged_at timestamptz NOT NULL DEFAULT now())")
+
+
+def staged_state():
+    """Return (source_file, rows actually in staging) or (None, 0).
+
+    The row count is read from the staging table itself, not from the meta
+    row, so a mismatch is detectable rather than assumed away. An unlogged
+    table is emptied by postgres after a crash, and the meta row would
+    survive that and claim rows that are gone.
+    """
+    def stage_rows():
+        if psql_q(f"SELECT to_regclass('{STAGE}') IS NOT NULL") != "t":
+            return 0
+        return int(psql_q(f"SELECT count(*) FROM {STAGE}") or 0)
+
+    if psql_q(f"SELECT to_regclass('{STAGE_META}') IS NOT NULL") != "t":
+        return UNKNOWN_STAGED if stage_rows() else (None, 0)
+    row = psql_q(f"SELECT source_file || '|' || staged_rows FROM {STAGE_META}")
+    if not row or "|" not in row:
+        # STAGED ROWS WITH NOTHING SAYING WHICH FILE THEY CAME FROM.
+        #
+        # This is the state every machine is in the first time this version
+        # runs: the staging table was left behind by the previous code,
+        # which kept no record of what it held. Returning "nothing staged"
+        # here would send the caller straight into DROP TABLE, which is the
+        # destructive behaviour Boris objected to, on exactly the data he
+        # objected to losing. So it is reported as unknown and the caller
+        # stops instead.
+        return UNKNOWN_STAGED if stage_rows() else (None, 0)
+    name, claimed = row.rsplit("|", 1)
+    if psql_q(f"SELECT to_regclass('{STAGE}') IS NOT NULL") != "t":
+        print(f"NOTE: {STAGE_META} says {claimed} rows are staged for "
+              f"{name} but {STAGE} does not exist. Treating it as nothing "
+              f"staged.", flush=True)
+        return None, 0
+    actual = int(psql_q(f"SELECT count(*) FROM {STAGE}") or 0)
+    if actual != int(claimed):
+        print(f"NOTE: {STAGE_META} claims {int(claimed):,} staged rows for "
+              f"{name} but {STAGE} holds {actual:,}. An unlogged table is "
+              f"emptied by postgres after an unclean shutdown, which fits a "
+              f"count of 0. Not resuming from a count I cannot trust; that "
+              f"file will be copied again.", flush=True)
+        return None, 0
+    return name, actual
+
+
+def insert_lean(name):
+    """Insert from staging into the normalised tables, in ONE transaction.
+
+    Order matters: the file row and the carrier rows must exist before the
     availability rows that reference them, and both are derived from the
     staging table rather than supplied, so a brand new carrier appearing in
     one state file is registered by loading that file.
-    """
-    psql("-qc", "INSERT INTO bdc_source_file_tbl (source_file) VALUES "
-                f"({lit(name)}) ON CONFLICT (source_file) DO NOTHING")
 
+    ATOMICITY, AND WHY IT IS NOT OPTIONAL
+
+    This was four separate psql calls. MEASURED on PostgreSQL 16.2: two
+    statements passed in separate -c flags are NOT one transaction, each
+    commits on its own, while two statements inside a single -c ARE one
+    transaction and a failure in the second rolls back the first.
+
+    So the old shape had a window. The availability INSERT committed, then
+    the process could die before the row_count UPDATE. row_count stayed 0,
+    loaded_counts treats 0 as not loaded, and the next run would insert the
+    same file's rows a SECOND time. Nothing would have reported it: the
+    rows are legitimate-looking duplicates.
+
+    One -c closes the window. A killed client rolls the whole thing back,
+    also measured: 100,000 rows inserted inside a transaction whose client
+    was SIGKILLed left exactly 0 rows behind.
+
+    The leading DELETE makes it idempotent as well as atomic. Pre-mortem for
+    that DELETE: it removes rows whose source_file_id is this one file's and
+    nothing else, it runs in the same transaction as the INSERT that
+    replaces them, and on the normal path it removes zero rows because this
+    function is only reached for a file not already counted as loaded. If
+    the transaction fails, the delete is undone with it.
+    """
     psql("-qc",
+         # One -c, therefore one transaction. Do not split these.
+         "INSERT INTO bdc_source_file_tbl (source_file) VALUES "
+         f"({lit(name)}) ON CONFLICT (source_file) DO NOTHING; "
+
+         "DELETE FROM bdc_availability_tbl a USING bdc_source_file_tbl f "
+         "WHERE a.source_file_id = f.source_file_id "
+         f"AND f.source_file = {lit(name)}; "
+
          "INSERT INTO bdc_carrier_tbl (frn, provider_id, brand_name) "
          "SELECT DISTINCT nullif(frn, ''), nullif(provider_id, '')::integer, "
-         "nullif(brand_name, '') FROM bdc_stage_tbl "
+         f"nullif(brand_name, '') FROM {STAGE} "
          "WHERE block_geoid ~ '^[0-9]{15}$' "
-         "ON CONFLICT (frn, provider_id, brand_name) DO NOTHING")
+         "ON CONFLICT (frn, provider_id, brand_name) DO NOTHING; "
 
-    psql("-qc",
          "INSERT INTO bdc_availability_tbl ("
          "source_file_id, carrier_key, location_id, technology, "
          "max_advertised_download_speed, max_advertised_upload_speed, "
@@ -297,23 +406,27 @@ def insert_lean(name):
          "nullif(s.low_latency, '')::smallint, "
          "nullif(s.business_residential_code, ''), "
          "nullif(s.state_usps, ''), s.block_geoid, nullif(s.h3_res8_id, '') "
-         "FROM bdc_stage_tbl s "
+         f"FROM {STAGE} s "
          "JOIN bdc_source_file_tbl f ON f.source_file = " + lit(name) + " "
          "JOIN bdc_carrier_tbl p "
          "  ON p.frn IS NOT DISTINCT FROM nullif(s.frn, '') "
          " AND p.provider_id IS NOT DISTINCT FROM "
          "     nullif(s.provider_id, '')::integer "
          " AND p.brand_name IS NOT DISTINCT FROM nullif(s.brand_name, '') "
-         "WHERE s.block_geoid ~ '^[0-9]{15}$'")
+         "WHERE s.block_geoid ~ '^[0-9]{15}$'; "
 
-    psql("-qc", "UPDATE bdc_source_file_tbl f SET row_count = ("
-                "SELECT count(*) FROM bdc_availability_tbl a "
-                "WHERE a.source_file_id = f.source_file_id) "
-                f"WHERE f.source_file = {lit(name)}")
+         "UPDATE bdc_source_file_tbl f SET row_count = ("
+         "SELECT count(*) FROM bdc_availability_tbl a "
+         "WHERE a.source_file_id = f.source_file_id) "
+         f"WHERE f.source_file = {lit(name)}")
 
 
 def insert_wide(name):
+    """The wide-table equivalent, also one transaction for the same reason."""
     psql("-qc",
+         "DELETE FROM bdc_availability_tbl "
+         f"WHERE source_file = {lit(name)}; "
+
          "INSERT INTO bdc_availability_tbl (" + COLS + ", source_file) "
          "SELECT nullif(frn, ''), nullif(provider_id, '')::integer, "
          "nullif(brand_name, ''), nullif(location_id, '')::bigint, "
@@ -323,7 +436,7 @@ def insert_wide(name):
          "nullif(low_latency, '')::smallint, "
          "nullif(business_residential_code, ''), nullif(state_usps, ''), "
          "block_geoid, nullif(h3_res8_id, ''), " + lit(name) + " "
-         "FROM bdc_stage_tbl "
+         f"FROM {STAGE} "
          "WHERE block_geoid ~ '^[0-9]{15}$'")
 
 
@@ -365,8 +478,125 @@ def loaded_counts(lean):
     return out
 
 
+LOAD_LOCK_KEY = 8412771  # arbitrary but fixed, for pg_try_advisory_lock
+
+# The holder subprocess is kept in a module global. If it were a local it
+# could be garbage collected, its pipe would close, and the lock would be
+# released while the load was still running.
+_LOCK_HOLDER = None
+
+
+def take_load_lock():
+    """Hold a lock for the life of this process. Returns True if we got it.
+
+    WHY THIS IS NOT OPTIONAL. bdc_stage_tbl is one table, so two loaders
+    running at once share it: one drops it while the other is counting it,
+    which is what happened on 2026-11-17. The log read
+
+        copying into staging ...
+        psql failed: ERROR: relation "bdc_stage_tbl" does not exist
+        LINE 1: SELECT count(*) FROM bdc_stage_tbl
+
+    and the two processes disagreed about how many files were loaded, 247
+    against 246, because each was committing while the other counted. I had
+    written that hazard into a comment in this file and not guarded it.
+
+    HOW THE LOCK IS HELD, AND THE VERSION I NEARLY SHIPPED
+
+    An advisory lock lives as long as the SESSION that took it. psql exits
+    after every call here, so taking it in a throwaway psql protects
+    nothing. MEASURED: holders in pg_locks drops to 0 the moment that psql
+    exits.
+
+    My first fix held it in a background `psql -c 'SELECT pg_advisory_lock'
+    -c 'SELECT pg_sleep(86400)'`. That is WRONG and I only found out by
+    testing it. A backend sitting inside pg_sleep never touches its socket,
+    so it does not notice its client was killed. MEASURED: after SIGKILLing
+    the holder the lock was STILL HELD ten seconds later, and with a 86400
+    second sleep it would have been held for a day. A loader that crashed
+    would have locked out every later loader until Boris found and killed an
+    orphaned psql. That is far worse than the bug it was fixing.
+
+    So the holder is `psql -f -` reading a pipe this process keeps open.
+    After taking the lock it blocks reading stdin, which leaves the backend
+    IDLE and watching its socket. When this process dies, for any reason
+    including SIGKILL, the pipe closes, psql sees EOF and exits, the session
+    ends and the lock goes. MEASURED: cleared 498 ms after SIGKILL, and a
+    fresh loader was then able to take it.
+
+    Nothing here terminates anybody else's backend. A refused loader reports
+    what it found and stops.
+    """
+    global _LOCK_HOLDER
+    try:
+        p = subprocess.Popen(
+            ["psql", "-X", "-q", "-t", "-A", "-f", "-"],
+            stdin=subprocess.PIPE, stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE, text=True)
+        p.stdin.write(f"SELECT pg_try_advisory_lock({LOAD_LOCK_KEY});\n")
+        p.stdin.flush()
+        got = p.stdout.readline().strip()
+    except (OSError, ValueError) as exc:
+        sys.exit(f"could not start the lock holder: {exc}\nNothing was "
+                 f"loaded. This command will not run without the lock, "
+                 f"because two loaders at once corrupt the load.")
+    if got == "t":
+        _LOCK_HOLDER = p
+        return True
+    if got != "f":
+        # Did not even connect. Say what psql said rather than reporting a
+        # busy lock that may not exist.
+        try:
+            p.stdin.close()
+        except OSError:
+            pass
+        err = (p.stderr.read() or "").strip()
+        sys.exit(f"the lock holder did not answer. psql said:\n{err}\n"
+                 f"Nothing was loaded.")
+    try:
+        p.stdin.close()
+    except OSError:
+        pass
+    return False
+
+
+def report_other_loader():
+    """Read-only report on who else is loading. Terminates nothing."""
+    return psql("-c", f"""
+SELECT l.pid,
+       a.application_name,
+       a.state,
+       date_trunc('second', now() - a.backend_start) AS connected_for,
+       left(coalesce(a.query, ''), 40) AS last_query
+FROM pg_locks l
+LEFT JOIN pg_stat_activity a USING (pid)
+WHERE l.locktype = 'advisory' AND l.objid = {LOAD_LOCK_KEY}
+ORDER BY a.backend_start""")
+
+
 def cmd_load(args):
     require_schema()
+
+    if not take_load_lock():
+        sys.exit(
+            "ANOTHER LOAD ALREADY HOLDS THE LOCK, so this one has stopped "
+            "and changed nothing.\n\n"
+            "Two loaders share one staging table: each recreates it while "
+            "the other is reading it, which produces 'relation "
+            "bdc_stage_tbl does not exist' and can load a file twice.\n\n"
+            "The session holding it:\n" + report_other_loader() +
+            "\nTo see the loader processes, SHORT OUTPUT, one line each:\n"
+            "  pgrep -f bdc_load.py | xargs -r -n1 ps -o pid=,etime=,comm= "
+            "-p | awk '$3 ~ /^python/'\n\n"
+            "`ps -eo pid,etime,cmd | grep bdc_load` is the wrong tool here: "
+            "the loader is invoked with every zip path on its command line, "
+            "so ps prints all of them. MEASURED with 333 paths: 28,847 "
+            "characters. The form above prints about 48 characters per "
+            "loader because it asks for no args at all.\n\n"
+            "Let the other one finish, then run this again. Files already "
+            "loaded are skipped. Nothing here kills anything; if you decide "
+            "to stop the other loader that is your call, and an interrupted "
+            "load is safe to resume.")
     lean = schema_is_lean()
     print("schema: " + ("schema_v2, normalised" if lean
                         else "schema.sql, wide"), flush=True)
@@ -376,12 +606,29 @@ def cmd_load(args):
 
     already = loaded_counts(lean)
 
-    # LEFTOVER STAGING STATE, reported rather than silently dropped.
+    # A STAGED FILE FROM AN EARLIER RUN IS RESUMED, NOT DISCARDED.
     #
-    # bdc_stage_tbl is a real UNLOGGED table, not a TEMP one, so a load
-    # killed mid-COPY leaves it behind holding part of a file. The code has
-    # always dropped it before reusing it, but it did so silently, which
-    # means a crashed previous run looked identical to a clean start.
+    # Boris, 2026-11-17: "Why are you dropping the staging table, forcing a
+    # full day or more of reload, when you could just resume?" He is right
+    # that it should resume, and the reason is better than I first gave.
+    #
+    # MEASURED on PostgreSQL 16.2, three ways of interrupting a \copy:
+    #   psql SIGKILLed mid-copy                 0 rows left, full rollback
+    #   parent killed, pipe broken mid-line     0 rows left, full rollback,
+    #                                           ERROR missing data for column
+    #   writer closed stdin at a line boundary  1,000,000 rows COMMITTED
+    #
+    # So an interrupted copy leaves NOTHING. Rows in the staging table can
+    # therefore only mean the copy FINISHED. There is no partial state to
+    # skip past and no CSV lines to count: the resume is to run the INSERT
+    # from the rows that are already staged, and that is what happens below.
+    # Re-copying them would be pure waste.
+    #
+    # UNLOGGED survives a clean restart, also measured: 1,000 rows were
+    # still there after pg_ctl restart. It does NOT survive a crash, which
+    # postgres handles by truncating unlogged tables; staged_rows below
+    # catches that, because the count will no longer match.
+    #
     # TWO QUERIES, NOT ONE WITH A GUARD. A table named anywhere in a
     # statement is resolved when the statement is PARSED, so
     #   SELECT CASE WHEN to_regclass('bdc_stage_tbl') IS NULL THEN '-1'
@@ -391,20 +638,92 @@ def cmd_load(args):
     # short-circuit. That is the third time this class of mistake has
     # appeared in this project; the other two were a LEFT JOIN target and a
     # DROP CASCADE.
-    exists = psql_q("SELECT to_regclass('bdc_stage_tbl') IS NOT NULL")
-    leftover = psql_q("SELECT count(*) FROM bdc_stage_tbl") \
-        if exists == "t" else "0"
-    if leftover and leftover.isdigit() and int(leftover) > 0:
-        print(f"NOTE: a staging table was left behind holding "
-              f"{int(leftover):,} rows, which means the previous run was "
-              f"interrupted mid-copy. It is dropped and the file it came "
-              f"from will be loaded again from the start. No availability "
-              f"rows were affected: the insert from staging is a single "
-              f"statement and either completed or did not.", flush=True)
-        psql("-qc", "DROP TABLE IF EXISTS bdc_stage_tbl")
+    ensure_stage_meta()
+    staged_file, staged_rows = staged_state()
 
     names = [os.path.basename(p) for p in args.files]
     todo = [n for n in names if not already.get(n)]
+
+    resume = None
+    if (staged_file, staged_rows) == UNKNOWN_STAGED:
+        held = int(psql_q(f"SELECT count(*) FROM {STAGE}") or 0)
+        sample = psql("-c", f"SELECT DISTINCT state_usps, brand_name "
+                            f"FROM {STAGE} LIMIT 5")
+        sys.exit(
+            f"STOPPED, and nothing was changed.\n\n"
+            f"{STAGE} holds {held:,} rows and there is no record of which "
+            f"file they came from. The previous version of this loader kept "
+            f"no such record, so this is the expected state the first time "
+            f"this version runs after an interrupted load.\n\n"
+            f"I will not guess which file they belong to and I will not "
+            f"discard them. What they contain:\n{sample}\n"
+            f"The row count usually identifies the file on its own. Compare "
+            f"it against the files you were loading.\n\n"
+            f"MEASURED, so that you can judge the cost: an interrupted "
+            f"\\copy leaves NO rows at all, in every way I could interrupt "
+            f"one. Rows being present means that copy FINISHED. If you "
+            f"recognise the file, the cheapest thing is to let this loader "
+            f"insert them rather than copy them again:\n"
+            f"  psql -X -c \"INSERT INTO {STAGE_META} "
+            f"(source_file, staged_rows) VALUES ('<the file name>', "
+            f"{held})\"\n"
+            f"then run the load again with that file in --files, and it "
+            f"will insert without re-copying.\n\n"
+            f"Or discard them. PRE-MORTEM for that: it throws away one "
+            f"finished copy of one file, costs that file's copy time again "
+            f"when you next load it, and touches no availability data at "
+            f"all, because the insert from staging is atomic and either "
+            f"committed or did not. No other file and no other table is "
+            f"affected.\n"
+            f"  psql -X -c 'TRUNCATE {STAGE}'")
+    if staged_file and staged_rows > 0:
+        if already.get(staged_file):
+            # Its rows went in and were recorded. The staged copy is spent.
+            print(f"NOTE: {staged_rows:,} rows are staged for "
+                  f"{staged_file}, which is already loaded and recorded "
+                  f"with {already[staged_file]:,} rows. The staged copy is "
+                  f"spent and this run will reuse the table. Nothing to "
+                  f"resume.", flush=True)
+        elif staged_file in names:
+            resume = staged_file
+            # Put it first, so the work already done is banked before any
+            # new copying starts.
+            args.files = ([p for p in args.files
+                           if os.path.basename(p) == staged_file] +
+                          [p for p in args.files
+                           if os.path.basename(p) != staged_file])
+            todo = [n for n in names if not already.get(n)]
+            todo = ([staged_file] +
+                    [n for n in todo if n != staged_file])
+            print(f"RESUMING: {staged_rows:,} rows are already staged for "
+                  f"{staged_file} and that file is not yet loaded. The copy "
+                  f"finished, so this run goes straight to the insert for "
+                  f"it and does NOT copy it again.", flush=True)
+            print(f"          It has been moved to the front of the queue.",
+                  flush=True)
+        else:
+            # Changing nothing is the safe outcome here. Dropping the staged
+            # rows would be a decision this command has no business making,
+            # and silently copying over them would lose them.
+            sys.exit(
+                f"STOPPED, and nothing was changed.\n\n"
+                f"{staged_rows:,} rows are staged for {staged_file}, that "
+                f"file is not recorded as loaded, and it is NOT among the "
+                f"files given to this command. Loading something else would "
+                f"have to reuse the staging table and lose that work.\n\n"
+                f"The copy for it finished, so finishing it is cheap, just "
+                f"the insert. Either include it in --files, or run it alone:"
+                f"\n  python3 -u geo/fcc_bdc/bdc_load.py load --files "
+                f"<the path to {staged_file}>\n\n"
+                f"If you would rather discard those staged rows, that is "
+                f"your call and the command is below. PRE-MORTEM: it "
+                f"discards one finished copy of one file, costs that file's "
+                f"copy time again, and touches no availability data, "
+                f"because the insert from staging is atomic and either "
+                f"committed or did not.\n"
+                f"  psql -X -c 'TRUNCATE bdc_stage_tbl' "
+                f"-c 'DELETE FROM bdc_stage_meta_tbl'")
+
     print(f"{len(args.files)} file(s) to consider: "
           f"{len(names) - len(todo)} already loaded, {len(todo)} to do",
           flush=True)
@@ -472,43 +791,91 @@ def cmd_load(args):
         # The staging table is a real UNLOGGED table, not a TEMP one, because
         # psql cannot take \copy data on the same stdin that carries the rest
         # of a multi-statement script, so the copy has to be its own psql
-        # invocation and a TEMP table would not survive to it. One consequence
-        # worth knowing: two loads must not run at the same time against the
-        # same database, since they would share bdc_stage_tbl.
+        # invocation and a TEMP table would not survive to it. It has a
+        # fixed name so that a later run can find and finish it, and the
+        # advisory lock taken at startup is what stops two loaders sharing
+        # it.
         started = time.monotonic()
-        print("  copying into staging ...", flush=True)
-        psql("-qc", "DROP TABLE IF EXISTS bdc_stage_tbl")
-        psql("-qc", "CREATE UNLOGGED TABLE bdc_stage_tbl (" +
-             ", ".join(f"{c} text" for c in EXPECTED_HEADER) + ")")
-        copy_sql = f"\\copy bdc_stage_tbl ({COLS}) FROM STDIN WITH (FORMAT csv)"
-        try:
-            psql_copy(copy_sql, stream)
-        finally:
-            stream.close()
-        staged = int(psql_q("SELECT count(*) FROM bdc_stage_tbl") or 0)
-        print(f"  staged {staged:,} rows in {time.monotonic() - started:.0f}s")
 
-        bad = int(psql_q("SELECT count(*) FROM bdc_stage_tbl "
-                         "WHERE block_geoid IS NULL "
-                         "OR block_geoid !~ '^[0-9]{15}$'") or 0)
+        if name == resume:
+            # THE RESUME PATH. The copy for this file already finished, so
+            # the rows are complete and re-reading the zip would only burn
+            # the time again. resume is set only when the staged row count
+            # read from the table matches what the meta row recorded, and
+            # only when this file is not already counted as loaded.
+            stream.close()
+            print(f"  copy already finished in an earlier run, "
+                  f"{staged_rows:,} rows staged. Skipping the copy.",
+                  flush=True)
+            staged = staged_rows
+            resume = None
+        else:
+            print("  copying into staging ...", flush=True)
+            psql("-qc", f"DROP TABLE IF EXISTS {STAGE}")
+            psql("-qc", f"CREATE UNLOGGED TABLE {STAGE} (" +
+                 ", ".join(f"{c} text" for c in EXPECTED_HEADER) + ")")
+            psql("-qc", f"DELETE FROM {STAGE_META}")
+            copy_sql = f"\\copy {STAGE} ({COLS}) FROM STDIN WITH (FORMAT csv)"
+            try:
+                psql_copy(copy_sql, stream)
+            finally:
+                stream.close()
+            staged = int(psql_q(f"SELECT count(*) FROM {STAGE}") or 0)
+            # Recorded AFTER the copy, so the meta row exists only for a
+            # copy that completed. That is what makes the resume above safe.
+            psql("-qc",
+                 f"INSERT INTO {STAGE_META} "
+                 "(source_file, staged_rows, loader_pid) VALUES "
+                 f"({lit(name)}, {staged}, {os.getpid()}) "
+                 "ON CONFLICT (only_row) DO UPDATE SET "
+                 "source_file = excluded.source_file, "
+                 "staged_rows = excluded.staged_rows, "
+                 "loader_pid = excluded.loader_pid, staged_at = now()")
+            print(f"  staged {staged:,} rows in "
+                  f"{time.monotonic() - started:.0f}s", flush=True)
+
+        bad = int(psql_q(f"SELECT count(*) FROM {STAGE} "
+                         f"WHERE block_geoid IS NULL "
+                         f"OR block_geoid !~ '^[0-9]{{15}}$'") or 0)
         if bad:
             print(f"  {bad:,} staged row{'' if bad == 1 else 's'} ha"
                   f"{'s' if bad == 1 else 've'} a block_geoid that is not 15 "
                   f"digits and will NOT be loaded. Sample:")
-            print(psql("-c", "SELECT block_geoid, state_usps, brand_name "
-                             "FROM bdc_stage_tbl WHERE block_geoid IS NULL "
-                             "OR block_geoid !~ '^[0-9]{15}$' LIMIT 5"))
+            print(psql("-c", f"SELECT block_geoid, state_usps, brand_name "
+                             f"FROM {STAGE} WHERE block_geoid IS NULL "
+                             f"OR block_geoid !~ '^[0-9]{{15}}$' LIMIT 5"))
 
         print("  inserting ...", flush=True)
         if lean:
             insert_lean(name)
         else:
             insert_wide(name)
-        psql("-qc", "DROP TABLE IF EXISTS bdc_stage_tbl")
+
+        # STAGING EMPTIED AND THE META ROW CLEARED, IN ONE TRANSACTION.
+        #
+        # Found by testing, not by reading: clearing only the meta row left
+        # the last file's rows sitting in staging with nothing recording
+        # what they were. The NEXT run then saw rows with no meta row, which
+        # is the "I will not guess, stop" path above, and refused to start.
+        # One successful load would have blocked every load after it.
+        #
+        # They must also go together. If the meta row were deleted and the
+        # truncate lost, the same block appears; if the truncate happened
+        # and the meta row survived, the resume path would try to insert
+        # from an empty table. One -c is one transaction, measured.
+        #
+        # PRE-MORTEM for the TRUNCATE: the rows it discards were committed
+        # into bdc_availability_tbl by the statement immediately before,
+        # which is atomic and either did all of it or none of it, and
+        # row_count has just been written from the rows actually present. It
+        # discards a copy of data that is now stored, costs nothing to
+        # reproduce, and touches no other table.
+        psql("-qc", f"TRUNCATE {STAGE}; DELETE FROM {STAGE_META}")
 
         n = rows_for_file(name, lean)
         total_loaded += n
-        print(f"  loaded {n:,} rows in {time.monotonic() - started:.0f}s")
+        print(f"  loaded {n:,} rows in {time.monotonic() - started:.0f}s",
+              flush=True)
 
     skipped = len(names) - len(todo)
     if skipped:
