@@ -1338,3 +1338,40 @@ starts, the log exists, and the load completes with 323,873 rows.
 Also measured: the longest line in the script is 130 characters, but that
 file is PULLED rather than pasted, so its line lengths do not matter. What
 matters is that the line Boris pastes is now 28 characters.
+
+## 2026-11-17: the load was invisible, which is not the same as stopped
+
+Boris: "There is no evident BDC load running." The job had started with a
+pid and its log was empty.
+
+Two causes, both mine, and neither tells us yet why the process is gone.
+That is in the log and is not something to infer.
+
+### Buffering
+
+Python BLOCK-BUFFERS stdout when it is a file, so a redirected run writes
+nothing until kilobytes accumulate. MEASURED: a script that prints and
+sleeps leaves its output file at 0 bytes after two seconds; with python3 -u
+the bytes are there immediately. resume_load.sh now runs the loader with -u.
+
+For a job that runs for hours this is the difference between watching
+progress and watching an empty file. It has now been the proximate cause of
+"nothing is happening" three times in this project, twice for genuinely slow
+queries and once for this.
+
+### 333 silent psql subprocesses
+
+cmd_load called rows_for_file once PER FILE to decide whether to skip it.
+With 333 downloads and 241 already loaded, that is 333 separate psql
+subprocesses before the first new file is reached, every one of them
+printing nothing.
+
+Replaced with ONE query returning rows per source_file for every file at
+once. The loader now prints, flushed, how many files are already loaded and
+how many remain, and names the first file it will actually load, before
+doing any work. Skipped files no longer print a line each; the count is
+reported at the end.
+
+Verified: first run reports "0 already loaded, 2 to do" and names the first
+file; second run reports "2 already loaded, 0 to do" and that both were
+skipped; and the log is non-empty within five seconds of starting.

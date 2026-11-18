@@ -305,27 +305,62 @@ def insert_wide(name):
          "WHERE block_geoid ~ '^[0-9]{15}$'")
 
 
+def loaded_counts(lean):
+    """Rows per source_file, for every file, in ONE query.
+
+    Was one query per file inside the loop. With 333 downloads and 241 of
+    them already loaded, that is 333 psql SUBPROCESSES before the first new
+    file is reached, and every one of them silent. Boris saw an empty log
+    and had no way to tell the difference between progress and a hang.
+    """
+    if lean:
+        sql = ("SELECT f.source_file, count(a.source_file_id) "
+               "FROM bdc_source_file_tbl f "
+               "LEFT JOIN bdc_availability_tbl a USING (source_file_id) "
+               "GROUP BY f.source_file")
+    else:
+        sql = ("SELECT source_file, count(*) FROM bdc_availability_tbl "
+               "GROUP BY source_file")
+    out = {}
+    for line in psql("-qtAF|", "-c", sql).splitlines():
+        if "|" not in line:
+            continue
+        name, n = line.rsplit("|", 1)
+        try:
+            out[name] = int(n)
+        except ValueError:
+            continue
+    return out
+
+
 def cmd_load(args):
     require_schema()
     lean = schema_is_lean()
     print("schema: " + ("schema_v2, normalised" if lean
-                        else "schema.sql, wide"))
+                        else "schema.sql, wide"), flush=True)
     for f in args.files:
         if not os.path.isfile(f):
             sys.exit(f"not a file: {f}")
 
-    print(f"{len(args.files)} file(s) to consider")
+    already = loaded_counts(lean)
+    names = [os.path.basename(p) for p in args.files]
+    todo = [n for n in names if not already.get(n)]
+    print(f"{len(args.files)} file(s) to consider: "
+          f"{len(names) - len(todo)} already loaded, {len(todo)} to do",
+          flush=True)
+    if todo:
+        print(f"first to load: {todo[0]}", flush=True)
+
     total_loaded = 0
     failed = []
     for path in args.files:
         name = os.path.basename(path)
-        print(f"\n{name}")
-        existing = rows_for_file(name, lean)
+        existing = already.get(name, 0)
         if existing and not args.replace:
-            print(f"  already holds {existing:,} rows; SKIPPED. "
-                  f"Use --replace to reload it.")
+            # Skipped quietly and counted, rather than a line each for
+            # hundreds of files.
             continue
-
+        print(f"\n{name}", flush=True)
         try:
             stream = open_csv(path)
             check_header(stream, path)
@@ -390,6 +425,10 @@ def cmd_load(args):
         total_loaded += n
         print(f"  loaded {n:,} rows in {time.monotonic() - started:.0f}s")
 
+    skipped = len(names) - len(todo)
+    if skipped:
+        print(f"\n{skipped} file(s) were already loaded and were skipped. "
+              f"--replace reloads a named file.")
     print(f"\n{total_loaded:,} rows loaded this run")
 
     if total_loaded:

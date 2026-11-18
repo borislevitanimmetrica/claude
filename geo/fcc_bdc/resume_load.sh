@@ -110,13 +110,23 @@ echo "files already recorded as loaded: ${loaded:-unknown}"
 echo "log: $LOG"
 echo
 
+# python3 -u, UNBUFFERED. Python block-buffers stdout when it is a file, so
+# a redirected run writes nothing until several kilobytes have accumulated.
+# MEASURED: without -u a script that prints and sleeps leaves the file at 0
+# bytes after two seconds; with -u the bytes are there immediately.
+#
+# For a job that runs for hours that is the difference between watching
+# progress and watching an empty file and concluding it has hung, which has
+# already happened twice in this project for other reasons.
 if [ "$FOREGROUND" -eq 1 ]; then
-    exec python3 geo/fcc_bdc/bdc_load.py load --files "$BDCDIR"/*.zip
+    exec python3 -u geo/fcc_bdc/bdc_load.py load --files "$BDCDIR"/*.zip
 fi
 
-nohup python3 geo/fcc_bdc/bdc_load.py load --files "$BDCDIR"/*.zip > "$LOG" 2>&1 &
+nohup python3 -u geo/fcc_bdc/bdc_load.py load --files "$BDCDIR"/*.zip > "$LOG" 2>&1 &
 pid=$!
-sleep 2
+# Long enough for the loader to print its first lines even while it is
+# skipping a few hundred already-loaded files.
+sleep 5
 
 if [ ! -f "$LOG" ]; then
     echo "The log file was not created, which should be impossible."
