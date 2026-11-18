@@ -702,9 +702,28 @@ def cmd_concentration(args):
     Nodes are grouped by carrier and by exact coordinate. Exact grouping is
     the right first cut rather than a distance clustering, because
     geolocation sources resolve many addresses to one facility or city
-    centroid, so the repeated coordinate IS the concentration. A coarser
-    grouping is given as well for the cases where a facility is spread over
-    several nearby points.
+    centroid, so the repeated coordinate IS the concentration.
+
+    WHY THE THRESHOLD DEFAULTS TO 2 AND NOT 3
+
+    Boris, 2026-11-18: "Reduce --min-nodes default to 2. Northborough, MA on
+    Verizon FIOS, AS701, has only 3 nodes in ITDK."
+
+    My default of 3 was wrong and the example shows why. A suburban headend
+    with three nodes in the whole ITDK does not necessarily put all three on
+    one coordinate: they can split across two or three nearby points, or
+    only some may resolve to the facility at all. A threshold of 3 would
+    then discard the entire site, and it would do so silently and exactly in
+    the sparse areas where each headend serves the most tracts.
+
+    The earlier remark that a single node in a headend does not matter was
+    about the IMPACT of a misplaced coordinate, not a reason to exclude
+    sites. Those are different things and I had conflated them in choosing 3.
+
+    The sensitivity table below reports how many sites and how many node
+    addresses each threshold would keep, so the choice is made from the data
+    rather than from my intuition about it. If Northborough-sized sites
+    split 1-1-1 then even 2 drops them, and only the table can say.
     """
     if psql_q("SELECT to_regclass('itdk_node_located') IS NOT NULL") != "t":
         sys.exit("itdk_node_located does not exist. Run load first.")
@@ -733,6 +752,26 @@ FROM itdk_concentration
 WHERE node_addresses >= {int(args.min_nodes)}
 ORDER BY node_addresses DESC, carrier_domain
 LIMIT {int(args.limit)}"""))
+
+    print("\nWHAT EACH THRESHOLD WOULD KEEP. Chosen from this, not from a "
+          "guess. A sparse-area headend may hold only two or three nodes in "
+          "the whole ITDK, so a threshold set too high discards exactly the "
+          "sites that serve the most tracts each.\n")
+    print(psql("-c", """
+WITH c AS (
+  SELECT node_addresses FROM itdk_concentration
+)
+SELECT t AS min_nodes,
+       count(*) FILTER (WHERE c.node_addresses >= t)       AS sites_kept,
+       sum(c.node_addresses) FILTER (WHERE c.node_addresses >= t)
+                                                           AS node_addresses_kept,
+       round(100.0 * coalesce(sum(c.node_addresses)
+             FILTER (WHERE c.node_addresses >= t), 0)
+             / nullif(sum(c.node_addresses), 0), 1)        AS pct_of_nodes,
+       count(*) FILTER (WHERE c.node_addresses = t - 1)    AS sites_lost_at_this_step
+FROM (VALUES (1), (2), (3), (5), (10)) AS v(t)
+CROSS JOIN c
+GROUP BY t ORDER BY t"""))
 
     print("\nPer carrier, how many distinct concentrations:\n")
     print(psql("-c", f"""
@@ -875,9 +914,10 @@ def main():
     k = sub.add_parser("concentration",
                        help="places of concentration: candidate headends "
                             "and COs, which is step 2 of the plan")
-    k.add_argument("--min-nodes", type=int, default=3,
+    k.add_argument("--min-nodes", type=int, default=2,
                    help="a concentration must carry at least this many node "
-                        "addresses, default 3")
+                        "addresses, default 2. Use 1 to see every site "
+                        "including singletons.")
     k.add_argument("--limit", type=int, default=30)
     k.set_defaults(func=cmd_concentration)
 
@@ -891,7 +931,7 @@ def main():
                              "and the street-address worklist it implies")
     dv.add_argument("--table", help="which coordinate table to compare "
                                     "against; see `sources`")
-    dv.add_argument("--min-nodes", type=int, default=3)
+    dv.add_argument("--min-nodes", type=int, default=2)
     dv.add_argument("--min-km", type=float, default=5.0)
     dv.add_argument("--limit", type=int, default=40)
     dv.set_defaults(func=cmd_divergence)
