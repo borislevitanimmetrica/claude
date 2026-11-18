@@ -45,6 +45,18 @@
 \pset pager off
 \set ON_ERROR_STOP on
 
+-- A STATEMENT TIMEOUT, so a slow statement ABORTS WITH A MESSAGE instead of
+-- sitting there. Boris has twice been left watching a prompt that had
+-- nothing to say: once for ten minutes on the proposal insert and once for
+-- fourteen on a query in carrier_decisions.sql. An analysis file that can
+-- be wrong about its own cost should fail loudly rather than appear to work.
+--
+-- Ten minutes is deliberately generous: every statement here is expected to
+-- take seconds, so hitting this limit means something is wrong with the
+-- query and not with the data volume. Raise it with -v on the command line
+-- if a genuinely long statement is ever wanted.
+SET statement_timeout = '10min';
+
 -- TIMING IS ON because its absence cost Boris ten minutes of not knowing
 -- whether the file was working or hung. With it, the statement that is slow
 -- names itself. This is cheap and should be the default in any analysis file
@@ -112,7 +124,16 @@ DECLARE n bigint;
 BEGIN
     SELECT count(*) INTO n FROM carrier_node_tbl;
     IF n = 0 THEN
-        RAISE WARNING 'carrier_node_tbl IS EMPTY, so every section below will produce zero rows and the approval list will be blank. This is the expected state immediately after geo/carrier_nodes/schema.sql migrates that table, which DROPS and recreates it. Run this first:  python3 geo/carrier_nodes/hoiho_apply.py apply';
+        -- AN EXCEPTION, NOT A WARNING. A warning let the file run to
+        -- completion and hand Boris a blank approval list with no
+        -- indication that anything was wrong, after geo/carrier_nodes/
+        -- schema.sql had just dropped and recreated this table as part of
+        -- its key migration. Twenty minutes went into looking at an empty
+        -- result that was empty for a knowable reason.
+        --
+        -- Stopping here changes nothing: the statements above this point
+        -- only create tables and read counts.
+        RAISE EXCEPTION 'carrier_node_tbl IS EMPTY, so this file would produce zero rows everywhere and hand you a blank approval list. NOTHING HAS BEEN CHANGED. geo/carrier_nodes/schema.sql DROPS and recreates this table when it migrates the key, which is almost certainly what just happened. Run this, then re-run this file:  python3 geo/carrier_nodes/hoiho_apply.py apply';
     ELSE
         RAISE NOTICE 'carrier_node_tbl holds % hostname and address pairs', n;
     END IF;

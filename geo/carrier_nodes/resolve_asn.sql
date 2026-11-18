@@ -85,3 +85,91 @@ WHERE b.provider_id IS NULL
         WHERE e.brand_norm = o.as_operator_norm);
 
 ANALYZE asn_bdc_name_tbl;
+
+
+-- ---------------------------------------------------------------------------
+-- carrier_resolved_tbl
+--
+-- Filled here because it depends on the decisions, exactly as the ASN
+-- tables do, and this file is the one that runs after they are loaded.
+--
+-- TRUNCATE AND INSERT, never DROP: carrier_resolved is a view over this
+-- table, and DROP TABLE ... CASCADE would take it away. That mistake has
+-- already been made three times in this project.
+--
+-- Anti-joins, not NOT IN. NOT IN against a subquery on a nullable column
+-- cannot be planned as an anti-join and degrades to a per-row subplan,
+-- which is what made the view version run for fourteen minutes.
+-- ---------------------------------------------------------------------------
+
+TRUNCATE carrier_resolved_tbl;
+
+INSERT INTO carrier_resolved_tbl
+       (itdk_domain, carrier_label, label_basis, asn, ipapi_isp, rdap_name,
+        bdc_provider_id, bdc_name_given, nodes, by_decision, approved)
+WITH dropped AS (
+    SELECT DISTINCT itdk_domain FROM carrier_decision_tbl
+    WHERE decision = 'not_an_isp'
+),
+named AS (
+    SELECT d.itdk_domain,
+           d.value          AS bdc_name_given,
+           b.provider_id,
+           b.brand_name,
+           CASE WHEN b.provider_id IS NULL
+                THEN 'named by Boris, NOT FOUND in bdc_carrier_tbl'
+                ELSE 'named by Boris, matched in BDC' END AS basis
+    FROM carrier_decision_tbl d
+    LEFT JOIN bdc_carrier_tbl b ON b.brand_name = d.value
+    WHERE d.decision = 'use_bdc_name'
+),
+by_asn AS (
+    SELECT d.itdk_domain,
+           a.as_operator    AS bdc_name_given,
+           a.bdc_provider_id AS provider_id,
+           a.bdc_brand_name AS brand_name,
+           CASE WHEN a.bdc_provider_id IS NULL
+                THEN 'operator of AS' || d.value
+                     || ', NO BDC name matched it'
+                ELSE 'BDC name of the operator of AS' || d.value END AS basis
+    FROM carrier_decision_tbl d
+    LEFT JOIN asn_bdc_name_tbl a ON a.asn = nullif(d.value, '')::integer
+    WHERE d.decision = 'use_bdc_of_asn'
+),
+decided AS (
+    SELECT * FROM named
+    UNION ALL
+    SELECT * FROM by_asn
+)
+SELECT c.itdk_domain,
+       coalesce(dd.brand_name, dd.bdc_name_given,
+                c.bdc_brand_name, c.ipapi_isp, c.itdk_domain),
+       coalesce(dd.basis,
+                CASE WHEN c.bdc_provider_id IS NOT NULL
+                     THEN 'proposed pairing, ' || coalesce(c.bdc_basis, '')
+                     WHEN c.ipapi_isp IS NOT NULL
+                     THEN 'ip-api isp, measured, no BDC pairing'
+                     ELSE 'DNS domain, nothing better available' END),
+       c.asn, c.ipapi_isp, c.rdap_name,
+       coalesce(dd.provider_id, c.bdc_provider_id),
+       dd.bdc_name_given, c.nodes,
+       dd.itdk_domain IS NOT NULL,
+       c.approved
+FROM carrier_crosswalk_tbl c
+LEFT JOIN decided dd ON dd.itdk_domain = c.itdk_domain
+WHERE NOT EXISTS (SELECT 1 FROM dropped x WHERE x.itdk_domain = c.itdk_domain)
+
+UNION ALL
+
+SELECT dd.itdk_domain,
+       coalesce(dd.brand_name, dd.bdc_name_given),
+       dd.basis || ', domain not present in the crosswalk',
+       NULL::integer, NULL::text, NULL::text,
+       dd.provider_id, dd.bdc_name_given, 0, true, false
+FROM decided dd
+WHERE NOT EXISTS (SELECT 1 FROM carrier_crosswalk_tbl c
+                  WHERE c.itdk_domain = dd.itdk_domain)
+  AND NOT EXISTS (SELECT 1 FROM dropped x
+                  WHERE x.itdk_domain = dd.itdk_domain);
+
+ANALYZE carrier_resolved_tbl;

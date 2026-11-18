@@ -93,6 +93,12 @@
 \set ON_ERROR_STOP on
 \timing on
 
+-- A STATEMENT TIMEOUT. The final query of this file ran for fourteen
+-- minutes on Boris's database with nothing to show, which is how the
+-- carrier_resolved cost was found. A statement that overruns now aborts
+-- with a message.
+SET statement_timeout = '10min';
+
 -- THIS FILE DEPENDS ON carrier_crosswalk.sql HAVING RUN, because the
 -- carrier_name_norm function and carrier_crosswalk_tbl are both defined
 -- there. Checked rather than assumed: running this first produced
@@ -240,15 +246,6 @@ CREATE INDEX IF NOT EXISTS asn_bdc_name_asn_idx
 COMMENT ON TABLE asn_bdc_name_tbl IS
     'For each ASN named in a use_bdc_of_asn decision, the operator observed in ip-api and the BDC brand names whose normalised form equals or contains it. The BDC half is a NAME COMPARISON with no key behind it, so several rows for one ASN means several candidates and none is chosen here.';
 
-\echo
-\echo ---- Filling them for the ASNs under decision
-\echo
-\echo On the FIRST run of this file carrier_decision_tbl is empty, so these
-\echo come out empty. load_decisions.py re-runs the same file after loading,
-\echo which is when they fill.
-\echo
-
-\i geo/carrier_nodes/resolve_asn.sql
 
 
 
@@ -264,85 +261,84 @@ COMMENT ON TABLE asn_bdc_name_tbl IS
 -- decisions. A use_bdc_name domain with fifteen Windstream entities yields
 -- fifteen rows, and steps 4 to 7 need all fifteen: a tract served by any of
 -- those entities should see that domain's nodes as candidate sites.
+--
+-- A TABLE, NOT A VIEW, and built with anti-joins rather than NOT IN.
+--
+-- As a view this was the statement that ran for fourteen minutes on Boris's
+-- database. Two reasons, and the second is the one I keep repeating:
+--
+--   1. NOT IN (SELECT itdk_domain FROM carrier_crosswalk_tbl) appeared
+--      twice. NOT IN against a subquery cannot be turned into an anti-join
+--      by the planner when the column is nullable, so it degrades to a
+--      re-executed subplan per row. NOT EXISTS can be, and is used here.
+--
+--   2. It is a VIEW referenced by a count(DISTINCT ...), so the whole UNION
+--      ALL was recomputed for that one number. The ASN tables had just been
+--      materialised for exactly this reason and I left this one a view.
+--
+-- Rebuilt by geo/carrier_nodes/resolve_asn.sql, which runs after decisions
+-- load, so it is never stale relative to the rulings.
+--
+-- PRE-MORTEM: derived entirely from carrier_crosswalk_tbl,
+-- carrier_decision_tbl, bdc_carrier_tbl and asn_bdc_name_tbl. Emptying and
+-- refilling it loses nothing that is not regenerated in the same breath.
+
+CREATE TABLE IF NOT EXISTS carrier_resolved_tbl (
+    itdk_domain     text,
+    carrier_label   text,
+    label_basis     text,
+    asn             integer,
+    ipapi_isp       text,
+    rdap_name       text,
+    bdc_provider_id integer,
+    bdc_name_given  text,
+    nodes           integer,
+    by_decision     boolean,
+    approved        boolean
+);
+
+CREATE INDEX IF NOT EXISTS carrier_resolved_domain_idx
+    ON carrier_resolved_tbl (itdk_domain);
+CREATE INDEX IF NOT EXISTS carrier_resolved_bdc_idx
+    ON carrier_resolved_tbl (bdc_provider_id);
+
+COMMENT ON TABLE carrier_resolved_tbl IS
+    'The crosswalk after Boris decisions are applied. ONE ROW PER DOMAIN AND BDC PROVIDER: a domain mapped to fifteen Windstream subsidiaries yields fifteen rows, because a tract served by any of them should see that domains nodes. Domains ruled not an ISP are absent. label_basis says which rule produced the name, including when a name Boris gave was not found in bdc_carrier_tbl. A TABLE rather than a view: as a view, one count(DISTINCT) over it ran for fourteen minutes. Steps 4 to 7 should join to this.';
+
+-- Kept so anything written against the old name still resolves. It is a
+-- plain select from the table, so it costs nothing.
 CREATE OR REPLACE VIEW carrier_resolved AS
-WITH dropped AS (
-    SELECT DISTINCT itdk_domain FROM carrier_decision_tbl
-    WHERE decision = 'not_an_isp'
-),
--- Names Boris gave, resolved against BDC. An unresolved name is KEPT with a
--- null provider_id and said so, because the BDC load may simply not have
--- reached that provider yet and silently dropping it would look like a
--- decision that was never made.
-named AS (
-    SELECT d.itdk_domain,
-           d.value                      AS bdc_name_given,
-           b.provider_id,
-           b.frn,
-           b.brand_name,
-           CASE WHEN b.provider_id IS NULL
-                THEN 'named by Boris, NOT FOUND in bdc_carrier_tbl'
-                ELSE 'named by Boris, matched in BDC' END AS basis
-    FROM carrier_decision_tbl d
-    LEFT JOIN bdc_carrier_tbl b ON b.brand_name = d.value
-    WHERE d.decision = 'use_bdc_name'
-),
--- Domains whose BDC name comes from the operator of a stated ASN.
-by_asn AS (
-    SELECT d.itdk_domain,
-           a.as_operator                AS bdc_name_given,
-           a.bdc_provider_id            AS provider_id,
-           NULL::text                   AS frn,
-           a.bdc_brand_name             AS brand_name,
-           CASE WHEN a.bdc_provider_id IS NULL
-                THEN 'operator of AS' || d.value
-                     || ', NO BDC name matched it'
-                ELSE 'BDC name of the operator of AS' || d.value END AS basis
-    FROM carrier_decision_tbl d
-    LEFT JOIN asn_bdc_name_tbl a ON a.asn = nullif(d.value, '')::integer
-    WHERE d.decision = 'use_bdc_of_asn'
-),
-decided AS (
-    SELECT * FROM named
-    UNION ALL
-    SELECT * FROM by_asn
-)
-SELECT c.itdk_domain,
-       coalesce(dd.brand_name, dd.bdc_name_given,
-                c.bdc_brand_name, c.ipapi_isp, c.itdk_domain) AS carrier_label,
-       coalesce(dd.basis,
-                CASE WHEN c.bdc_provider_id IS NOT NULL
-                     THEN 'proposed pairing, ' || coalesce(c.bdc_basis, '')
-                     WHEN c.ipapi_isp IS NOT NULL
-                     THEN 'ip-api isp, measured, no BDC pairing'
-                     ELSE 'DNS domain, nothing better available' END)
-                                                              AS label_basis,
-       c.asn,
-       c.ipapi_isp,
-       c.rdap_name,
-       coalesce(dd.provider_id, c.bdc_provider_id)            AS bdc_provider_id,
-       dd.bdc_name_given,
-       c.nodes,
-       dd.itdk_domain IS NOT NULL                             AS by_decision,
-       c.approved
-FROM carrier_crosswalk_tbl c
-LEFT JOIN decided dd ON dd.itdk_domain = c.itdk_domain
-WHERE c.itdk_domain NOT IN (SELECT itdk_domain FROM dropped)
-
-UNION ALL
-
--- Decisions for domains that are not in the crosswalk at all. Kept so a
--- ruling is never invisible just because the domain has no measured node.
-SELECT dd.itdk_domain,
-       coalesce(dd.brand_name, dd.bdc_name_given),
-       dd.basis || ', domain not present in the crosswalk',
-       NULL::integer, NULL::text, NULL::text,
-       dd.provider_id, dd.bdc_name_given, 0, true, false
-FROM decided dd
-WHERE dd.itdk_domain NOT IN (SELECT itdk_domain FROM carrier_crosswalk_tbl)
-  AND dd.itdk_domain NOT IN (SELECT itdk_domain FROM dropped);
+    SELECT * FROM carrier_resolved_tbl;
 
 COMMENT ON VIEW carrier_resolved IS
-    'The crosswalk after Boris decisions are applied. ONE ROW PER DOMAIN AND BDC PROVIDER: a domain mapped to fifteen Windstream subsidiaries yields fifteen rows, because a tract served by any of them should see that domains nodes. Domains ruled not an ISP are absent. label_basis says which rule produced the name, including when a name Boris gave was not found in bdc_carrier_tbl. Steps 4 to 7 should join to this, not to carrier_crosswalk_tbl.';
+    'Compatibility view over carrier_resolved_tbl. The table is the thing to join to.';
+
+
+-- ---------------------------------------------------------------------------
+-- FILL EVERYTHING DERIVED FROM THE DECISIONS
+--
+-- AFTER all three tables above are declared, because resolve_asn.sql fills
+-- asn_operator_tbl, asn_bdc_name_tbl AND carrier_resolved_tbl. Including it
+-- earlier failed with "relation carrier_resolved_tbl does not exist": the
+-- include sat next to the ASN declarations and the resolved table is
+-- declared further down.
+--
+-- On the FIRST run of this file carrier_decision_tbl is empty, so all three
+-- come out holding only what the crosswalk alone implies.
+-- load_decisions.py re-runs the same file after loading the rulings, which
+-- is when the decisions take effect.
+-- ---------------------------------------------------------------------------
+
+\echo
+\echo ---- Filling them for the ASNs under decision
+\echo
+\echo On the FIRST run of this file carrier_decision_tbl is empty, so these
+\echo come out empty. load_decisions.py re-runs the same file after loading,
+\echo which is when they fill.
+\echo
+
+\i geo/carrier_nodes/resolve_asn.sql
+
 
 
 \echo

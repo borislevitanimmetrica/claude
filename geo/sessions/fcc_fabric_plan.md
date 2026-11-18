@@ -1160,3 +1160,80 @@ candidates; with 'Operator 7106' added to BDC, exactly one row at
     psql -f geo/carrier_nodes/carrier_crosswalk.sql
     psql -f geo/carrier_nodes/carrier_decisions.sql
     python3 geo/carrier_nodes/load_decisions.py load --file ...
+
+## 2026-11-17: the fourteen-minute query, and the blank list
+
+Boris, after fourteen minutes with nothing returned: "Instruct whether to
+abort. Fix the problem in Your crosswalk reported zero everything."
+
+### Abort: yes
+
+carrier_decisions.sql ends in a SELECT. Everything it creates was already
+committed by earlier statements, so interrupting the last query loses
+nothing.
+
+### The blank approval list, fixed properly
+
+geo/carrier_nodes/schema.sql DROPS and recreates carrier_node_tbl when it
+migrates the key. The crosswalk run immediately afterwards therefore saw an
+empty table and reported zero of everything, and it did so as a WARNING, so
+the file ran to completion and handed over a blank list that looked like a
+result.
+
+Now an EXCEPTION. Nothing before that point writes, so stopping costs
+nothing, and the message names the command to run. Verified: the file aborts
+with "carrier_node_tbl IS EMPTY ... Run this, then re-run this file: python3
+geo/carrier_nodes/hoiho_apply.py apply".
+
+A warning was the wrong instrument. The whole value of the check is to stop
+a blank result being mistaken for a finding, and a warning does not stop
+anything.
+
+### carrier_resolved was a view, and that was the fourteen minutes
+
+The final statement is count(DISTINCT carrier_label) FROM carrier_resolved.
+Two faults, and the second is the one that keeps recurring:
+
+  1. The view used NOT IN (SELECT itdk_domain FROM carrier_crosswalk_tbl)
+     TWICE. NOT IN against a subquery on a nullable column cannot be planned
+     as an anti-join and degrades to a subplan re-executed per row. Both are
+     now NOT EXISTS, which can.
+
+  2. It was a VIEW behind an aggregate, so the entire UNION ALL was
+     recomputed for one number. I had materialised the ASN tables for
+     exactly this reason minutes earlier and left this one a view.
+
+carrier_resolved_tbl is now a table, filled by resolve_asn.sql, with
+carrier_resolved kept as a thin compatibility view over it. No DROP
+anywhere: TRUNCATE and INSERT, because carrier_resolved depends on the
+table and CASCADE has already removed a dependent view three times in this
+project.
+
+### A statement timeout, so this cannot happen silently again
+
+Both files now SET statement_timeout = '10min'. Every statement in them is
+expected to take seconds, so reaching that limit means the query is wrong
+rather than the data large, and it now says so instead of sitting there.
+Boris has twice watched a prompt with nothing to say, for ten minutes and
+then fourteen. That is a tooling failure, not a patience problem.
+
+### geo/carrier_nodes/run_step2.sh
+
+The ordering has two traps and I handed Boris the wrong order twice:
+
+  schema.sql drops carrier_node_tbl, so the decode must run after it and
+  before the crosswalk.
+
+  resolve_asn.sql is driven by decisions loaded after carrier_decisions.sql
+  has run, so the derived tables are empty until load_decisions.py refills
+  them.
+
+Neither is worth remembering, so the script encodes it. Six steps, stops at
+the first failure, prints the failing step and the error lines from its log,
+and ends with a count of what was built. Verified green end to end in one
+second, and verified that it stops correctly when a step fails: a missing
+CAIDA ruleset reported "Run hoiho_apply.py fetch first" and went no further.
+
+Also found while testing it: the \i of resolve_asn.sql sat next to the ASN
+table declarations, but that file now also fills carrier_resolved_tbl, which
+is declared further down. Moved the include below all three declarations.

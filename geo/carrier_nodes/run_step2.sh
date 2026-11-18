@@ -1,0 +1,134 @@
+#!/bin/sh
+# run_step2.sh - run the whole of step 2 in the right order, once.
+#
+# WHY THIS EXISTS
+#
+# The order matters and I got it wrong twice when handing Boris command
+# blocks. geo/carrier_nodes/schema.sql DROPS and recreates carrier_node_tbl
+# when it migrates the key, so the crosswalk run after it saw an empty table
+# and produced a blank approval list. And resolve_asn.sql is driven by
+# decisions that load after carrier_decisions.sql has run, so the ASN tables
+# and carrier_resolved_tbl are empty until they are refilled.
+#
+# Neither is interesting to remember. This encodes it.
+#
+# WHAT IT DOES, in order:
+#
+#   1. rename bdc_provider_tbl to bdc_carrier_tbl if it is still named that
+#   2. geo/carrier_nodes/schema.sql, which may drop carrier_node_tbl
+#   3. hoiho_apply.py apply, which refills carrier_node_tbl
+#   4. geo/carrier_nodes/carrier_crosswalk.sql
+#   5. geo/carrier_nodes/carrier_decisions.sql
+#   6. load_decisions.py, which also re-runs resolve_asn.sql
+#
+# It STOPS at the first failure and says which step failed, rather than
+# carrying on and leaving a half-built result that looks finished.
+#
+# NOTHING HERE IS DESTRUCTIVE beyond what the individual files do, and each
+# of those carries its own pre-mortem. The only data this chain can lose is
+# carrier_node_tbl, which step 3 rebuilds from the trace corpus in seconds.
+#
+# USAGE
+#
+#   sh geo/carrier_nodes/run_step2.sh
+#   sh geo/carrier_nodes/run_step2.sh --skip-apply
+#
+# Run from the repository root. --skip-apply leaves carrier_node_tbl alone,
+# for when the decode has not changed and only the crosswalk is being redone.
+#
+# Contains no mid-line hash and no backslash escapes in emitted text.
+
+set -u
+
+LOGDIR=${LOGDIR:-/home/boris/geo/logs}
+DECISIONS=${DECISIONS:-geo/carrier_nodes/decisions_2026_11_17.tsv}
+CAIDA=${CAIDA:-/home/boris/geo/caida}
+SKIP_APPLY=0
+
+while [ -n "${1-}" ]; do
+    case "$1" in
+        --skip-apply) SKIP_APPLY=1 ;;
+        --decisions)  shift; DECISIONS=$1 ;;
+        *) echo "unknown argument: $1"; exit 2 ;;
+    esac
+    shift
+done
+
+mkdir -p "$LOGDIR"
+
+step=0
+run() {
+    step=$((step + 1))
+    label=$1
+    shift
+    log="$LOGDIR/step2_${step}.log"
+    printf 'STEP %s  %-44s' "$step" "$label"
+    if "$@" > "$log" 2>&1; then
+        echo "ok"
+        return 0
+    fi
+    echo "FAILED"
+    echo
+    echo "Step $step failed. The chain stops here so a half-built result is"
+    echo "not mistaken for a finished one. Last lines of $log:"
+    echo
+    sed -n '$!{h;d};x;G;p' "$log" 2>/dev/null | head -1 >/dev/null
+    grep -iE 'error|exception|fatal' "$log" | head -5 | sed 's/^/    /'
+    if ! grep -qiE 'error|exception|fatal' "$log"; then
+        tail -8 "$log" | sed 's/^/    /'
+    fi
+    exit 1
+}
+
+psql_file() {
+    psql -X -P pager=off -v ON_ERROR_STOP=1 -f "$1"
+}
+
+echo "Step 2 of the FCC plan, in dependency order."
+echo "Logs under $LOGDIR, one per step."
+echo
+
+if [ -f geo/fcc_bdc/rename_provider_to_carrier.sql ]; then
+    run "rename bdc_provider_tbl if still present" \
+        psql_file geo/fcc_bdc/rename_provider_to_carrier.sql
+fi
+
+run "carrier_nodes schema, may drop carrier_node_tbl" \
+    psql_file geo/carrier_nodes/schema.sql
+
+if [ "$SKIP_APPLY" -eq 0 ]; then
+    run "decode hostnames into carrier_node_tbl" \
+        python3 geo/carrier_nodes/hoiho_apply.py --dir "$CAIDA" apply
+else
+    echo "STEP skipped  decode, by --skip-apply"
+fi
+
+run "crosswalk the four naming systems" \
+    psql_file geo/carrier_nodes/carrier_crosswalk.sql
+
+run "decision tables and views" \
+    psql_file geo/carrier_nodes/carrier_decisions.sql
+
+if [ -f "$DECISIONS" ]; then
+    run "load the rulings and refill the resolved table" \
+        python3 geo/carrier_nodes/load_decisions.py load --file "$DECISIONS"
+else
+    echo "STEP skipped  no decisions file at $DECISIONS"
+fi
+
+echo
+echo "All steps completed. Where things stand:"
+echo
+psql -X -P pager=off -c "
+SELECT (SELECT count(*) FROM carrier_node_tbl)                 AS node_rows,
+       (SELECT count(DISTINCT hostname) FROM carrier_node_tbl) AS hostnames,
+       (SELECT count(*) FROM carrier_node_tbl WHERE lat IS NOT NULL)
+                                                               AS located,
+       (SELECT count(*) FROM carrier_node_tbl
+        WHERE hint_type = 'clli')                              AS clli_pending,
+       (SELECT count(*) FROM carrier_crosswalk_tbl)            AS crosswalk_rows,
+       (SELECT count(*) FROM carrier_decision_tbl)             AS decisions,
+       (SELECT count(*) FROM carrier_resolved_tbl)             AS resolved_rows"
+
+echo "The approval list is in $LOGDIR/step2_4.log, section 5."
+echo "Decisions already recorded are in $LOGDIR/step2_6.log."
