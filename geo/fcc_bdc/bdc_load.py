@@ -55,6 +55,7 @@ same connection as your psql.
 """
 
 import argparse
+import atexit
 import csv
 import gzip
 import io
@@ -74,6 +75,23 @@ EXPECTED_HEADER = [
 ]
 
 COLS = ", ".join(EXPECTED_HEADER)
+
+
+# ABSOLUTE PATHS IN EVERY COMMAND THIS PRINTS.
+#
+# Standing order 8, issued 2026-11-18. Boris: "Always issue absolute paths.
+# What reason not to?" There is none. A relative path saves typing and costs
+# a failed command whenever the working directory is not the one silently
+# assumed. A message that names a remedy by a relative path hands the same
+# failure back to the reader. Derived from __file__, so correct wherever the
+# repository is checked out and from whatever directory it is run.
+HERE = os.path.dirname(os.path.abspath(__file__))
+SELF = os.path.join(HERE, "bdc_load.py")
+
+
+def here(name):
+    """Absolute path to a file beside this script."""
+    return os.path.join(HERE, name)
 
 
 def psql(*args):
@@ -193,8 +211,8 @@ def require_schema():
     if ok != "t":
         sys.exit("bdc_availability_tbl does not exist. Apply a schema "
                  "first, one of:\n"
-                 "  psql -X -P pager=off -f geo/fcc_bdc/schema.sql\n"
-                 "  psql -X -P pager=off -f geo/fcc_bdc/schema_v2.sql")
+                 f"  psql -X -P pager=off -f {here('schema.sql')}\n"
+                 f"  psql -X -P pager=off -f {here('schema_v2.sql')}")
 
 
 def schema_is_lean():
@@ -487,6 +505,45 @@ LOAD_LOCK_KEY = 8412771  # arbitrary but fixed, for pg_try_advisory_lock
 _LOCK_HOLDER = None
 
 
+def release_load_lock():
+    """Close the holder's pipe and reap it, so nothing outlives this run.
+
+    Closing stdin gives the holder psql EOF, it exits, its session ends and
+    the advisory lock goes with it. The wait is bounded: if it has not gone
+    in two seconds it is terminated, and if it still has not gone it is
+    killed. A lock holder that refuses to die would block every later
+    loader, which is exactly the failure the pg_sleep version would have
+    caused, so this does not leave it to chance.
+
+    Safe to call more than once and safe when no lock was ever taken.
+    """
+    global _LOCK_HOLDER
+    p = _LOCK_HOLDER
+    _LOCK_HOLDER = None
+    if p is None:
+        return
+    for closer in (p.stdin, p.stdout, p.stderr):
+        try:
+            if closer is not None:
+                closer.close()
+        except (OSError, ValueError):
+            pass
+    try:
+        p.wait(timeout=2)
+        return
+    except subprocess.TimeoutExpired:
+        pass
+    try:
+        p.terminate()
+        p.wait(timeout=2)
+    except (subprocess.TimeoutExpired, OSError):
+        try:
+            p.kill()
+            p.wait(timeout=2)
+        except (subprocess.TimeoutExpired, OSError):
+            pass
+
+
 def take_load_lock():
     """Hold a lock for the life of this process. Returns True if we got it.
 
@@ -529,6 +586,20 @@ def take_load_lock():
     what it found and stops.
     """
     global _LOCK_HOLDER
+    # RELEASED EXPLICITLY AT EXIT, not left to process teardown.
+    #
+    # Boris, 2026-11-18: the load printed its final summary "but has not
+    # returned to the psql prompt."
+    #
+    # I have NOT established that this holder is the cause and I am not
+    # going to assert it. What is true is that relying on interpreter
+    # teardown to close the pipe, so that psql sees EOF and exits, leaves a
+    # child process alive for an interval I never measured, and a shell that
+    # waits on the process group would wait with it. Registering the release
+    # makes the holder's exit something this program does rather than
+    # something it hopes for, which is correct hygiene whatever the cause
+    # turns out to be.
+    atexit.register(release_load_lock)
     try:
         p = subprocess.Popen(
             ["psql", "-X", "-q", "-t", "-A", "-f", "-"],
@@ -714,7 +785,7 @@ def cmd_load(args):
                 f"have to reuse the staging table and lose that work.\n\n"
                 f"The copy for it finished, so finishing it is cheap, just "
                 f"the insert. Either include it in --files, or run it alone:"
-                f"\n  python3 -u geo/fcc_bdc/bdc_load.py load --files "
+                f"\n  python3 -u {SELF} load --files "
                 f"<the path to {staged_file}>\n\n"
                 f"If you would rather discard those staged rows, that is "
                 f"your call and the command is below. PRE-MORTEM: it "
@@ -885,10 +956,11 @@ def cmd_load(args):
     print(f"\n{total_loaded:,} rows loaded this run")
 
     if total_loaded:
-        print("\nRun `python3 bdc_load.py technologies` next: it reports the "
-              "technology codes actually present, which is what step 2 needs "
-              "to separate FIOS from xDSL. The code list is deliberately not "
-              "hardcoded anywhere in this project.")
+        print(f"\nRun this next. It reports the technology codes actually "
+              f"present, which is what step 2 needs to separate FIOS from "
+              f"xDSL. The code list is deliberately not hardcoded anywhere "
+              f"in this project.")
+        print(f"  python3 -u {SELF} technologies")
 
     if failed:
         # Nonzero exit, so this cannot be missed in a batched command block
@@ -1067,7 +1139,7 @@ def cmd_states(args):
         print("TO LOAD THE UNRECORDED FILES, and nothing else. This adds "
               "rows for files that have none and does not touch any file "
               "already loaded, so there is nothing to undo:")
-        print("    sh geo/fcc_bdc/reload_states.sh "
+        print(f"    sh {here('reload_states.sh')} "
               f"--from {lo or '00'} --to {hi or '99'}")
         print()
         print("DO NOT RUN IT WHILE ANOTHER LOAD IS RUNNING. The loader "
@@ -1081,7 +1153,7 @@ def cmd_states(args):
         print("Every file in range is recorded. If rows are still missing "
               "the counts are wrong rather than absent, and `verify` on this "
               "range is what shows that, by reading the files:")
-        print(f"    python3 -u geo/fcc_bdc/bdc_load.py verify --files "
+        print(f"    python3 -u {SELF} verify --files "
               f"$(ls /home/boris/geo/bdc/bdc_{lo or ''}*.zip)")
 
 
@@ -1168,7 +1240,7 @@ def cmd_verify(args):
               "arrive. Reload exactly these:")
         for pr in problems[:25]:
             print(f"  {pr}")
-        print("\n  python3 geo/fcc_bdc/bdc_load.py load --replace --files "
+        print(f"\n  python3 -u {SELF} load --replace --files "
               "<the files named above>")
         print("\n--replace deletes only that file's rows and loads it again. "
               "Nothing else is touched.")

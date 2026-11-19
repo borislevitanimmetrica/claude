@@ -115,6 +115,23 @@ UA = "trugeo-research/1.0 (topology research; via project repo)"
 INDEPENDENT = ("hoiho", "ix")
 
 
+# ABSOLUTE PATHS IN EVERY COMMAND THIS PRINTS.
+#
+# Standing order 8, issued 2026-11-18. Boris: "Always issue absolute paths.
+# What reason not to?" There is no reason not to. A relative path saves
+# typing and costs a failed command whenever the working directory is not
+# the one silently assumed. A script that reports a missing prerequisite and
+# names the remedy by a relative path hands the same failure straight back.
+# Derived from __file__, so correct wherever the repository sits and
+# whatever directory the caller is in.
+HERE = os.path.dirname(os.path.abspath(__file__))
+
+
+def script(name):
+    """Absolute path to a sibling script, for commands this prints."""
+    return os.path.join(HERE, name)
+
+
 def psql(*args):
     cmd = ["psql", "-X", "-P", "pager=off", "-v", "ON_ERROR_STOP=1", *args]
     r = subprocess.run(cmd, capture_output=True, text=True)
@@ -469,7 +486,7 @@ def cmd_load(args):
     geo_path = os.path.join(args.dir, GEO_FILE)
     if not os.path.exists(geo_path):
         sys.exit(f"missing {geo_path}\nRun fetch first:\n"
-                 f"  python3 -u geo/carrier_nodes/itdk_geo_load.py "
+                 f"  python3 -u {script('itdk_geo_load.py')} "
                  f"fetch --dir {args.dir}")
 
     # EITHER MAPPING FILE. Whichever is complete on disk is used, and the
@@ -491,7 +508,7 @@ def cmd_load(args):
                      f"file. Running fetch again resumes it.")
         sys.exit(f"No address-to-node mapping file in {args.dir}. "
                  f"Expected one of {MAPPING_FILES}.{extra}\n"
-                 f"  python3 -u geo/carrier_nodes/itdk_geo_load.py "
+                 f"  python3 -u {script('itdk_geo_load.py')} "
                  f"fetch --dir {args.dir}")
     print(f"mapping file: {map_name}", flush=True)
     inverted = (map_name == NODES_FILE)

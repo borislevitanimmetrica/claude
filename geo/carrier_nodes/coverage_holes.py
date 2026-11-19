@@ -58,6 +58,28 @@ TRACT_ZIP = "2024_Gaz_tracts_national.zip"
 UA = "trugeo-research/1.0 (census geography; via project repo)"
 
 
+# ABSOLUTE PATHS IN EVERY COMMAND THIS PRINTS.
+#
+# Standing order 8, issued 2026-11-18. Boris: "Always issue absolute paths.
+# What reason not to?" There is no reason not to. A relative path saves
+# typing and costs a failed command whenever the working directory is not
+# the one silently assumed, which is how this module first failed for him:
+# run from his home directory, python looked for the file one level below
+# home and did not find it.
+#
+# A script that reports a missing prerequisite and then names the remedy by
+# a relative path has handed the same failure straight back. These are
+# derived from __file__, so they are right wherever the repository sits and
+# whatever directory the caller is in.
+HERE = os.path.dirname(os.path.abspath(__file__))
+REPO = os.path.abspath(os.path.join(HERE, "..", ".."))
+
+
+def script(name):
+    """Absolute path to a sibling script, for commands this prints."""
+    return os.path.join(HERE, name)
+
+
 def psql(*args):
     cmd = ["psql", "-X", "-P", "pager=off", "-v", "ON_ERROR_STOP=1", *args]
     r = subprocess.run(cmd, capture_output=True, text=True)
@@ -176,7 +198,7 @@ def cmd_load(args):
     for p in (cpath, tpath):
         if not os.path.exists(p):
             sys.exit(f"missing {p}\nRun fetch first:\n"
-                     f"  python3 -u geo/carrier_nodes/coverage_holes.py "
+                     f"  python3 -u {script('coverage_holes.py')} "
                      f"fetch --dir {args.dir}")
 
     psql("-qc", """
@@ -244,13 +266,73 @@ SELECT (SELECT count(*) FROM census_county_tbl) AS counties,
 
 def cmd_holes(args):
     """Distance to the nearest concentration, per county, per threshold."""
-    for t in ("census_county_tbl", "itdk_concentration"):
-        if psql_q(f"SELECT to_regclass({lit(t)}) IS NOT NULL") != "t":
-            sys.exit(f"{t} does not exist.\n"
-                     f"  counties: python3 -u "
-                     f"geo/carrier_nodes/coverage_holes.py load\n"
-                     f"  concentrations: python3 -u "
-                     f"geo/carrier_nodes/itdk_geo_load.py concentration")
+    # REPORT THE ONE THING THAT IS MISSING, AND WHERE IN THE CHAIN IT SITS.
+    #
+    # The first version printed both remedies whenever either relation was
+    # absent, so when only the concentrations were missing it also told
+    # Boris to reload the counties he had just loaded successfully. Worse,
+    # it named the remedy for a view that cannot be built yet without
+    # saying why: itdk_concentration is created by `concentration`, which
+    # needs itdk_node_located, which needs `load`, which needs the two
+    # downloads. Naming the last link in a chain of four is not a remedy.
+    missing = []
+    if psql_q("SELECT to_regclass('census_county_tbl') IS NOT NULL") != "t":
+        missing.append("counties")
+    if psql_q("SELECT to_regclass('itdk_concentration') IS NOT NULL") != "t":
+        missing.append("concentrations")
+
+    if missing:
+        lines = ["STOPPED. " + " and ".join(missing) + " not loaded yet.",
+                 ""]
+        if "counties" in missing:
+            lines += [
+                "census_county_tbl is absent. The Census gazetteer is "
+                "small, 141,679 bytes for counties:",
+                f"  python3 -u {script('coverage_holes.py')} fetch "
+                f"--dir /home/boris/geo/census",
+                f"  python3 -u {script('coverage_holes.py')} load "
+                f"--dir /home/boris/geo/census",
+                ""]
+        if "concentrations" in missing:
+            # WALK THE CHAIN and name the FIRST step not yet done, rather
+            # than the last.
+            itdk = script("itdk_geo_load.py")
+            geo_ok = psql_q(
+                "SELECT to_regclass('itdk_node_geo_tbl') IS NOT NULL") == "t"
+            loc_ok = psql_q(
+                "SELECT to_regclass('itdk_node_located') IS NOT NULL") == "t"
+            rows = "0"
+            if geo_ok:
+                rows = psql_q("SELECT count(*) FROM itdk_node_geo_tbl")
+            lines += [
+                "itdk_concentration is a view built by the `concentration` "
+                "command. It needs the ITDK geolocation loaded first, so "
+                "the chain is fetch, then load, then concentration.",
+                ""]
+            if not geo_ok or rows == "0":
+                lines += [
+                    f"State: itdk_node_geo_tbl "
+                    + ("does not exist" if not geo_ok
+                       else "exists but holds 0 rows")
+                    + ", so the load has not run. Start there; fetch "
+                      "resumes any partial download and re-fetches nothing:",
+                    f"  python3 -u {itdk} fetch --dir /home/boris/geo/caida",
+                    f"  python3 -u {itdk} load --dir /home/boris/geo/caida",
+                    f"  python3 -u {itdk} concentration"]
+            elif not loc_ok:
+                lines += [
+                    f"State: itdk_node_geo_tbl holds {int(rows):,} rows but "
+                    f"the itdk_node_located view is absent, which the load "
+                    f"creates at the end. Re-run the load; it truncates and "
+                    f"refills from the files already downloaded:",
+                    f"  python3 -u {itdk} load --dir /home/boris/geo/caida",
+                    f"  python3 -u {itdk} concentration"]
+            else:
+                lines += [
+                    f"State: the load is done, {int(rows):,} geolocation "
+                    f"rows, so only the view is missing:",
+                    f"  python3 -u {itdk} concentration"]
+        sys.exit("\n".join(lines))
 
     where = ["1 = 1"]
     if args.state:

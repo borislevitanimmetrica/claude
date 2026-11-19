@@ -151,3 +151,61 @@ Where a previous session made a decision and recorded its reasoning, report
 disagreement rather than silently redesigning. `prefer()`'s physical-versus-
 mailing contract and the district-level name-column defect were both left
 alone and flagged for Boris on that basis.
+
+## 8. Always absolute paths
+
+Issued 2026-11-18. Boris: "Always issue absolute paths. What reason not to?"
+
+There is no reason not to. The only thing a relative path saves is typing, and
+it costs a failed command every time the working directory is not the one I
+silently assumed. It failed exactly that way the same day:
+
+    boris@Immetrica-Mint30:~$ python3 -u geo/carrier_nodes/coverage_holes.py fetch ...
+    python3: can't open file '/home/boris/geo/carrier_nodes/coverage_holes.py'
+
+I had put a `cd` in one block and then left it out of later blocks, as though a
+shell carried a directory between separate pastes. It does not.
+
+This applies to three places, not one:
+
+- Every command I issue in chat.
+- Every command a script PRINTS as a next step or a remedy. A script that
+  reports a missing prerequisite and then names it by a relative path has
+  handed over the same failure.
+- Every path inside a script that is not derived from the script's own
+  location. Where a script needs a sibling file, derive it from `__file__`
+  rather than from the caller's working directory.
+
+## 9. Think one step ahead: read new code for bugs before issuing it
+
+Issued 2026-11-18. Boris: "Add to standing orders: always think one step
+ahead, analyzing proposed code for possible bugs."
+
+This extends order 1. Not guessing is about what I claim; this is about what I
+hand over. Before any code or command goes out, work out what it will DO on
+the next step and the step after, and name the ways it can fail. The question
+is not "is this syntactically right" but "what state will this leave, and what
+will the following command then find".
+
+The failures this comes from were all one step of thought away:
+
+- `-m 3600` on a 1.2 GB download: a total-elapsed-time limit, which aborted at
+  90 per cent purely because an hour had passed. Then the failure path DELETED
+  the partial, so the retry began at zero. Both were visible by asking what
+  happens when the transfer is slow.
+- A prerequisite message that listed every remedy in the chain instead of the
+  one actually missing, telling Boris to reload counties he had just loaded.
+- An advisory lock held in `pg_sleep(86400)`, which would have locked out
+  every later loader for a day after any crash. Caught only because I tested
+  it.
+- Clearing the staging meta row without emptying the staging table, so one
+  successful load blocked every load after it.
+- `--min-nodes` defaulting to 3, which silently discarded whole rural sites.
+- A self test that exercised Census alone when the shipped path was Census
+  then Nominatim.
+
+The habit that catches these: after writing something, re-read it as the
+machine will run it, in the state the machine will actually be in — a slow
+network, a part-finished download, a table that already exists, a second
+process already running, a sparse county with two nodes. Where I cannot
+predict the result, test it rather than issue it.
