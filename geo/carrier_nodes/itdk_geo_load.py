@@ -85,8 +85,10 @@ USAGE
 """
 
 import argparse
+import atexit
 import bz2
 import os
+import shutil
 import subprocess
 import sys
 import time
@@ -231,6 +233,99 @@ def parse_iface(line):
         if p.startswith("N") and p[1:].isdigit():
             return addr, p
     return None
+
+
+# A LOAD LOCK OF ITS OWN, FOR THE SAME REASON THE BDC LOADER HAS ONE.
+#
+# `load` does TRUNCATE itdk_iface_tbl and then streams a COPY into it. Two
+# of these running at once is the bdc_stage_tbl failure again: one truncates
+# while the other is copying, and the result is a mapping table holding part
+# of one run. Nothing warned about it, which is how that bug happened the
+# first time.
+#
+# A DIFFERENT KEY from the BDC loader's 8412771, deliberately. These two
+# chains share no table, so an ITDK load must NOT be blocked by a BDC load
+# or the other way round. Boris asked whether they can run concurrently;
+# they can, and a shared key would have made that false.
+#
+# The holder is a psql reading a pipe this process keeps open, so the lock
+# dies with the loader. The alternative, a backend sitting in pg_sleep, does
+# not notice its client was killed: measured on the BDC loader, still held
+# ten seconds after SIGKILL and it would have been held for a day.
+ITDK_LOCK_KEY = 8412772
+_LOCK_HOLDER = None
+
+
+def release_itdk_lock():
+    """Close the holder's pipe and reap it. Safe to call more than once."""
+    global _LOCK_HOLDER
+    p = _LOCK_HOLDER
+    _LOCK_HOLDER = None
+    if p is None:
+        return
+    for f in (p.stdin, p.stdout, p.stderr):
+        try:
+            if f is not None:
+                f.close()
+        except (OSError, ValueError):
+            pass
+    try:
+        p.wait(timeout=2)
+        return
+    except subprocess.TimeoutExpired:
+        pass
+    try:
+        p.terminate()
+        p.wait(timeout=2)
+    except (subprocess.TimeoutExpired, OSError):
+        try:
+            p.kill()
+            p.wait(timeout=2)
+        except (subprocess.TimeoutExpired, OSError):
+            pass
+
+
+def take_itdk_lock():
+    """True if we got it. Reports who holds it and terminates nobody."""
+    global _LOCK_HOLDER
+    atexit.register(release_itdk_lock)
+    try:
+        p = subprocess.Popen(
+            ["psql", "-X", "-q", "-t", "-A", "-f", "-"],
+            stdin=subprocess.PIPE, stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE, text=True)
+        p.stdin.write(f"SELECT pg_try_advisory_lock({ITDK_LOCK_KEY});\n")
+        p.stdin.flush()
+        got = p.stdout.readline().strip()
+    except (OSError, ValueError) as exc:
+        sys.exit(f"could not start the lock holder: {exc}\nNothing was "
+                 f"loaded.")
+    if got == "t":
+        _LOCK_HOLDER = p
+        return True
+    if got != "f":
+        try:
+            p.stdin.close()
+        except OSError:
+            pass
+        sys.exit(f"the lock holder did not answer. psql said:\n"
+                 f"{(p.stderr.read() or '').strip()}\nNothing was loaded.")
+    try:
+        p.stdin.close()
+    except OSError:
+        pass
+    return False
+
+
+def free_bytes(path):
+    """Free space on the filesystem holding path, or None."""
+    d = path
+    while d and not os.path.isdir(d):
+        d = os.path.dirname(d)
+    try:
+        return shutil.disk_usage(d or "/").free
+    except OSError:
+        return None
 
 
 def content_length(url):
@@ -457,6 +552,40 @@ def cmd_fetch(args):
               f"than {IFACES_FILE} and carries the same relation "
               f"inverted.\n", flush=True)
 
+    # FREE SPACE CHECKED BEFORE STARTING, not discovered at 95 per cent.
+    #
+    # These two files are about 1.23 GB together. Boris's database now holds
+    # 519,469,683 BDC availability rows, so the disk is carrying far more
+    # than it was when this project started, and a download that fills the
+    # filesystem would take the database down with it rather than merely
+    # failing. The margin is 2 GB above what the files need.
+    need = 0
+    for f in (GEO_FILE, mapping):
+        have = 0
+        for cand in (os.path.join(args.dir, f),
+                     os.path.join(args.dir, f + ".part")):
+            if os.path.exists(cand):
+                have = max(have, os.path.getsize(cand))
+        n = content_length(f"{BASE}/{f}")
+        if n:
+            need += max(n - have, 0)
+    free = free_bytes(args.dir)
+    if free is not None:
+        print(f"  {need / 1048576:,.0f} MB still to download, "
+              f"{free / 1073741824:.1f} GB free on {args.dir}", flush=True)
+        if free < need + (2 << 30):
+            sys.exit(
+                f"STOPPED, and nothing was downloaded.\n\n"
+                f"{need / 1048576:,.0f} MB is needed and only "
+                f"{free / 1073741824:.1f} GB is free, which leaves less "
+                f"than the 2 GB margin this insists on. A download that "
+                f"fills the filesystem does not merely fail: it takes the "
+                f"database down with it, and that database now holds "
+                f"519 million BDC rows.\n\n"
+                f"Free some space, or pass --dir pointing at another "
+                f"filesystem.")
+    print(flush=True)
+
     ok = True
     for f in (GEO_FILE, mapping):
         ok = fetch_resumable(f"{BASE}/{f}", os.path.join(args.dir, f)) and ok
@@ -478,7 +607,76 @@ def our_addresses():
     return out
 
 
+def ensure_shape(table, columns):
+    """Recreate the table if its columns are not the ones we are about to write.
+
+    WHY. CREATE TABLE IF NOT EXISTS DOES NOT MIGRATE AN EXISTING TABLE.
+    That sentence is already recorded as a bug class in this project and I
+    repeated it here. A table left by an older version, or by anything else
+    that happened to use the name, is accepted silently and the failure
+    arrives later and further away: the COPY in pass 2 died with
+
+        ERROR:  column "continent" of relation "itdk_node_geo_tbl"
+                does not exist
+
+    after pass 1 had already written 20,000 rows. Found by running the
+    concurrency test, not by reading the code.
+
+    PRE-MORTEM for the DROP. This is not an escalation of what `load`
+    already does: load TRUNCATEs both of these tables on every run, so
+    their contents are discarded either way. They are derived in full from
+    the two downloaded files and hold nothing entered by hand, so the cost
+    of recreating one is the cost of the load that is about to happen
+    regardless. Nothing else is touched: the drop names one table and
+    cascades only to views this module creates and recreates.
+    """
+    want = sorted(columns)
+    got = psql_q(
+        "SELECT coalesce(string_agg(column_name, ',' ORDER BY column_name), "
+        "'') FROM information_schema.columns "
+        f"WHERE table_name = {lit(table)}")
+    have = sorted(x for x in (got or "").split(",") if x)
+    if not have:
+        return False
+    if have == want:
+        return False
+    missing = [c for c in want if c not in have]
+    extra = [c for c in have if c not in want]
+    print(f"NOTE: {table} exists with a different shape and is being "
+          f"recreated.", flush=True)
+    if missing:
+        print(f"      columns this writes but the table lacks: "
+              f"{', '.join(missing)}", flush=True)
+    if extra:
+        print(f"      columns present that this does not write: "
+              f"{', '.join(extra)}", flush=True)
+    print(f"      Nothing is lost that was not already going to be: load "
+          f"truncates this table on every run and it is derived entirely "
+          f"from the downloaded files.", flush=True)
+    psql("-qc", f"DROP TABLE {table} CASCADE")
+    return True
+
+
 def cmd_load(args):
+    if not take_itdk_lock():
+        holders = psql("-c", f"""
+SELECT l.pid, a.state,
+       date_trunc('second', now() - a.backend_start) AS connected_for
+FROM pg_locks l LEFT JOIN pg_stat_activity a USING (pid)
+WHERE l.locktype = 'advisory' AND l.objid = {ITDK_LOCK_KEY}""")
+        sys.exit(
+            "ANOTHER ITDK LOAD HOLDS THE LOCK, so this one stopped and "
+            "changed nothing.\n\n"
+            "This command TRUNCATEs the mapping table and then streams a "
+            "COPY into it, so two at once leave it holding part of one run "
+            "and part of the other.\n\n"
+            "The session holding it:\n" + holders +
+            "\nThe loader processes, one short line each:\n"
+            "  pgrep -f itdk_geo_load.py | xargs -r -n1 ps -o pid=,etime=,"
+            "comm= -p | awk '$3 ~ /^python/'\n\n"
+            "This lock is SEPARATE from the BDC loader's, so a BDC load "
+            "does not block this and this does not block a BDC load. "
+            "Nothing here kills anything.")
     if psql_q("SELECT to_regclass('carrier_node_tbl') IS NOT NULL") != "t":
         sys.exit("carrier_node_tbl does not exist. Run the carrier_nodes "
                  "schema first.")
@@ -519,6 +717,12 @@ def cmd_load(args):
           f"nothing like 76 million rows reaches the database.\n", flush=True)
     if not addrs:
         sys.exit("No node addresses to match. Nothing to do.")
+
+    # SHAPE CHECKED BEFORE WRITING, because IF NOT EXISTS does not migrate.
+    ensure_shape("itdk_node_geo_tbl",
+                 ["node_id", "continent", "country", "region", "city",
+                  "lat", "lon", "method", "loaded_at"])
+    ensure_shape("itdk_iface_tbl", ["address", "node_id"])
 
     psql("-qc", """
 CREATE TABLE IF NOT EXISTS itdk_node_geo_tbl (
