@@ -167,6 +167,21 @@ GEOGRAPHIES = ("https://geocoding.geo.census.gov/geocoder/geographies/"
                "coordinates")
 
 
+def km_sql(lat1, lon1, lat2, lon2):
+    """Equirectangular distance in km, WRAPPING THE LONGITUDE DIFFERENCE.
+
+    The plain difference is wrong across the antimeridian: a point at +179
+    and one at -179 are two degrees apart, not 358. Measured consequence of
+    not wrapping it: one Alaskan county reported as 23,741 km across.
+    Alaska's western Aleutians genuinely straddle it, so this is not
+    hypothetical for US data.
+    """
+    d = f"(({lon2}) - ({lon1}) + 540)"
+    dlon = f"(({d} - floor({d} / 360) * 360) - 180)"
+    return (f"6371 * sqrt(pow(radians(({lat2}) - ({lat1})), 2) + "
+            f"pow(radians({dlon}) * cos(radians({lat1})), 2))")
+
+
 def geography_of(lat, lon, timeout=30):
     """The exact US state, county and tract containing a coordinate.
 
@@ -464,7 +479,6 @@ WHERE n.precision = 'city' AND coalesce(n.city, '') <> ''
   {"AND n.country IN ('US', 'United States')" if args.us_only else ""}
 GROUP BY n.city, coalesce(nullif(n.region, ''), d.state_usps, ''),
          coalesce(n.country, '')
-HAVING count(DISTINCT (n.lat, n.lon)) = 1
 ORDER BY count(*) DESC""").splitlines():
         p = line.split("|")
         if len(p) >= 4:
@@ -483,13 +497,13 @@ ORDER BY count(*) DESC""").splitlines():
         todo = todo[:args.limit]
 
     if not todo:
-        print(f"All {len(rows):,} single-point cities are already geocoded. "
+        print(f"All {len(rows):,} cities are already geocoded. "
               f"Run classify next:")
         print(f"  python3 -u {script('centroid_check.py')} classify")
         return 0
 
-    print(f"{len(rows):,} single-point cities, {len(done):,} already "
-          f"geocoded, {len(todo):,} to do now.")
+    print(f"{len(rows):,} cities appearing in city-level rows, "
+          f"{len(done):,} already geocoded, {len(todo):,} to do now.")
     print(f"One request per second per Nominatim's usage policy, so about "
           f"{len(todo) / 60.0:.0f} minutes.\n")
 
@@ -534,6 +548,7 @@ def cmd_classify(args):
     # column list, and this version adds region_eff, so postgres refuses
     # with "cannot change name of view column". Nothing is lost: the view is
     # derived in full from the tables beneath it.
+    km_expr = km_sql("n.lat", "n.lon", "c.lat", "c.lon")
     psql("-qc", f"""
 DROP VIEW IF EXISTS node_location_graded;
 CREATE VIEW node_location_graded AS
@@ -564,18 +579,32 @@ WITH loc AS (
 SELECT n.*,
        p.city_points,
        c.lat AS city_lat, c.lon AS city_lon,
-       CASE WHEN c.lat IS NULL THEN NULL
-            ELSE 6371 * sqrt(pow(radians(c.lat - n.lat), 2) +
-                 pow(radians(c.lon - n.lon) * cos(radians(n.lat)), 2))
-       END AS km_from_city_centroid,
+       CASE WHEN c.lat IS NULL THEN NULL ELSE {km_expr} END
+         AS km_from_city_centroid,
+       -- MEASUREMENT FIRST. The earlier version short-circuited on
+       -- city_points > 1, meaning "this city has several coordinates so it
+       -- resolves below city level", and graded every one of those points
+       -- site_subcity without comparing any of them to the centroid.
+       --
+       -- That is wrong precisely where it matters most. In Boris's run the
+       -- largest sites came back graded site_subcity with no distance
+       -- recorded at all: New York with 240 node addresses at 40.7128,
+       -- -74.0060, Dallas 124 at 32.7767, -96.7970, Chicago 107 at
+       -- 41.8781, -87.6298, Boston 67 at 42.3601, -71.0589. Those are the
+       -- very coordinates measured as city centroids, within 11 to 430 m.
+       -- A big city has many points AND a centroid among them, and the
+       -- shortcut exempted the centroid from the test.
+       --
+       -- So when a centroid is known, the distance decides. city_points is
+       -- used only when no centroid could be obtained, and is labelled
+       -- distinctly so weaker evidence is never mistaken for a measurement.
        CASE
          WHEN n.precision <> 'city' THEN n.precision
-         WHEN coalesce(p.city_points, 0) > 1 THEN 'site_subcity'
-         WHEN c.lat IS NULL THEN 'city_unchecked'
-         WHEN 6371 * sqrt(pow(radians(c.lat - n.lat), 2) +
-              pow(radians(c.lon - n.lon) * cos(radians(n.lat)), 2))
-              <= {float(args.tolerance_km)} THEN 'city_fallback'
-         ELSE 'site_subcity'
+         WHEN c.lat IS NOT NULL THEN
+              CASE WHEN {km_expr} <= {float(args.tolerance_km)}
+                   THEN 'city_fallback' ELSE 'site_subcity' END
+         WHEN coalesce(p.city_points, 0) > 1 THEN 'site_subcity_unmeasured'
+         ELSE 'city_unchecked'
        END AS grade
 FROM loc n
 LEFT JOIN pts p
@@ -632,7 +661,8 @@ WHERE country IN ('US', 'United States')
 GROUP BY 1
 ORDER BY CASE grade WHEN 'facility' THEN 1 WHEN 'operator_named' THEN 2
                     WHEN 'site_subcity' THEN 3
-                    WHEN 'city_unchecked' THEN 4 ELSE 5 END"""))
+                    WHEN 'site_subcity_unmeasured' THEN 4
+                    WHEN 'city_unchecked' THEN 5 ELSE 6 END"""))
     print(f"\nLargest infrastructure sites, United States only:\n")
     print(psql("-c", f"""
 SELECT grade, city, region, count(*) AS node_addresses,
@@ -640,7 +670,8 @@ SELECT grade, city, region, count(*) AS node_addresses,
        round(km_from_city_centroid::numeric, 1) AS km_from_centroid
 FROM node_location_graded
 WHERE country IN ('US', 'United States')
-  AND grade IN ('facility', 'operator_named', 'site_subcity')
+  AND grade IN ('facility', 'operator_named', 'site_subcity',
+                'site_subcity_unmeasured')
 GROUP BY grade, city, region, lat, lon, km_from_city_centroid
 ORDER BY count(*) DESC LIMIT {int(args.limit)}"""))
     return 0
