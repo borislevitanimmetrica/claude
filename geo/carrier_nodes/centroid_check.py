@@ -163,114 +163,199 @@ def geocode_city(city, region, country):
     return None, None, None
 
 
-def derive_states(args_limit=None):
-    """Fill the state of every city whose source did not give one.
+GEOGRAPHIES = ("https://geocoding.geo.census.gov/geocoder/geographies/"
+               "coordinates")
 
-    WHY THIS IS NOT COSMETIC. Boris, 2026-11-18: "In cases like Layton,
-    where state is not available in the source, derive state from the
-    coordinates (here, Utah)."
 
-    His run showed "[25/2781] Layton,  (34 addresses)" with a blank region,
-    so the geocoder was asked for "Layton, USA". It returned 41.0751,
-    -111.9742, which is Layton UTAH, but there are also Laytons in New
-    Jersey and Florida and nothing in the question distinguished them. A
-    wrong city centroid produces a wrong distance and therefore a wrong
-    grade, silently.
+def geography_of(lat, lon, timeout=30):
+    """The exact US state, county and tract containing a coordinate.
 
-    And the blank is SYSTEMATIC, not occasional. His
-    ip2city_dbiplite_probe_tbl has no region column at all, which `fill`
-    reported at the time, so every one of the 21,342 addresses filled from
-    it carries a null region. Roughly a quarter of the candidate cities in
-    his top 25 had no state.
+    THE COORDINATES DECIDE. NOTHING IS IMPUTED.
 
-    THE NODE'S OWN COORDINATE SETTLES IT. We are geocoding the city only to
-    compare it against a coordinate we already have, and that coordinate
-    lies in exactly one state. Nearest county centroid from
-    census_county_tbl gives the state: counties are small relative to
-    states, so the only risk is a point within a few kilometres of a state
-    line, and for a city NAME that is a far smaller risk than picking the
-    wrong state entirely.
+    Boris, 2026-11-18: "Don't guess in imputation!!!!! Just use the
+    coordinates as I asked!!!!!"
 
-    Done per distinct coordinate rather than per node, so it is a few
-    thousand comparisons against 3,222 counties rather than tens of
-    millions.
+    He is right twice over, because I guessed twice before getting here.
+
+    FIRST I took the nearest US county centroid with no country filter and
+    no bound, which produced Chennai in Alaska from 11,596 km away, and
+    Singapore likewise, and London in Maine. Nearest-anything is not a
+    containment test.
+
+    THEN I wrote bounding boxes for the US states and territories from my
+    own recollection of their extents. That is just as much a guess, only
+    less visibly wrong, and it was unnecessary.
+
+    This is the Census Bureau's own reverse geocoder. It performs a real
+    point-in-polygon test against the boundaries the Census publishes and
+    returns the containing state, county and tract. For a coordinate outside
+    the United States it returns NO GEOGRAPHY AT ALL, which is the correct
+    answer rather than a fallback, so no country filter and no box is
+    needed. Verified 2026-11-18:
+
+      41.0751, -111.9742   UT Utah, Davis County, tract 49011125805
+      41.0600,  -74.8800   NJ New Jersey, Sussex County, tract 34037373900
+      13.0843,   80.2705   no US geography          (Chennai)
+       1.3521,  103.8200   no US geography          (Singapore)
+      51.5072,   -0.1276   no US geography          (London)
+      21.3099, -157.8581   HI Hawaii, Honolulu County
+      52.8000, -169.0000   AK Alaska, Aleutians West Census Area
+
+    The Aleutians case matters: it is west of -169 and the service places it
+    correctly, where my own distance arithmetic had reported that county as
+    23,741 km across because the longitude difference does not wrap.
+
+    THE TRACT COMES FREE, and step 4 needs a tract per node anyway, so this
+    one call answers two questions.
+
+    Returns a dict, or None on a transport failure, which is distinct from
+    an empty answer meaning "not in the United States".
     """
-    if psql_q("SELECT to_regclass('census_county_tbl') IS NOT NULL") != "t":
-        print("census_county_tbl does not exist, so a state cannot be "
-              "derived from coordinates. Load the gazetteer first:")
-        print(f"  python3 -u {script('coverage_holes.py')} fetch "
-              f"--dir /home/boris/geo/census")
-        print(f"  python3 -u {script('coverage_holes.py')} load "
-              f"--dir /home/boris/geo/census")
-        return False
+    d = get_json(GEOGRAPHIES, {"x": lon, "y": lat,
+                               "benchmark": "Public_AR_Current",
+                               "vintage": "Current_Current",
+                               "format": "json"}, timeout=timeout)
+    if d is None:
+        return None
+    try:
+        g = d["result"]["geographies"]
+    except (KeyError, TypeError):
+        return None
+    st = g.get("States") or []
+    co = g.get("Counties") or []
+    tr = g.get("Census Tracts") or []
+    if not st:
+        return {"in_us": False}
+    return {
+        "in_us": True,
+        "state_usps": st[0].get("STUSAB"),
+        "state_name": st[0].get("NAME"),
+        "county_geoid": (co[0].get("GEOID") if co else None),
+        "county_name": (co[0].get("NAME") if co else None),
+        "tract_geoid": (tr[0].get("GEOID") if tr else None),
+    }
 
+
+def derive_states(limit=None, rate=0.5):
+    """Look up the containing geography for coordinates lacking a region.
+
+    One request per DISTINCT COORDINATE, cached, so the cost is paid once.
+    Nothing is inferred from distance and nothing from a bounding box.
+    """
     psql("-qc", """
-CREATE TABLE IF NOT EXISTS city_state_derived_tbl (
-    city        text NOT NULL,
-    lat         double precision NOT NULL,
-    lon         double precision NOT NULL,
-    state_usps  text NOT NULL,
-    county_name text,
-    km_to_county double precision,
-    PRIMARY KEY (city, lat, lon));
-COMMENT ON TABLE city_state_derived_tbl IS
-  'State inferred from a node coordinate, for cities whose source gave no region. Needed because ip-api answers filled from the probe estate carry no region at all, which made the city name ambiguous: "Layton" exists in Utah, New Jersey and Florida. The state comes from the nearest county centroid, so the only material risk is a point within a few kilometres of a state line.';""")
+CREATE TABLE IF NOT EXISTS coord_geography_tbl (
+    lat          double precision NOT NULL,
+    lon          double precision NOT NULL,
+    in_us        boolean NOT NULL,
+    state_usps   text,
+    state_name   text,
+    county_geoid text,
+    county_name  text,
+    tract_geoid  text,
+    asked_at     timestamptz NOT NULL DEFAULT now(),
+    PRIMARY KEY (lat, lon));
+COMMENT ON TABLE coord_geography_tbl IS
+  'The US state, county and census tract CONTAINING each coordinate, from the Census Bureau reverse geocoder, which performs a real point-in-polygon test. in_us is false for a coordinate outside the United States, which the service reports by returning no geography. Nothing here is inferred from proximity or from a bounding box: an earlier version used nearest county centroid and placed Chennai in Alaska.';""")
 
-    psql("-qc", """
-INSERT INTO city_state_derived_tbl
-    (city, lat, lon, state_usps, county_name, km_to_county)
-SELECT d.city, d.lat, d.lon, v.state_usps, v.name, v.km
-FROM (SELECT DISTINCT city, lat, lon
-      FROM node_location
-      WHERE precision = 'city'
-        AND coalesce(city, '') <> ''
-        AND coalesce(region, '') = ''
-        AND lat IS NOT NULL) d
-CROSS JOIN LATERAL (
-    SELECT c.state_usps, c.name,
-           6371 * sqrt(pow(radians(c.lat - d.lat), 2) +
-                       pow(radians(c.lon - d.lon) * cos(radians(d.lat)), 2))
-             AS km
-    FROM census_county_tbl c
-    ORDER BY pow(c.lat - d.lat, 2) +
-             pow((c.lon - d.lon) * cos(radians(d.lat)), 2)
-    LIMIT 1) v
-ON CONFLICT (city, lat, lon) DO UPDATE SET
-    state_usps = excluded.state_usps,
-    county_name = excluded.county_name,
-    km_to_county = excluded.km_to_county""")
+    rows = []
+    for line in psql("-qtAF|", "-c", """
+SELECT DISTINCT n.lat, n.lon
+FROM node_location n
+LEFT JOIN coord_geography_tbl g ON g.lat = n.lat AND g.lon = n.lon
+WHERE n.precision = 'city'
+  AND coalesce(n.city, '') <> ''
+  AND coalesce(n.region, '') = ''
+  AND n.lat IS NOT NULL
+  AND g.lat IS NULL""").splitlines():
+        p = line.split("|")
+        if len(p) >= 2:
+            try:
+                rows.append((float(p[0]), float(p[1])))
+            except ValueError:
+                continue
+    if limit:
+        rows = rows[:limit]
 
-    n = psql_q("SELECT count(*) FROM city_state_derived_tbl")
-    print(f"state derived from coordinates for {int(n or 0):,} "
-          f"city-and-coordinate pair(s) whose source gave none.", flush=True)
+    if not rows:
+        n = psql_q("SELECT count(*) FROM coord_geography_tbl")
+        print(f"Every coordinate needing a state is already looked up, "
+              f"{int(n or 0):,} cached.", flush=True)
+    else:
+        print(f"{len(rows):,} distinct coordinate(s) need their containing "
+              f"geography. One request each at {rate:g}s, about "
+              f"{len(rows) * rate / 60:.0f} minutes, cached so it is paid "
+              f"once.", flush=True)
+        us = foreign = failed = 0
+        t0 = time.monotonic()
+        for i, (lat, lon) in enumerate(rows, 1):
+            g = geography_of(lat, lon)
+            if g is None:
+                failed += 1
+                time.sleep(max(rate, 1.0))
+                continue
+            if g["in_us"]:
+                us += 1
+                psql("-qc",
+                     "INSERT INTO coord_geography_tbl (lat, lon, in_us, "
+                     "state_usps, state_name, county_geoid, county_name, "
+                     f"tract_geoid) VALUES ({num(lat)}, {num(lon)}, true, "
+                     f"{lit(g['state_usps'])}, {lit(g['state_name'])}, "
+                     f"{lit(g['county_geoid'])}, {lit(g['county_name'])}, "
+                     f"{lit(g['tract_geoid'])}) "
+                     "ON CONFLICT (lat, lon) DO UPDATE SET "
+                     "in_us = true, state_usps = excluded.state_usps, "
+                     "state_name = excluded.state_name, "
+                     "county_geoid = excluded.county_geoid, "
+                     "county_name = excluded.county_name, "
+                     "tract_geoid = excluded.tract_geoid")
+            else:
+                foreign += 1
+                psql("-qc",
+                     "INSERT INTO coord_geography_tbl (lat, lon, in_us) "
+                     f"VALUES ({num(lat)}, {num(lon)}, false) "
+                     "ON CONFLICT (lat, lon) DO UPDATE SET in_us = false")
+            if i == 1 or i % 50 == 0 or i == len(rows):
+                el = time.monotonic() - t0
+                eta = (f", about {(len(rows) - i) * el / i / 60:.0f} min left"
+                       if i > 1 else "")
+                print(f"[{i}/{len(rows)}] {us:,} in the US, {foreign:,} "
+                      f"outside it, {failed:,} failed{eta}", flush=True)
+            time.sleep(rate)
+        print(f"\n{us:,} in the US, {foreign:,} outside it, {failed:,} "
+              f"transport failures, in {(time.monotonic() - t0) / 60:.1f} "
+              f"minutes", flush=True)
+
     print(psql("-c", """
-SELECT state_usps, count(*) AS cities
-FROM city_state_derived_tbl GROUP BY 1 ORDER BY count(*) DESC LIMIT 8"""))
-    far = psql_q("SELECT count(*) FROM city_state_derived_tbl "
-                 "WHERE km_to_county > 60")
-    if far and far != "0":
-        print(f"NOTE: {int(far):,} are more than 60 km from the nearest "
-              f"county centroid, so the derived state is weaker evidence "
-              f"for those. They are listed by `states --check`.", flush=True)
+SELECT CASE WHEN in_us THEN '1. inside the United States'
+            ELSE '2. outside it, so no state and no US tract' END AS verdict,
+       count(*) AS coordinates
+FROM coord_geography_tbl GROUP BY 1 ORDER BY 1"""))
+    print(psql("-c", """
+SELECT state_usps, count(*) AS coordinates
+FROM coord_geography_tbl WHERE in_us
+GROUP BY 1 ORDER BY count(*) DESC LIMIT 10"""))
     return True
 
 
 def cmd_states(args):
-    """Derive and report the states inferred from coordinates."""
+    """Look up and report the geography containing each coordinate."""
     require_view()
-    if not derive_states():
+    if not derive_states(limit=args.limit, rate=args.rate):
         return 1
     if args.check:
         print()
-        print("Furthest from a county centroid, where the derived state "
-              "is least certain:")
+        print("Coordinates the Census places OUTSIDE the United States. "
+              "These get no state, which is correct: the plan maps US "
+              "census tracts to US ZIP codes.")
         print()
         print(psql("-c", """
-SELECT city, state_usps, county_name,
-       round(km_to_county::numeric, 1) AS km_to_county,
-       round(lat::numeric, 4) AS lat, round(lon::numeric, 4) AS lon
-FROM city_state_derived_tbl
-ORDER BY km_to_county DESC LIMIT 20"""))
+SELECT n.city, count(*) AS node_addresses,
+       round(g.lat::numeric, 4) AS lat, round(g.lon::numeric, 4) AS lon
+FROM coord_geography_tbl g
+JOIN node_location n ON n.lat = g.lat AND n.lon = g.lon
+WHERE NOT g.in_us
+GROUP BY n.city, g.lat, g.lon
+ORDER BY count(*) DESC LIMIT 20"""))
     return 0
 
 
@@ -373,8 +458,8 @@ SELECT n.city,
        coalesce(n.country, '') AS country,
        count(*)
 FROM node_location n
-LEFT JOIN city_state_derived_tbl d
-       ON d.city = n.city AND d.lat = n.lat AND d.lon = n.lon
+LEFT JOIN coord_geography_tbl d
+       ON d.lat = n.lat AND d.lon = n.lon AND d.in_us
 WHERE n.precision = 'city' AND coalesce(n.city, '') <> ''
   {"AND n.country IN ('US', 'United States')" if args.us_only else ""}
 GROUP BY n.city, coalesce(nullif(n.region, ''), d.state_usps, ''),
@@ -469,8 +554,8 @@ WITH loc AS (
   SELECT n.*,
          coalesce(nullif(n.region, ''), ds.state_usps, '') AS region_eff
   FROM node_location n
-  LEFT JOIN city_state_derived_tbl ds
-         ON ds.city = n.city AND ds.lat = n.lat AND ds.lon = n.lon
+  LEFT JOIN coord_geography_tbl ds
+         ON ds.lat = n.lat AND ds.lon = n.lon AND ds.in_us
 ), pts AS (
   SELECT city, region_eff, country, count(DISTINCT (lat, lon)) AS city_points
   FROM loc
@@ -586,8 +671,12 @@ def main():
                         help="derive the state from the node coordinate "
                              "for cities whose source gave none")
     st.add_argument("--check", action="store_true",
-                    help="list the ones furthest from a county centroid, "
-                         "where the derived state is least certain")
+                    help="list the coordinates the Census places outside "
+                         "the United States")
+    st.add_argument("--limit", type=int,
+                    help="stop after this many coordinates, for a trial")
+    st.add_argument("--rate", type=float, default=0.5,
+                    help="seconds between requests, default 0.5")
     st.set_defaults(func=cmd_states)
 
     cl = sub.add_parser("classify",

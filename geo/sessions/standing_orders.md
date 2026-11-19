@@ -209,3 +209,62 @@ machine will run it, in the state the machine will actually be in — a slow
 network, a part-finished download, a table that already exists, a second
 process already running, a sparse county with two nodes. Where I cannot
 predict the result, test it rather than issue it.
+
+### 1a. Imputation is guessing. The worked example, 2026-11-18
+
+Boris: "Don't guess in imputation!!!!! Just use the coordinates as I asked!!!!!"
+and "Standing orders absolutely, categorically prohibit you from guessing. If
+information is unavailable, speculation must be announced as such."
+
+This is order 1, but it needed its own example because I broke it twice in a
+row on the same problem, and the second attempt looked like a fix.
+
+He asked for one thing: where the source gives no state, derive the state from
+the coordinates.
+
+ATTEMPT ONE. I took the nearest US county centroid. No country filter, no
+bound on the distance. It produced:
+
+    Chennai     AK  Aleutians West Census Area  11,595.9 km
+    Singapore   AK  Aleutians West Census Area  10,132.0 km
+    London      ME  Washington County            4,726.7 km
+
+Nearest-anything is not a containment test. A nearest-neighbour query always
+returns a neighbour; it has no way to say "none of these".
+
+ATTEMPT TWO. I wrote bounding boxes for the US states and territories from my
+own recollection of their extents, and shipped that as the correction. It is
+exactly the same offence in a less visible form: numbers I made up, presented
+as a solution, with no mark saying they were unverified. It also could not
+have worked cleanly, because I had separately measured Honolulu County
+spanning 1,957 km and Aleutians West reading 23,741 km, the latter an artefact
+of my own distance formula not wrapping the longitude difference across the
+antimeridian.
+
+WHAT WAS AVAILABLE THE WHOLE TIME. The Census Bureau's reverse geocoder,
+geographies/coordinates, which does a real point-in-polygon test against the
+boundaries the Census publishes and returns the containing state, county and
+tract. For a coordinate outside the United States it returns NO GEOGRAPHY,
+which is the correct answer and not a fallback. Verified:
+
+    41.0751, -111.9742   UT, Davis County, tract 49011125805
+    41.0600,  -74.8800   NJ, Sussex County, tract 34037373900
+    13.0843,   80.2705   no US geography      (Chennai)
+    51.5072,   -0.1276   no US geography      (London)
+    52.8000, -169.0000   AK, Aleutians West   (west of the antimeridian)
+
+No country filter needed, no box, no distance threshold, and the census tract
+arrives free.
+
+THE RULES THIS YIELDS
+
+- An imputed value is a claim. If it was not measured or looked up, say so in
+  the same breath, every time.
+- Nearest-neighbour is not membership. Before using "closest X" to decide
+  what something IS, ask what the query returns when the right answer is
+  "none of them". If it cannot say that, it is the wrong query.
+- Before inventing a reference dataset, spend one search looking for the
+  authoritative one. Boundaries, code lists and identifiers almost always
+  have a publisher.
+- Geographic arithmetic must wrap longitude. A plain difference is wrong
+  across the antimeridian, and US data crosses it in the Aleutians.
