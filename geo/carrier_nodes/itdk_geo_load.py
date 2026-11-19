@@ -830,22 +830,84 @@ COMMENT ON COLUMN itdk_node_geo_tbl.method IS
     for m in sorted(by_method, key=lambda k: -by_method[k]):
         print(f"    {m:<10} {by_method[m]:>8,}", flush=True)
 
+    # SENTINELS AND CITYLESS ROWS ARE NOT PLACES.
+    #
+    # Boris's first run returned 37.7510, -97.8220 as the single largest
+    # "concentration" for five different carriers, 2,597 node addresses of
+    # 13,774 on one point with a blank city. It is not a facility: MaxMind's
+    # own release note of 2016-04-11 states that for US addresses they
+    # cannot locate to a state or city they return 37.751, -97.822.
+    #
+    # Treating that as a serving site would be the worst error available
+    # here. Step 4 measures from the site to each tract centroid and step 5
+    # picks the nearest, so Charter's 843 nodes would be nearest to Kansas
+    # tracts and the ZIP codes falling out would be confidently wrong rather
+    # than absent. Absent is recoverable; wrong and plausible is not.
+    #
+    # Two exclusions, because a list of known sentinels cannot be complete:
+    # the documented coordinates, and the general rule that a row with NO
+    # CITY is a country or region centroid. The latter also catches the
+    # non-US defaults in his output, central Paris and central London.
+    #
+    # itdk_node_placed is what downstream should use. itdk_node_located is
+    # kept as everything with a coordinate, so the excluded rows remain
+    # countable rather than vanishing.
+    if psql_q("SELECT to_regclass('geo_sentinel_tbl') IS NOT NULL") != "t":
+        print("NOTE: geo_sentinel_tbl does not exist, so vendor "
+              "'could not locate' coordinates cannot be excluded by "
+              "coordinate, only by the no-city rule. Create it:", flush=True)
+        print(f"  psql -X -P pager=off -f "
+              f"{script('geo_sentinel_tbl.sql')}", flush=True)
+        psql("-qc", "CREATE TABLE IF NOT EXISTS geo_sentinel_tbl ("
+                    "lat double precision NOT NULL, "
+                    "lon double precision NOT NULL, "
+                    "kind text NOT NULL, scope text NOT NULL, "
+                    "vendor text NOT NULL, source text NOT NULL, "
+                    "note text, PRIMARY KEY (lat, lon))")
+
     psql("-qc", """
 CREATE OR REPLACE VIEW itdk_node_located AS
 SELECT i.address, g.node_id, g.method, g.city, g.region, g.country,
-       g.lat, g.lon
+       g.lat, g.lon,
+       EXISTS (SELECT 1 FROM geo_sentinel_tbl s
+               WHERE s.kind = 'sentinel'
+                 AND round(s.lat::numeric, 3) = round(g.lat::numeric, 3)
+                 AND round(s.lon::numeric, 3) = round(g.lon::numeric, 3))
+         AS on_sentinel,
+       (coalesce(g.city, '') = '') AS no_city
 FROM itdk_iface_tbl i
 JOIN itdk_node_geo_tbl g USING (node_id)
 WHERE g.lat IS NOT NULL;
+
+CREATE OR REPLACE VIEW itdk_node_placed AS
+SELECT address, node_id, method, city, region, country, lat, lon
+FROM itdk_node_located
+WHERE NOT on_sentinel AND NOT no_city;
+
+COMMENT ON VIEW itdk_node_placed IS
+  'Node addresses with a coordinate that is a PLACE. Excludes documented vendor sentinels such as MaxMind 37.751,-97.822 which means "could not locate a US address to a state or city", and excludes rows with no city, which are country or region centroids. Use this for step 4, not itdk_node_located.';
 COMMENT ON VIEW itdk_node_located IS
   'Every node address with an ITDK location, from any method. The coordinate is used as a join key associating customer addresses with the infrastructure serving them, so a bias shared with ip-api cancels in the join; it is not used as a measurement of where a building physically is. method is carried through so any consumer can weigh it.'""")
 
     print()
+    print("Everything with a coordinate, by method:")
     print(psql("-c", """
 SELECT method, count(*) AS addresses,
        count(DISTINCT node_id) AS nodes,
        count(DISTINCT city) AS cities
 FROM itdk_node_located GROUP BY 1 ORDER BY 2 DESC"""))
+
+    print("WHAT IS A PLACE AND WHAT IS NOT. A vendor sentinel means the "
+          "vendor could not locate the address, and a row with no city is a "
+          "country or region centroid. Neither is a serving site.")
+    print(psql("-c", """
+SELECT CASE WHEN on_sentinel THEN '1. documented vendor sentinel'
+            WHEN no_city     THEN '2. no city, country or region centroid'
+            ELSE                  '3. a place, usable for step 4' END
+         AS verdict,
+       count(*) AS addresses,
+       round(100.0 * count(*) / sum(count(*)) OVER (), 1) AS pct
+FROM itdk_node_located GROUP BY 1 ORDER BY 1"""))
     return 0
 
 
@@ -1179,8 +1241,26 @@ def cmd_concentration(args):
     rather than from my intuition about it. If Northborough-sized sites
     split 1-1-1 then even 2 drops them, and only the table can say.
     """
-    if psql_q("SELECT to_regclass('itdk_node_located') IS NOT NULL") != "t":
-        sys.exit("itdk_node_located does not exist. Run load first.")
+    if psql_q("SELECT to_regclass('itdk_node_placed') IS NOT NULL") != "t":
+        sys.exit("itdk_node_placed does not exist. Run load first.")
+
+    excluded = psql_q("SELECT count(*) FROM itdk_node_located "
+                      "WHERE on_sentinel OR no_city")
+    if excluded and excluded != "0":
+        print(f"EXCLUDED FROM CANDIDATE SITES: {int(excluded):,} node "
+              f"address(es) whose coordinate is a vendor sentinel or has no "
+              f"city. These are not facilities. MaxMind returns 37.751, "
+              f"-97.822 for US addresses it cannot place to a state or "
+              f"city, and a row with no city is a country or region "
+              f"centroid.", flush=True)
+        print(psql("-c", """
+SELECT CASE WHEN on_sentinel THEN 'vendor sentinel' ELSE 'no city' END
+         AS why,
+       round(lat::numeric, 4) AS lat, round(lon::numeric, 4) AS lon,
+       count(*) AS addresses
+FROM itdk_node_located
+WHERE on_sentinel OR no_city
+GROUP BY 1, 2, 3 ORDER BY count(*) DESC LIMIT 10"""))
 
     psql("-qc", """
 CREATE OR REPLACE VIEW itdk_concentration AS
@@ -1192,7 +1272,7 @@ SELECT split_part(n.hostname, '.', -2) || '.' ||
        count(DISTINCT n.hostname)             AS hostnames,
        count(DISTINCT l.node_id)              AS nodes
 FROM carrier_node_tbl n
-JOIN itdk_node_located l ON l.address = n.node_ip
+JOIN itdk_node_placed l ON l.address = n.node_ip
 GROUP BY 1, 2, 3, 4, 5, 6;
 COMMENT ON VIEW itdk_concentration IS
   'Candidate headend and central office sites: carrier plus a coordinate at which several of its nodes concentrate. The concentration is the unit of interest, not the individual node, because one node coordinate is noisy while a repeated coordinate identifies a facility. methods shows which ITDK geolocation methods contributed.'""")
