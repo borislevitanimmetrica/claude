@@ -1030,9 +1030,21 @@ def cmd_technologies(args):
     """
     require_schema()
     lean = schema_is_lean()
-    print("Technology codes PRESENT IN THE LOADED DATA.")
-    print("Read from the data because I have not verified the FCC code list")
-    print("and will not guess it.\n")
+
+    # THE NAMES COME FROM A TABLE, and a LEFT JOIN so an unknown code still
+    # appears rather than vanishing. A code present in the data but absent
+    # from bdc_technology_tbl would mean the FCC added one since the
+    # catalogue was captured, which is worth seeing, not hiding.
+    if psql_q("SELECT to_regclass('bdc_technology_tbl') IS NOT NULL") != "t":
+        sys.exit("bdc_technology_tbl does not exist, so the technology "
+                 "names cannot be shown. It is seeded from the FCC's own "
+                 "download catalogue and takes a moment:\n"
+                 f"  psql -X -P pager=off -f {here('technology_tbl.sql')}")
+
+    print("Technology codes PRESENT IN THE LOADED DATA, with the FCC's own")
+    print("names from bdc_technology_tbl. The codes present are read from")
+    print("the data; the names are the FCC's technology_code_desc, cross-")
+    print("checked against the technology token in the FCC's file names.\n")
 
     n = psql_q("SELECT coalesce(sum(row_count), 0) FROM bdc_source_file_tbl")
     try:
@@ -1045,27 +1057,41 @@ def cmd_technologies(args):
               f"file(s).\n", flush=True)
 
     timed("records per technology, one scan", """
-SELECT technology, count(*) AS records
-FROM bdc_availability_tbl
-GROUP BY technology
-ORDER BY count(*) DESC""")
+WITH r AS (
+  SELECT technology, count(*) AS records
+  FROM bdc_availability_tbl
+  GROUP BY technology
+)
+SELECT r.technology,
+       coalesce(t.code_desc, 'UNKNOWN CODE, not in bdc_technology_tbl')
+         AS technology_name,
+       r.records,
+       round(100.0 * r.records / sum(r.records) OVER (), 2) AS pct
+FROM r LEFT JOIN bdc_technology_tbl t USING (technology)
+ORDER BY r.records DESC""")
 
     if lean:
         timed("carriers per technology, index-only over distinct pairs", """
-SELECT d.technology, count(*) AS carriers,
-       left(string_agg(c.brand_name, ', ' ORDER BY c.brand_name), 86)
+SELECT d.technology,
+       coalesce(t.code_desc, 'UNKNOWN CODE') AS technology_name,
+       count(*) AS carriers,
+       left(string_agg(c.brand_name, ', ' ORDER BY c.brand_name), 64)
          AS example_brands
 FROM (SELECT DISTINCT technology, carrier_key
       FROM bdc_availability_tbl) d
 JOIN bdc_carrier_tbl c USING (carrier_key)
-GROUP BY d.technology
+LEFT JOIN bdc_technology_tbl t ON t.technology = d.technology
+GROUP BY d.technology, t.code_desc
 ORDER BY count(*) DESC""")
     else:
         timed("carriers per technology", """
-SELECT technology, count(*) AS carriers
+SELECT d.technology,
+       coalesce(t.code_desc, 'UNKNOWN CODE') AS technology_name,
+       count(*) AS carriers
 FROM (SELECT DISTINCT technology, provider_id
       FROM bdc_availability_tbl) d
-GROUP BY technology ORDER BY count(*) DESC""")
+LEFT JOIN bdc_technology_tbl t ON t.technology = d.technology
+GROUP BY d.technology, t.code_desc ORDER BY count(*) DESC""")
 
     if args.full:
         print("--full: tracts per technology. This one needs the heap, "
@@ -1073,10 +1099,13 @@ GROUP BY technology ORDER BY count(*) DESC""")
               "a scan of every row. On 519 million rows expect minutes, "
               "not seconds.\n", flush=True)
         timed("tracts per technology, full heap scan", """
-SELECT technology, count(*) AS tracts
+SELECT d.technology,
+       coalesce(t.code_desc, 'UNKNOWN CODE') AS technology_name,
+       count(*) AS tracts
 FROM (SELECT DISTINCT technology, left(block_geoid, 11) AS tract_geoid
       FROM bdc_availability_tbl) d
-GROUP BY technology ORDER BY count(*) DESC""")
+LEFT JOIN bdc_technology_tbl t ON t.technology = d.technology
+GROUP BY d.technology, t.code_desc ORDER BY count(*) DESC""")
     else:
         print("Tracts per technology is NOT run by default: it cannot use "
               "an index and must read every row. Add --full when you want "
@@ -1107,19 +1136,24 @@ GROUP BY technology ORDER BY count(*) DESC""")
           "sorts every group separately.\n")
     if lean:
         timed("carrier and technology pairs", """
-SELECT c.provider_id, left(c.brand_name, 34) AS brand, a.technology,
+SELECT c.provider_id, left(c.brand_name, 28) AS brand,
+       a.technology,
+       coalesce(t.code_desc, 'UNKNOWN CODE') AS technology_name,
        count(*) AS records
 FROM bdc_availability_tbl a
 JOIN bdc_carrier_tbl c USING (carrier_key)
-GROUP BY c.provider_id, left(c.brand_name, 34), a.technology
+LEFT JOIN bdc_technology_tbl t ON t.technology = a.technology
+GROUP BY c.provider_id, left(c.brand_name, 28), a.technology, t.code_desc
 ORDER BY count(*) DESC
 LIMIT 25""")
     else:
         timed("carrier and technology pairs", """
-SELECT provider_id, left(brand_name, 34) AS brand, technology,
+SELECT a.provider_id, left(a.brand_name, 28) AS brand, a.technology,
+       coalesce(t.code_desc, 'UNKNOWN CODE') AS technology_name,
        count(*) AS records
-FROM bdc_availability_tbl
-GROUP BY provider_id, left(brand_name, 34), technology
+FROM bdc_availability_tbl a
+LEFT JOIN bdc_technology_tbl t ON t.technology = a.technology
+GROUP BY a.provider_id, left(a.brand_name, 28), a.technology, t.code_desc
 ORDER BY count(*) DESC
 LIMIT 25""")
 
@@ -1133,13 +1167,15 @@ WITH top AS (
   GROUP BY a.carrier_key, a.technology
   ORDER BY count(*) DESC
   LIMIT 25)
-SELECT c.provider_id, left(c.brand_name, 34) AS brand, t.technology,
+SELECT c.provider_id, left(c.brand_name, 28) AS brand, t.technology,
+       coalesce(x.code_desc, 'UNKNOWN CODE') AS technology_name,
        t.records,
        (SELECT count(DISTINCT left(a2.block_geoid, 11))
         FROM bdc_availability_tbl a2
         WHERE a2.carrier_key = t.carrier_key
           AND a2.technology = t.technology) AS tracts
 FROM top t JOIN bdc_carrier_tbl c USING (carrier_key)
+LEFT JOIN bdc_technology_tbl x ON x.technology = t.technology
 ORDER BY t.records DESC""")
 
 
