@@ -1482,7 +1482,7 @@ def main():
     k = sub.add_parser("concentration",
                        help="places of concentration: candidate headends "
                             "and COs, which is step 2 of the plan")
-    k.add_argument("--min-nodes", type=int, default=2,
+    k.add_argument("--min-nodes", type=int, default=1,
                    help="a concentration must carry at least this many node "
                         "addresses, default 2. Use 1 to see every site "
                         "including singletons.")
@@ -1499,7 +1499,7 @@ def main():
                              "and the street-address worklist it implies")
     dv.add_argument("--table", help="which coordinate table to compare "
                                     "against; see `sources`")
-    dv.add_argument("--min-nodes", type=int, default=2)
+    dv.add_argument("--min-nodes", type=int, default=1)
     dv.add_argument("--min-km", type=float, default=5.0)
     dv.add_argument("--limit", type=int, default=40)
     dv.set_defaults(func=cmd_divergence)

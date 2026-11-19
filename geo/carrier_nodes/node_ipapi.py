@@ -763,7 +763,7 @@ def main():
     s = sub.add_parser("sites",
                        help="candidate sites from ip-api, sentinels and "
                             "cityless answers excluded")
-    s.add_argument("--min-nodes", type=int, default=2)
+    s.add_argument("--min-nodes", type=int, default=1)
     s.add_argument("--limit", type=int, default=30)
     s.set_defaults(func=cmd_sites)
 
