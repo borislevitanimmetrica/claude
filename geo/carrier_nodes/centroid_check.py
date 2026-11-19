@@ -163,6 +163,117 @@ def geocode_city(city, region, country):
     return None, None, None
 
 
+def derive_states(args_limit=None):
+    """Fill the state of every city whose source did not give one.
+
+    WHY THIS IS NOT COSMETIC. Boris, 2026-11-18: "In cases like Layton,
+    where state is not available in the source, derive state from the
+    coordinates (here, Utah)."
+
+    His run showed "[25/2781] Layton,  (34 addresses)" with a blank region,
+    so the geocoder was asked for "Layton, USA". It returned 41.0751,
+    -111.9742, which is Layton UTAH, but there are also Laytons in New
+    Jersey and Florida and nothing in the question distinguished them. A
+    wrong city centroid produces a wrong distance and therefore a wrong
+    grade, silently.
+
+    And the blank is SYSTEMATIC, not occasional. His
+    ip2city_dbiplite_probe_tbl has no region column at all, which `fill`
+    reported at the time, so every one of the 21,342 addresses filled from
+    it carries a null region. Roughly a quarter of the candidate cities in
+    his top 25 had no state.
+
+    THE NODE'S OWN COORDINATE SETTLES IT. We are geocoding the city only to
+    compare it against a coordinate we already have, and that coordinate
+    lies in exactly one state. Nearest county centroid from
+    census_county_tbl gives the state: counties are small relative to
+    states, so the only risk is a point within a few kilometres of a state
+    line, and for a city NAME that is a far smaller risk than picking the
+    wrong state entirely.
+
+    Done per distinct coordinate rather than per node, so it is a few
+    thousand comparisons against 3,222 counties rather than tens of
+    millions.
+    """
+    if psql_q("SELECT to_regclass('census_county_tbl') IS NOT NULL") != "t":
+        print("census_county_tbl does not exist, so a state cannot be "
+              "derived from coordinates. Load the gazetteer first:")
+        print(f"  python3 -u {script('coverage_holes.py')} fetch "
+              f"--dir /home/boris/geo/census")
+        print(f"  python3 -u {script('coverage_holes.py')} load "
+              f"--dir /home/boris/geo/census")
+        return False
+
+    psql("-qc", """
+CREATE TABLE IF NOT EXISTS city_state_derived_tbl (
+    city        text NOT NULL,
+    lat         double precision NOT NULL,
+    lon         double precision NOT NULL,
+    state_usps  text NOT NULL,
+    county_name text,
+    km_to_county double precision,
+    PRIMARY KEY (city, lat, lon));
+COMMENT ON TABLE city_state_derived_tbl IS
+  'State inferred from a node coordinate, for cities whose source gave no region. Needed because ip-api answers filled from the probe estate carry no region at all, which made the city name ambiguous: "Layton" exists in Utah, New Jersey and Florida. The state comes from the nearest county centroid, so the only material risk is a point within a few kilometres of a state line.';""")
+
+    psql("-qc", """
+INSERT INTO city_state_derived_tbl
+    (city, lat, lon, state_usps, county_name, km_to_county)
+SELECT d.city, d.lat, d.lon, v.state_usps, v.name, v.km
+FROM (SELECT DISTINCT city, lat, lon
+      FROM node_location
+      WHERE precision = 'city'
+        AND coalesce(city, '') <> ''
+        AND coalesce(region, '') = ''
+        AND lat IS NOT NULL) d
+CROSS JOIN LATERAL (
+    SELECT c.state_usps, c.name,
+           6371 * sqrt(pow(radians(c.lat - d.lat), 2) +
+                       pow(radians(c.lon - d.lon) * cos(radians(d.lat)), 2))
+             AS km
+    FROM census_county_tbl c
+    ORDER BY pow(c.lat - d.lat, 2) +
+             pow((c.lon - d.lon) * cos(radians(d.lat)), 2)
+    LIMIT 1) v
+ON CONFLICT (city, lat, lon) DO UPDATE SET
+    state_usps = excluded.state_usps,
+    county_name = excluded.county_name,
+    km_to_county = excluded.km_to_county""")
+
+    n = psql_q("SELECT count(*) FROM city_state_derived_tbl")
+    print(f"state derived from coordinates for {int(n or 0):,} "
+          f"city-and-coordinate pair(s) whose source gave none.", flush=True)
+    print(psql("-c", """
+SELECT state_usps, count(*) AS cities
+FROM city_state_derived_tbl GROUP BY 1 ORDER BY count(*) DESC LIMIT 8"""))
+    far = psql_q("SELECT count(*) FROM city_state_derived_tbl "
+                 "WHERE km_to_county > 60")
+    if far and far != "0":
+        print(f"NOTE: {int(far):,} are more than 60 km from the nearest "
+              f"county centroid, so the derived state is weaker evidence "
+              f"for those. They are listed by `states --check`.", flush=True)
+    return True
+
+
+def cmd_states(args):
+    """Derive and report the states inferred from coordinates."""
+    require_view()
+    if not derive_states():
+        return 1
+    if args.check:
+        print()
+        print("Furthest from a county centroid, where the derived state "
+              "is least certain:")
+        print()
+        print(psql("-c", """
+SELECT city, state_usps, county_name,
+       round(km_to_county::numeric, 1) AS km_to_county,
+       round(lat::numeric, 4) AS lat, round(lon::numeric, 4) AS lon
+FROM city_state_derived_tbl
+ORDER BY km_to_county DESC LIMIT 20"""))
+    return 0
+
+
 def ensure_tables():
     psql("-qc", """
 CREATE TABLE IF NOT EXISTS city_centroid_tbl (
@@ -236,14 +347,39 @@ def cmd_geocode(args):
     require_view()
     ensure_tables()
 
+    # DERIVE MISSING STATES FIRST, and discard any cached centroid that was
+    # looked up WITHOUT one. A centroid cached under a blank region may be
+    # the wrong city entirely, so keeping it would be worse than not having
+    # it: the grade it produces looks just as confident.
+    derive_states()
+    stale = psql_q("SELECT count(*) FROM city_centroid_tbl WHERE region = ''")
+    if stale and stale != "0":
+        print(f"DISCARDING {int(stale):,} cached centroid(s) that were "
+              f"geocoded with no state. A city name without a state is "
+              f"ambiguous, Layton exists in Utah, New Jersey and Florida, "
+              f"so those answers cannot be trusted and are looked up again "
+              f"with the state derived from the node coordinate.",
+              flush=True)
+        print("      Nothing else is affected: entries that had a state "
+              "are kept and will not be fetched again.", flush=True)
+        psql("-qc", "DELETE FROM city_centroid_tbl WHERE region = ''")
+
     rows = []
+    # coalesce the source's region with the one derived from the node
+    # coordinate, so a city is never geocoded without a state.
     for line in psql("-qtAF|", "-c", f"""
-SELECT city, coalesce(region, ''), coalesce(country, ''), count(*)
-FROM node_location
-WHERE precision = 'city' AND coalesce(city, '') <> ''
-  {"AND country IN ('US', 'United States')" if args.us_only else ""}
-GROUP BY city, coalesce(region, ''), coalesce(country, '')
-HAVING count(DISTINCT (lat, lon)) = 1
+SELECT n.city,
+       coalesce(nullif(n.region, ''), d.state_usps, '') AS region,
+       coalesce(n.country, '') AS country,
+       count(*)
+FROM node_location n
+LEFT JOIN city_state_derived_tbl d
+       ON d.city = n.city AND d.lat = n.lat AND d.lon = n.lon
+WHERE n.precision = 'city' AND coalesce(n.city, '') <> ''
+  {"AND n.country IN ('US', 'United States')" if args.us_only else ""}
+GROUP BY n.city, coalesce(nullif(n.region, ''), d.state_usps, ''),
+         coalesce(n.country, '')
+HAVING count(DISTINCT (n.lat, n.lon)) = 1
 ORDER BY count(*) DESC""").splitlines():
         p = line.split("|")
         if len(p) >= 4:
@@ -309,11 +445,35 @@ def cmd_classify(args):
         sys.exit("city_centroid_tbl does not exist. Run geocode first:\n"
                  f"  python3 -u {script('centroid_check.py')} geocode")
 
+    # DROPPED, NOT REPLACED. CREATE OR REPLACE VIEW cannot change the
+    # column list, and this version adds region_eff, so postgres refuses
+    # with "cannot change name of view column". Nothing is lost: the view is
+    # derived in full from the tables beneath it.
     psql("-qc", f"""
-CREATE OR REPLACE VIEW node_location_graded AS
-WITH pts AS (
-  SELECT city, region, country, count(DISTINCT (lat, lon)) AS city_points
-  FROM node_location
+DROP VIEW IF EXISTS node_location_graded;
+CREATE VIEW node_location_graded AS
+-- THE POINT COUNT MUST USE THE DERIVED STATE TOO.
+--
+-- Found by running this, not by reading it. The first version grouped on
+-- node_location.region, which is blank for every row filled from the probe
+-- estate, so two DIFFERENT cities of the same name collapsed into one
+-- group. Layton Utah and Layton New Jersey became a single "Layton" with
+-- two distinct points, which then graded both site_subcity on the grounds
+-- that the city resolves below city level, without the centroid check ever
+-- running. Layton Utah sits EXACTLY on its own centroid and is a fallback.
+--
+-- So the same disambiguation Boris asked for has to be applied on both
+-- sides: once when geocoding the city, and once when counting how many
+-- points that city has.
+WITH loc AS (
+  SELECT n.*,
+         coalesce(nullif(n.region, ''), ds.state_usps, '') AS region_eff
+  FROM node_location n
+  LEFT JOIN city_state_derived_tbl ds
+         ON ds.city = n.city AND ds.lat = n.lat AND ds.lon = n.lon
+), pts AS (
+  SELECT city, region_eff, country, count(DISTINCT (lat, lon)) AS city_points
+  FROM loc
   WHERE precision = 'city' AND coalesce(city, '') <> ''
   GROUP BY 1, 2, 3)
 SELECT n.*,
@@ -332,10 +492,12 @@ SELECT n.*,
               <= {float(args.tolerance_km)} THEN 'city_fallback'
          ELSE 'site_subcity'
        END AS grade
-FROM node_location n
-LEFT JOIN pts p USING (city, region, country)
+FROM loc n
+LEFT JOIN pts p
+       ON p.city = n.city AND p.region_eff = n.region_eff
+      AND p.country IS NOT DISTINCT FROM n.country
 LEFT JOIN city_centroid_tbl c
-       ON c.city = n.city AND c.region = coalesce(n.region, '')
+       ON c.city = n.city AND c.region = n.region_eff
       AND c.country = coalesce(n.country, '');
 
 COMMENT ON VIEW node_location_graded IS
@@ -419,6 +581,14 @@ def main():
                         "Nominatim's usage policy. Do not lower it.")
     g.add_argument("--us-only", action="store_true", default=True)
     g.set_defaults(func=cmd_geocode)
+
+    st = sub.add_parser("states",
+                        help="derive the state from the node coordinate "
+                             "for cities whose source gave none")
+    st.add_argument("--check", action="store_true",
+                    help="list the ones furthest from a county centroid, "
+                         "where the derived state is least certain")
+    st.set_defaults(func=cmd_states)
 
     cl = sub.add_parser("classify",
                         help="grade every coordinate site or fallback")
