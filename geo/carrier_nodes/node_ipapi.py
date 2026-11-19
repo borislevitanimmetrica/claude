@@ -33,11 +33,30 @@ From ip-api's own documentation, read 2026-11-18:
   and 15 per minute for the BATCH endpoint, per source IP address
     https://ip-api.com/docs/unban
 
-The free endpoint is HTTP only and non-commercial. This sends at most one
-batch every --interval seconds, default 5, which is 12 per minute against a
-documented ceiling of 15, so there is margin. It also reads the
-X-Rl and X-Ttl headers ip-api returns and WAITS when the remaining allowance
-reaches zero rather than pressing on into a ban.
+Boris, 2026-11-18: "No need to stay conservative. Use 1500 IP/minute in
+batches of 100. This will also test our batch support. A paid account will be
+established before the service we are building is commercialized. Currently
+it is nonrevenue feasibility research."
+
+So the default is now the documented ceiling: 15 batches of 100 per minute,
+one every 4 seconds, 1,500 addresses a minute. The non-commercial condition
+on the free endpoint is met by that statement of use.
+
+RUNNING AT THE CEILING NEEDS MORE CARE, NOT LESS. At 12 batches a minute an
+occasional miscount cost nothing. At 15 it is the limit itself, so three
+things govern the loop rather than one:
+
+  the interval, 4 seconds, which paces it at the ceiling
+  the X-Rl header, the allowance remaining in the current window, which is
+    read after every request; when it reaches zero the loop waits X-Ttl
+    seconds for the window to reset
+  the HTTP STATUS, checked explicitly. 429 means the limit was exceeded, and
+    ip-api's own unban page says repeated violation is what gets a source
+    address blocked. On 429 the loop backs off for the full window and
+    RETRIES THE SAME BATCH, so no address is silently skipped because of a
+    throttle.
+
+The free endpoint is HTTP only.
 
 WHAT IT RECORDS
 
@@ -145,28 +164,59 @@ def cmd_coverage(args):
           "coordinate in a table you already have. NOTHING is probed by "
           "this command.\n")
 
+    src = "ip2city_dbiplite_probe_tbl"
+    have = columns_of(src)
+    qry = pick_col(have, "query")
+    net = pick_col(have, "network")
+    exact_pred = ip_eq(src, qry) if qry else None
+    if qry and exact_pred is None:
+        print(f"NOTE: {src}.{qry} has type "
+              f"{col_type(src, qry)!r}, which is neither an address type "
+              f"nor text, so an exact match cannot be formed and only "
+              f"network containment is counted.\n", flush=True)
+    # node_ipapi_tbl MAY NOT EXIST YET. coverage is the FIRST command, run
+    # before fill, so it must not require fill's output table. And a guard
+    # INSIDE the statement cannot save it: a relation named anywhere in a
+    # statement is resolved when the statement is PARSED, so
+    #   CASE WHEN to_regclass('node_ipapi_tbl') IS NULL THEN 0 ELSE
+    #        (SELECT count(*) FROM node_ipapi_tbl) END
+    # fails with "relation does not exist" exactly when it does not. That is
+    # the FOURTH time this class of mistake has appeared in this project;
+    # the others were a LEFT JOIN target, a DROP CASCADE, and a staging-row
+    # count. The SQL is therefore composed conditionally in Python.
+    probed_sql = "NULL::bigint"
+    if psql_q("SELECT to_regclass('node_ipapi_tbl') IS NOT NULL") == "t":
+        probed_sql = ("(SELECT count(*) FROM n WHERE EXISTS ("
+                      "SELECT 1 FROM node_ipapi_tbl q "
+                      "WHERE q.node_ip = n.node_ip AND q.lat IS NOT NULL))")
+
+    exact_sql = (f"(SELECT count(*) FROM n WHERE EXISTS ("
+                 f"SELECT 1 FROM {src} p WHERE {exact_pred} "
+                 f"AND p.lat IS NOT NULL))" if exact_pred else "NULL::bigint")
+    net_sql = (f"(SELECT count(*) FROM n WHERE EXISTS ("
+               f"SELECT 1 FROM {src} p WHERE p.{quote_ident(net)} >>= "
+               f"n.node_ip AND p.lat IS NOT NULL))"
+               if net else "NULL::bigint")
+
     # EXACT MATCH FIRST. ip-api returns the address it was asked about in
     # the field "query", so an exact match is an answer about THAT address
     # rather than about a range containing it.
-    print(psql("-c", """
+    print(psql("-c", f"""
 WITH n AS (SELECT DISTINCT node_ip FROM carrier_node_tbl
            WHERE node_ip IS NOT NULL)
 SELECT
   (SELECT count(*) FROM n) AS node_addresses,
-  (SELECT count(*) FROM n WHERE EXISTS (
-     SELECT 1 FROM ip2city_dbiplite_probe_tbl p
-     WHERE p.query = host(n.node_ip) AND p.lat IS NOT NULL))
-    AS exact_in_probe,
-  (SELECT count(*) FROM n WHERE EXISTS (
-     SELECT 1 FROM ip2city_dbiplite_probe_tbl p
-     WHERE p.network >>= n.node_ip AND p.lat IS NOT NULL))
-    AS network_in_probe,
-  (SELECT count(*) FROM n WHERE EXISTS (
-     SELECT 1 FROM node_ipapi_tbl q
-     WHERE q.node_ip = n.node_ip AND q.lat IS NOT NULL))
-    AS already_probed_here"""))
+  {exact_sql} AS exact_in_probe,
+  {net_sql} AS network_in_probe,
+  {probed_sql} AS already_probed_here"""))
 
-    if psql_q("SELECT to_regclass('itdk_node_placed') IS NOT NULL") == "t":
+    if psql_q("SELECT to_regclass('itdk_node_placed') IS NOT NULL") != "t":
+        print("itdk_node_placed does not exist yet, so the comparison "
+              "against what the ITDK could place is skipped. Build it "
+              "with:")
+        print(f"  python3 -u {script('itdk_geo_load.py')} load "
+              f"--dir /home/boris/geo/caida\n")
+    else:
         print("Against what the ITDK could place. The gap is what probing "
               "would be for.\n")
         print(psql("-c", """
@@ -201,6 +251,41 @@ def columns_of(table):
                "SELECT column_name FROM information_schema.columns "
                f"WHERE table_name = {lit(table)}")
     return {c.strip() for c in out.splitlines() if c.strip()}
+
+
+def col_type(table, column):
+    """The declared data type of a column, from the catalogue."""
+    return psql_q("SELECT data_type FROM information_schema.columns "
+                  f"WHERE table_name = {lit(table)} "
+                  f"AND column_name = {lit(column)}")
+
+
+def ip_eq(table, column, node_expr="n.node_ip"):
+    """An equality predicate against a node address, typed correctly.
+
+    WHY THIS IS A FUNCTION AND NOT A LITERAL STRING. I wrote
+    p.query = host(n.node_ip), which assumes the query column is text. On
+    Boris's database it is inet, so postgres refused with "operator does not
+    exist: inet = text". That is the SAME class of error as taking a column
+    NAME on faith, one level deeper: I read the name from the catalogue and
+    then assumed its type.
+
+    inet = inet compares addresses. host() renders an inet as text and is
+    right only when the stored column really is text. Asking the catalogue
+    costs one query and removes the guess.
+    """
+    t = (col_type(table, column) or "").lower()
+    if t in ("inet", "cidr"):
+        return f"{column_ref(column)} = {node_expr}"
+    if t in ("text", "character varying", "character", "citext"):
+        return f"{column_ref(column)} = host({node_expr})"
+    # An unexpected type is reported rather than papered over with a cast
+    # that might compare the wrong things.
+    return None
+
+
+def column_ref(column):
+    return "p." + quote_ident(column)
 
 
 def pick_col(have, *candidates):
@@ -268,7 +353,14 @@ def cmd_fill(args):
 
     before = int(psql_q("SELECT count(*) FROM node_ipapi_tbl") or 0)
 
-    if qry:
+    exact_pred = ip_eq(src, qry) if qry else None
+    if qry and exact_pred is None:
+        print(f"  {qry} has type {col_type(src, qry)!r}, which is neither "
+              f"an address type nor text, so exact matching is SKIPPED "
+              f"rather than forced with a cast that might compare the "
+              f"wrong things.", flush=True)
+
+    if exact_pred:
         print("1. exact matches on the address ip-api was asked about",
               flush=True)
         psql("-qc", f"""
@@ -286,7 +378,7 @@ SELECT DISTINCT ON (n.node_ip)
        {lit(src + ' exact')}
 FROM (SELECT node_ip, min(hostname) AS hostname FROM carrier_node_tbl
       WHERE node_ip IS NOT NULL GROUP BY node_ip) n
-JOIN {src} p ON p.{quote_ident(qry)} = host(n.node_ip)
+JOIN {src} p ON {exact_pred}
 WHERE p.{quote_ident(lat)} IS NOT NULL
 ORDER BY n.node_ip
 ON CONFLICT (node_ip) DO NOTHING""")
@@ -295,8 +387,8 @@ ON CONFLICT (node_ip) DO NOTHING""")
               flush=True)
     else:
         mid = before
-        print("1. skipped: no query column, so no exact match is possible",
-              flush=True)
+        print("1. skipped: no usable query column, so no exact match is "
+              "possible", flush=True)
 
     if net:
         print("2. most-specific containing network, for the rest",
@@ -370,26 +462,43 @@ def read_headers(path):
 
 
 def post_batch(ips, hdr_path, timeout=60):
-    """One batch request. Returns (list, error)."""
+    """One batch request. Returns (list, http_status, error).
+
+    The HTTP STATUS IS RETURNED SEPARATELY because at the documented ceiling
+    429 is the response that matters and it must not be mistaken for a
+    parse failure. ip-api's unban page states that repeatedly exceeding the
+    limit is what gets a source address blocked, so the caller backs off for
+    a full window and retries the same batch rather than dropping it.
+    """
     payload = json.dumps([{"query": ip, "fields": FIELDS} for ip in ips])
     r = subprocess.run(
         ["curl", "-sS", "-m", str(timeout), "-A", UA,
-         "-D", hdr_path,
+         "-D", hdr_path, "-o", "-",
+         "-w", "\n%{http_code}",
          "-H", "Content-Type: application/json",
          "--data-binary", payload, BATCH_URL],
         capture_output=True, text=True)
     if r.returncode != 0:
-        return None, f"curl exit {r.returncode}: {r.stderr.strip()[:140]}"
-    body = r.stdout.strip()
+        return None, None, f"curl exit {r.returncode}: {r.stderr.strip()[:140]}"
+    out = r.stdout
+    body, _, code = out.rpartition("\n")
+    try:
+        status = int(code.strip())
+    except ValueError:
+        status = None
+    body = body.strip()
+    if status is not None and status != 200:
+        return None, status, f"HTTP {status}: {body[:140]}"
     if not body:
-        return None, "empty response"
+        return None, status, "empty response"
     try:
         d = json.loads(body)
     except ValueError:
-        return None, f"not JSON: {body[:140]}"
+        return None, status, f"not JSON: {body[:140]}"
     if not isinstance(d, list):
-        return None, f"expected a list, got {type(d).__name__}: {body[:140]}"
-    return d, None
+        return None, status, (f"expected a list, got "
+                              f"{type(d).__name__}: {body[:140]}")
+    return d, status, None
 
 
 def cmd_probe(args):
@@ -431,24 +540,56 @@ ORDER BY n.node_ip""").splitlines() if "|" in r]
     print(f"{len(todo):,} address(es) to probe, {batches} batch(es) of up "
           f"to 100.")
     print(f"One batch every {args.interval:g}s, which is "
-          f"{60.0 / args.interval:.0f} per minute against ip-api's "
-          f"documented ceiling of 15 for the batch endpoint.")
-    print(f"Estimated {batches * args.interval / 60.0:.1f} minutes.\n")
+          f"{60.0 / args.interval:.0f} batches and "
+          f"{100 * 60.0 / args.interval:,.0f} addresses per minute. "
+          f"ip-api's documented ceiling for the batch endpoint is 15 "
+          f"requests per minute.")
+    print(f"Estimated {batches * args.interval / 60.0:.1f} minutes at that "
+          f"rate.")
+    print("The X-Rl allowance header governs and the interval only paces. "
+          "An HTTP 429 backs off for a full window and retries the SAME "
+          "batch, so no address is dropped by a throttle.\n")
 
     hdr = "/tmp/ipapi_hdr.txt"
-    ok = failed = 0
+    ok = failed = throttled = 0
     t0 = time.monotonic()
+    b = 0
 
-    for b in range(batches):
+    while b < batches:
         chunk = todo[b * 100:(b + 1) * 100]
         ips = [ip for ip, _ in chunk]
         hosts = dict(chunk)
 
-        d, err = post_batch(ips, hdr)
+        d, status, err = post_batch(ips, hdr)
+        rl, ttl = read_headers(hdr)
+
+        # 429 MEANS BACK OFF AND RETRY THE SAME BATCH, not skip it.
+        if status == 429:
+            throttled += 1
+            wait = (ttl or 60) + 5
+            print(f"[batch {b + 1}/{batches}] HTTP 429, the limit was "
+                  f"exceeded. Waiting {wait}s for the window to reset and "
+                  f"retrying the SAME batch, so no address is lost.",
+                  flush=True)
+            if throttled >= args.max_throttles:
+                sys.exit(
+                    f"STOPPED after {throttled} throttles. ip-api's unban "
+                    f"page says repeated violation is what blocks a source "
+                    f"address, and the estate already stored depends on "
+                    f"this one staying usable.\n\n"
+                    f"{ok:,} address(es) were located and are saved; "
+                    f"nothing is lost. Re-run later and it continues from "
+                    f"where it stopped, or lower the rate:\n"
+                    f"  python3 -u {script('node_ipapi.py')} probe "
+                    f"--interval 6")
+            time.sleep(wait)
+            continue
+
         if d is None:
             print(f"[batch {b + 1}/{batches}] FAILED: {err}", flush=True)
             failed += len(chunk)
-            time.sleep(max(args.interval, 5))
+            b += 1
+            time.sleep(max(args.interval, 4.0))
             continue
 
         values = []
@@ -459,11 +600,11 @@ ORDER BY n.node_ip""").splitlines() if "|" in r]
             q = item.get("query")
             if not q:
                 continue
-            status = item.get("status") or "unknown"
-            if status == "success":
+            st = item.get("status") or "unknown"
+            if st == "success":
                 good += 1
             values.append("(" + ", ".join([
-                lit(q) + "::inet", lit(hosts.get(q)), lit(status),
+                lit(q) + "::inet", lit(hosts.get(q)), lit(st),
                 lit(item.get("message")), lit(item.get("country")),
                 lit(item.get("regionName")), lit(item.get("city")),
                 lit(item.get("zip")), num(item.get("lat")),
@@ -479,22 +620,27 @@ ORDER BY n.node_ip""").splitlines() if "|" in r]
         ok += good
         failed += len(chunk) - good
 
-        rl, ttl = read_headers(hdr)
         el = time.monotonic() - t0
+        done_ips = (b + 1) * 100
         eta = ""
         if b > 0:
             eta = (f", about {(batches - b - 1) * el / (b + 1) / 60:.0f} "
                    f"min left")
-        print(f"[batch {b + 1}/{batches}] {good} of {len(chunk)} located"
+        print(f"[batch {b + 1}/{batches}] {good} of {len(chunk)} located, "
+              f"{done_ips / max(el, 0.001) * 60:,.0f} IP/min"
               + (f", allowance left {rl}" if rl is not None else "")
               + eta, flush=True)
 
-        # WAIT WHEN THE ALLOWANCE IS GONE, do not press on into a ban.
+        b += 1
+
+        # THE ALLOWANCE GOVERNS, the interval only paces. At the ceiling the
+        # header is the authority: if it says nothing is left, waiting is
+        # the only correct action.
         if rl is not None and rl <= 1 and ttl:
-            print(f"    allowance exhausted, waiting {ttl + 2}s for the "
-                  f"window to reset", flush=True)
+            print(f"    allowance spent, waiting {ttl + 2}s for the window "
+                  f"to reset", flush=True)
             time.sleep(ttl + 2)
-        elif b + 1 < batches:
+        elif b < batches:
             time.sleep(args.interval)
 
     print(f"\n{ok:,} located, {failed:,} not, in "
@@ -604,10 +750,14 @@ def main():
                        help="batch-probe the addresses with no answer yet")
     p.add_argument("--limit", type=int,
                    help="stop after this many addresses, for a trial")
-    p.add_argument("--interval", type=float, default=5.0,
-                   help="seconds between batches, default 5, which is 12 "
-                        "per minute against ip-api's documented 15. Do not "
-                        "lower it.")
+    p.add_argument("--interval", type=float, default=4.0,
+                   help="seconds between batches, default 4, which is 15 "
+                        "per minute and 1,500 addresses per minute, "
+                        "ip-api's documented ceiling for the batch "
+                        "endpoint. Raise it if you see HTTP 429.")
+    p.add_argument("--max-throttles", type=int, default=5,
+                   help="stop after this many HTTP 429 responses rather "
+                        "than risk the source address being blocked")
     p.set_defaults(func=cmd_probe)
 
     s = sub.add_parser("sites",
