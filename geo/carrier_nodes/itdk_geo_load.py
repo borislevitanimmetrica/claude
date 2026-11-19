@@ -1333,7 +1333,13 @@ def cmd_compare(args):
           "the nodes where both have an answer.\n")
     print(psql("-c", """
 WITH paired AS (
-  SELECT n.hostname, n.node_ip, n.lat AS our_lat, n.lon AS our_lon,
+  -- carrier_node_tbl's longitude column is lng, NOT lon. I wrote n.lon
+  -- here from assumption and it would have failed on his database. The
+  -- catalogue says lat/lng for carrier_node_tbl, carrier_node_located and
+  -- hoiho_geohint_tbl, and lat/lon for the itdk and census tables. Mixing
+  -- the two conventions in one project is a trap I walked into even with a
+  -- standing order about exactly this.
+  SELECT n.hostname, n.node_ip, n.lat AS our_lat, n.lng AS our_lon,
          l.lat AS itdk_lat, l.lon AS itdk_lon, l.method, l.city
   FROM carrier_node_tbl n
   JOIN itdk_node_located l ON l.address = n.node_ip
