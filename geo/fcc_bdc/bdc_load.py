@@ -980,32 +980,167 @@ def report_relation():
     return "bdc_availability" if schema_is_lean() else "bdc_availability_tbl"
 
 
-def cmd_technologies(args):
-    require_schema()
-    rel = report_relation()
-    print("Technology codes PRESENT IN THE LOADED DATA, with their brands.")
-    print("This is the mapping step 2 needs. It is read from the data because")
-    print("I have not verified the FCC code list and will not guess it.\n")
-    print(psql("-c", f"""
-SELECT technology,
-       count(*)                          AS records,
-       count(DISTINCT provider_id)       AS providers,
-       count(DISTINCT tract_geoid)       AS tracts,
-       left(string_agg(DISTINCT brand_name, ', '), 90) AS example_brands
-FROM {rel}
-GROUP BY technology
-ORDER BY count(*) DESC"""))
+def timed(label, sql):
+    """Run a query, print it with how long it took.
 
+    The elapsed time is printed because at 519 million rows the difference
+    between formulations is minutes, and I want the real number recorded
+    rather than my estimate of it.
+    """
+    t0 = time.monotonic()
+    out = psql("-c", sql)
+    print(out)
+    print(f"  ({label}: {time.monotonic() - t0:.1f}s)\n", flush=True)
+
+
+def cmd_technologies(args):
+    """Technology codes present in the data.
+
+    WHY THIS IS NOT ONE QUERY ANY MORE
+
+    The first version asked for count(*), count(DISTINCT provider_id),
+    count(DISTINCT tract_geoid) and string_agg(DISTINCT brand_name) in a
+    single GROUP BY over the bdc_availability VIEW, which joins
+    bdc_carrier_tbl.
+
+    That was written when the table held two states. Boris's load finished
+    2026-11-18 with 333 files and 519,469,683 rows. At that size the
+    formulation is the problem, not the question: every count(DISTINCT)
+    forces its own sort per group, they do not parallelise, and the join
+    multiplies the work. I have NOT measured what it would have cost on his
+    machine and I am not going to guess a number, but handing over a query
+    whose cost I cannot predict is what standing order 9 is about.
+
+    So the expensive parts are separated and each is reported with its own
+    elapsed time:
+
+      records per technology, a plain aggregate with no join and no
+        DISTINCT, which is one scan
+
+      carriers per technology, as a DISTINCT over the (carrier_key,
+        technology) pairs rather than count(DISTINCT) per group. There are
+        about 1,600 carriers and nine technologies, so a few tens of
+        thousands of pairs, and bdc_availability_provider_tech_idx covers
+        exactly those two columns so this can be an index-only scan with no
+        heap access
+
+      tracts per technology, which needs the heap because the tract index
+        does not carry technology. Behind --full, with its cost stated
+        rather than discovered.
+    """
+    require_schema()
+    lean = schema_is_lean()
+    print("Technology codes PRESENT IN THE LOADED DATA.")
+    print("Read from the data because I have not verified the FCC code list")
+    print("and will not guess it.\n")
+
+    n = psql_q("SELECT coalesce(sum(row_count), 0) FROM bdc_source_file_tbl")
+    try:
+        total = int(n)
+    except ValueError:
+        total = 0
+    if total:
+        print(f"{total:,} availability rows recorded across "
+              f"{psql_q('SELECT count(*) FROM bdc_source_file_tbl')} "
+              f"file(s).\n", flush=True)
+
+    timed("records per technology, one scan", """
+SELECT technology, count(*) AS records
+FROM bdc_availability_tbl
+GROUP BY technology
+ORDER BY count(*) DESC""")
+
+    if lean:
+        timed("carriers per technology, index-only over distinct pairs", """
+SELECT d.technology, count(*) AS carriers,
+       left(string_agg(c.brand_name, ', ' ORDER BY c.brand_name), 86)
+         AS example_brands
+FROM (SELECT DISTINCT technology, carrier_key
+      FROM bdc_availability_tbl) d
+JOIN bdc_carrier_tbl c USING (carrier_key)
+GROUP BY d.technology
+ORDER BY count(*) DESC""")
+    else:
+        timed("carriers per technology", """
+SELECT technology, count(*) AS carriers
+FROM (SELECT DISTINCT technology, provider_id
+      FROM bdc_availability_tbl) d
+GROUP BY technology ORDER BY count(*) DESC""")
+
+    if args.full:
+        print("--full: tracts per technology. This one needs the heap, "
+              "because the tract index does not carry technology, so it is "
+              "a scan of every row. On 519 million rows expect minutes, "
+              "not seconds.\n", flush=True)
+        timed("tracts per technology, full heap scan", """
+SELECT technology, count(*) AS tracts
+FROM (SELECT DISTINCT technology, left(block_geoid, 11) AS tract_geoid
+      FROM bdc_availability_tbl) d
+GROUP BY technology ORDER BY count(*) DESC""")
+    else:
+        print("Tracts per technology is NOT run by default: it cannot use "
+              "an index and must read every row. Add --full when you want "
+              "it.\n")
+
+    # THE FIOS VERSUS xDSL CASE, RANKED BY RECORDS NOT BY DISTINCT TRACTS.
+    #
+    # This query is why the whole command needed rethinking. It asked for
+    # count(DISTINCT tract_geoid) grouped by carrier AND technology, and
+    # then ORDERED BY that same distinct count, over 519,469,683 rows. Every
+    # group gets its own sort of its tract values and the ordering cannot
+    # start until all of them are done. It also referenced a variable I had
+    # removed, so it would have failed outright, which I found by running it
+    # rather than by reading it.
+    #
+    # Ranking by record count answers the same question. The point is to
+    # show one carrier appearing under several technology codes, so that
+    # Verizon FIOS can be separated from Verizon xDSL; which of the two
+    # carries more census tracts is not what that comparison needs, and
+    # records are a plain aggregate.
+    #
+    # --full restores the tract counts for the carriers already selected,
+    # which is a far smaller problem than computing them for all of them.
     print("\nThe FIOS versus xDSL case: one carrier, several technologies.")
-    print("Top 25 carrier and technology pairs by tract count.\n")
-    print(psql("-c", f"""
+    print("Top 25 carrier and technology pairs by RECORD count. Records "
+          "rather than distinct tracts: the comparison is about one carrier "
+          "appearing under several codes, and a distinct count per group "
+          "sorts every group separately.\n")
+    if lean:
+        timed("carrier and technology pairs", """
+SELECT c.provider_id, left(c.brand_name, 34) AS brand, a.technology,
+       count(*) AS records
+FROM bdc_availability_tbl a
+JOIN bdc_carrier_tbl c USING (carrier_key)
+GROUP BY c.provider_id, left(c.brand_name, 34), a.technology
+ORDER BY count(*) DESC
+LIMIT 25""")
+    else:
+        timed("carrier and technology pairs", """
 SELECT provider_id, left(brand_name, 34) AS brand, technology,
-       count(DISTINCT tract_geoid) AS tracts,
-       count(*)                    AS records
-FROM {rel}
+       count(*) AS records
+FROM bdc_availability_tbl
 GROUP BY provider_id, left(brand_name, 34), technology
-ORDER BY count(DISTINCT tract_geoid) DESC
-LIMIT 25"""))
+ORDER BY count(*) DESC
+LIMIT 25""")
+
+    if args.full and lean:
+        print("--full: distinct tracts for the 25 largest pairs only.\n",
+              flush=True)
+        timed("tracts for the largest pairs", """
+WITH top AS (
+  SELECT a.carrier_key, a.technology, count(*) AS records
+  FROM bdc_availability_tbl a
+  GROUP BY a.carrier_key, a.technology
+  ORDER BY count(*) DESC
+  LIMIT 25)
+SELECT c.provider_id, left(c.brand_name, 34) AS brand, t.technology,
+       t.records,
+       (SELECT count(DISTINCT left(a2.block_geoid, 11))
+        FROM bdc_availability_tbl a2
+        WHERE a2.carrier_key = t.carrier_key
+          AND a2.technology = t.technology) AS tracts
+FROM top t JOIN bdc_carrier_tbl c USING (carrier_key)
+ORDER BY t.records DESC""")
 
 
 def count_csv_rows(path):
@@ -1312,6 +1447,9 @@ def main():
 
     te = sub.add_parser("technologies",
                         help="report the technology codes present, from data")
+    te.add_argument("--full", action="store_true",
+                    help="also count distinct tracts per technology, which "
+                         "cannot use an index and reads every row")
     te.set_defaults(func=cmd_technologies)
 
     ve = sub.add_parser("verify",
