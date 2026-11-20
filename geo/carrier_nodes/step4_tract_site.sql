@@ -20,24 +20,37 @@
 --          rather than a computation per row. 519,469,683 rows across 333
 --          files.
 --
---   NOT READY  the link from an ITDK domain to a BDC carrier.
---          carrier_crosswalk_tbl.approved defaults false and the design
---          states that nothing downstream should join through an unapproved
---          row. There are 8,673 BDC name proposals and ZERO approved. So
---          "that carrier" cannot yet be evaluated, and the per-carrier form
---          of step 4 returns nothing by construction, not by accident.
+--   READY  the link from an ITDK domain to a BDC carrier, via
+--          carrier_resolved_tbl, which applies the 87 rulings Boris gave on
+--          2026-11-17. by_decision marks the rows resting on a ruling.
+--
+--          I previously reported this input as MISSING, citing
+--          "0 approved" from carrier_crosswalk_tbl.approved. That was my
+--          error: nothing in this repository ever sets that column. It is a
+--          boolean I added and never wired up, so it was always going to
+--          read zero, and his completed work was reported as a pending
+--          decision. carrier_resolved_tbl's own comment, which I wrote,
+--          says "Steps 4 to 7 should join to this".
+--
+-- SAN DIEGO COUNTY IS A CITY HERE, deliberately. Boris, 2026-11-18: "San
+-- Diego County should be treated as a city. There are multiple
+-- headends/COs for several carriers within it." ip-api sometimes returns a
+-- county name in the city field and that is not a defect for this purpose:
+-- the name is only a label, the coordinate is the datum, and a
+-- county-shaped name with several distinct coordinates behaves exactly like
+-- a city with several sites. Nothing here filters on the shape of the name.
 --
 -- WHAT THIS FILE THEREFORE DOES
 --
--- Section 1 materialises the carrier-and-tract pairing, which is needed
--- whatever happens next and is the expensive part.
--- Section 2 reports the crosswalk state, so the blocker is a number rather
--- than a claim.
--- Section 3 computes the CARRIER-AGNOSTIC geometry: for every tract, the
--- nearest and second-nearest serving site of any carrier. That is not step 4
--- and is not labelled as though it were. It is the measurement that tells us
--- whether step 5's rule can discriminate at all, which is worth knowing
--- before the crosswalk is approved rather than after.
+-- Section 1 materialises the serving sites, graded, with no node-count
+-- threshold.
+-- Section 2 reports the resolved carrier link from Boris's rulings, and
+-- names the carriers with sites that do not yet resolve.
+-- Section 2b is STEP 4 AS WRITTEN: per carrier, per tract that carrier
+-- serves, the distance to that carrier's own nearest site, plus its second
+-- nearest, which step 5 needs.
+-- Section 3 keeps the carrier-agnostic geometry as a cross-check. It is not
+-- step 4 and is labelled as not being step 4.
 --
 -- STEP 5's RULE AND WHY SECTION 3 MATTERS. Boris: "Select the headend or CO
 -- nearest the centroid, UNLESS another headend less than twice the distance
@@ -99,57 +112,183 @@ GROUP BY 1 ORDER BY count(*) DESC;
 
 \echo
 \echo ================================================================
-\echo SECTION 2. The carrier link, which is what step 4 is waiting on.
+\echo SECTION 2. The carrier link, from Boris decisions.
 \echo ================================================================
 \echo
+\echo A CORRECTION OF MINE. The previous version of this file reported
+\echo "0 approved" from carrier_crosswalk_tbl.approved and called that the
+\echo blocker. Boris asked what approval that referred to, and the answer
+\echo is: none of his. NOTHING IN THIS REPOSITORY EVER SETS THAT COLUMN. It
+\echo is a boolean I added to carrier_crosswalk_tbl and never wired to
+\echo anything, so it was always going to read zero.
+\echo
+\echo His decisions were never missing. He ruled on all 87 records he was
+\echo sent; they live in carrier_decision_tbl and are resolved into
+\echo carrier_resolved_tbl, whose own comment, which I wrote, says
+\echo "Steps 4 to 7 should join to this." I then wrote step 4 against the
+\echo wrong table and reported his completed work as a pending decision.
+\echo
+\echo carrier_resolved_tbl is therefore the link, and by_decision marks the
+\echo rows that came from his rulings rather than from name matching.
+\echo
 
-SELECT CASE WHEN to_regclass('carrier_crosswalk_tbl') IS NULL
-            THEN 'carrier_crosswalk_tbl does not exist'
-            ELSE 'carrier_crosswalk_tbl exists' END AS state;
+SELECT CASE WHEN to_regclass('carrier_resolved_tbl') IS NULL
+            THEN 'carrier_resolved_tbl ABSENT, run carrier_decisions.sql and load_decisions.py'
+            ELSE 'carrier_resolved_tbl present' END AS state;
 
 \echo
-\echo How many carrier links are APPROVED. Nothing downstream may join
-\echo through an unapproved row, so this number is the gate on the
-\echo per-carrier form of step 4.
+\echo The resolved crosswalk. by_decision is true where the link rests on a
+\echo ruling of Boris rather than on a name match.
 \echo
-SELECT count(*)                                  AS crosswalk_rows,
-       count(*) FILTER (WHERE approved)          AS approved,
-       count(*) FILTER (WHERE bdc_provider_id IS NOT NULL
-                          AND NOT approved)      AS bdc_proposals_awaiting,
-       count(DISTINCT itdk_domain)               AS itdk_domains
-FROM carrier_crosswalk_tbl;
+SELECT count(*)                                        AS resolved_rows,
+       count(DISTINCT itdk_domain)                     AS itdk_domains,
+       count(*) FILTER (WHERE by_decision)             AS by_his_decision,
+       count(*) FILTER (WHERE bdc_provider_id IS NOT NULL) AS with_bdc_provider,
+       count(DISTINCT bdc_provider_id)                 AS distinct_bdc_providers
+FROM carrier_resolved_tbl;
 
 \echo
-\echo Of the carriers that actually HAVE serving sites, how many could be
-\echo linked to a BDC carrier today. This is the practical size of the
-\echo approval task, which is smaller than the full proposal list because
-\echo most proposals concern carriers with no sites.
+\echo How many carriers WITH SERVING SITES now resolve to a BDC provider.
+\echo This is what step 4 can actually run over.
 \echo
-SELECT count(DISTINCT s.carrier_domain)                      AS carriers_with_sites,
+SELECT count(DISTINCT s.carrier_domain)                        AS carriers_with_sites,
        count(DISTINCT s.carrier_domain) FILTER (
-           WHERE EXISTS (SELECT 1 FROM carrier_crosswalk_tbl x
-                         WHERE x.itdk_domain = s.carrier_domain
-                           AND x.approved))                  AS linked_and_approved,
-       count(DISTINCT s.carrier_domain) FILTER (
-           WHERE EXISTS (SELECT 1 FROM carrier_crosswalk_tbl x
-                         WHERE x.itdk_domain = s.carrier_domain
-                           AND x.bdc_provider_id IS NOT NULL
-                           AND NOT x.approved))              AS proposed_not_approved
+           WHERE EXISTS (SELECT 1 FROM carrier_resolved_tbl r
+                         WHERE r.itdk_domain = s.carrier_domain
+                           AND r.bdc_provider_id IS NOT NULL)) AS resolve_to_bdc,
+       sum(s.node_addresses) FILTER (
+           WHERE EXISTS (SELECT 1 FROM carrier_resolved_tbl r
+                         WHERE r.itdk_domain = s.carrier_domain
+                           AND r.bdc_provider_id IS NOT NULL)) AS node_addresses_covered
 FROM serving_site_tbl s;
 
 \echo
-\echo The carriers with the most sites and no approved BDC link. These are
-\echo where approval buys the most, ordered by how much step 4 they unblock.
+\echo Carriers with the most sites that do NOT resolve to a BDC provider.
+\echo These are the gap, and they are what a further ruling would address.
 \echo
 SELECT s.carrier_domain,
-       count(*)            AS sites,
+       count(*)              AS sites,
        sum(s.node_addresses) AS node_addresses
 FROM serving_site_tbl s
-WHERE NOT EXISTS (SELECT 1 FROM carrier_crosswalk_tbl x
-                  WHERE x.itdk_domain = s.carrier_domain AND x.approved)
+WHERE NOT EXISTS (SELECT 1 FROM carrier_resolved_tbl r
+                  WHERE r.itdk_domain = s.carrier_domain
+                    AND r.bdc_provider_id IS NOT NULL)
 GROUP BY 1 ORDER BY count(*) DESC LIMIT 20;
 
 \echo
+\echo ================================================================
+\echo SECTION 2b. STEP 4 PROPER, per carrier, over the resolved link.
+\echo ================================================================
+\echo
+\echo For each carrier and each census tract in which that carrier offers
+\echo service per the BDC, the distance from the tract centroid to that
+\echo carriers nearest serving site. This is step 4 as written.
+\echo
+\echo The carrier-and-tract pairing is materialised first because it is the
+\echo expensive part: a scan of 519,469,683 availability rows. It is
+\echo restricted to carriers that HAVE sites, which cuts it substantially,
+\echo since a pairing for a carrier with no known site cannot contribute.
+\echo
+
+DROP TABLE IF EXISTS carrier_tract_tbl;
+
+CREATE TABLE carrier_tract_tbl AS
+SELECT DISTINCT r.itdk_domain, a.tract_geoid
+FROM bdc_availability_tbl a
+JOIN bdc_carrier_tbl c ON c.carrier_key = a.carrier_key
+JOIN carrier_resolved_tbl r ON r.bdc_provider_id = c.provider_id
+WHERE EXISTS (SELECT 1 FROM serving_site_tbl s
+              WHERE s.carrier_domain = r.itdk_domain);
+
+CREATE INDEX carrier_tract_domain_idx ON carrier_tract_tbl (itdk_domain);
+CREATE INDEX carrier_tract_tract_idx ON carrier_tract_tbl (tract_geoid);
+
+COMMENT ON TABLE carrier_tract_tbl IS
+'One row per ITDK domain and census tract in which the BDC says that carrier offers service, restricted to domains that have at least one known serving site. The link from domain to BDC provider comes from carrier_resolved_tbl, which applies Boris decisions.';
+
+\echo
+\echo Carrier and tract pairs available to step 4.
+\echo
+SELECT count(*)                       AS carrier_tract_pairs,
+       count(DISTINCT itdk_domain)    AS carriers,
+       count(DISTINCT tract_geoid)    AS tracts
+FROM carrier_tract_tbl;
+
+DROP TABLE IF EXISTS step4_carrier_tract_site_tbl;
+
+CREATE TABLE step4_carrier_tract_site_tbl AS
+SELECT ct.itdk_domain,
+       ct.tract_geoid,
+       t.state_usps,
+       n.site_key,
+       n.grade,
+       n.city,
+       n.km AS nearest_km,
+       n2.site_key AS second_site_key,
+       n2.km       AS second_km
+FROM carrier_tract_tbl ct
+JOIN census_tract_tbl t ON t.tract_geoid = ct.tract_geoid
+LEFT JOIN LATERAL (
+    SELECT s.site_key, s.grade, s.city,
+           6371 * sqrt(
+             pow(radians(s.lat - t.lat), 2) +
+             pow(radians(
+               ((s.lon - t.lon + 540) -
+                floor((s.lon - t.lon + 540) / 360) * 360) - 180
+             ) * cos(radians(t.lat)), 2)) AS km
+    FROM serving_site_tbl s
+    WHERE s.carrier_domain = ct.itdk_domain
+    ORDER BY pow(s.lat - t.lat, 2) +
+             pow((s.lon - t.lon) * cos(radians(t.lat)), 2)
+    LIMIT 1) n ON true
+LEFT JOIN LATERAL (
+    SELECT s.site_key,
+           6371 * sqrt(
+             pow(radians(s.lat - t.lat), 2) +
+             pow(radians(
+               ((s.lon - t.lon + 540) -
+                floor((s.lon - t.lon + 540) / 360) * 360) - 180
+             ) * cos(radians(t.lat)), 2)) AS km
+    FROM serving_site_tbl s
+    WHERE s.carrier_domain = ct.itdk_domain
+      AND s.site_key <> n.site_key
+    ORDER BY pow(s.lat - t.lat, 2) +
+             pow((s.lon - t.lon) * cos(radians(t.lat)), 2)
+    LIMIT 1) n2 ON true;
+
+CREATE INDEX step4_domain_idx ON step4_carrier_tract_site_tbl (itdk_domain);
+CREATE INDEX step4_tract_idx ON step4_carrier_tract_site_tbl (tract_geoid);
+
+COMMENT ON TABLE step4_carrier_tract_site_tbl IS
+'Step 4 of the plan: for each carrier and each tract that carrier serves per the BDC, the distance from the tract centroid to that carriers nearest serving site, and to its second nearest, which step 5 needs for the twice-the-distance rule. No bounding box is applied here: a carrier has few sites, so the search is cheap and an unrestricted nearest is correct rather than merely affordable.';
+
+\echo
+\echo STEP 4 RESULT. Distance from the tract centroid to the serving
+\echo carriers own nearest site.
+\echo
+SELECT CASE WHEN nearest_km IS NULL THEN 'no site for this carrier'
+            WHEN nearest_km <= 2   THEN 'a. within 2 km'
+            WHEN nearest_km <= 10  THEN 'b. 2 to 10 km'
+            WHEN nearest_km <= 25  THEN 'c. 10 to 25 km'
+            WHEN nearest_km <= 50  THEN 'd. 25 to 50 km'
+            ELSE                        'e. more than 50 km' END AS band,
+       count(*)                              AS carrier_tract_pairs,
+       count(DISTINCT tract_geoid)           AS tracts
+FROM step4_carrier_tract_site_tbl GROUP BY 1 ORDER BY 1;
+
+\echo
+\echo WHAT STEP 5 WILL FACE, per carrier rather than across all carriers.
+\echo
+SELECT CASE WHEN second_km IS NULL THEN 'only one site for this carrier'
+            WHEN second_km / nullif(nearest_km, 0) < 1.2
+              THEN 'a. under 1.2, nearly tied'
+            WHEN second_km / nullif(nearest_km, 0) < 2.0
+              THEN 'b. 1.2 to 2.0, coverage test decides'
+            ELSE 'c. over 2.0, nearest wins outright' END AS ratio_band,
+       count(*) AS carrier_tract_pairs,
+       round(100.0 * count(*) / sum(count(*)) OVER (), 1) AS pct
+FROM step4_carrier_tract_site_tbl GROUP BY 1 ORDER BY 1;
+
 \echo ================================================================
 \echo SECTION 3. The geometry, carrier-agnostic. NOT step 4 itself.
 \echo ================================================================
@@ -259,7 +398,8 @@ FROM tract_nearest_site_tbl GROUP BY 1 ORDER BY 1;
 \echo
 \echo DONE. serving_site_tbl and tract_nearest_site_tbl are built.
 \echo
-\echo Step 4 proper, per carrier, is blocked on approved rows in
-\echo carrier_crosswalk_tbl. Section 2 names the carriers where approval
-\echo unblocks the most.
+\echo Step 4 proper is in step4_carrier_tract_site_tbl, joined through
+\echo carrier_resolved_tbl which applies Boris decisions. Section 2 names
+\echo the carriers with sites that do NOT yet resolve to a BDC provider,
+\echo which is the remaining gap.
 \echo
