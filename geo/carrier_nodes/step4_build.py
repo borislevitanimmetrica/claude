@@ -206,19 +206,54 @@ FROM provider_tract_tech_tbl"""))
     return 0
 
 
+KM = ("6371 * sqrt(pow(radians(s.lat - t.lat), 2) + "
+      "pow(radians(((s.lon - t.lon + 540) - "
+      "floor((s.lon - t.lon + 540) / 360) * 360) - 180) "
+      "* cos(radians(t.lat)), 2))")
+
+
 def cmd_distances(args):
-    """Step 4: nearest own-carrier site per carrier, technology and tract."""
+    """Step 4, per carrier, per technology, per tract. ONE CARRIER AT A TIME.
+
+    WHY PER CARRIER AND NOT ONE STATEMENT
+
+    The first version did it in a single INSERT and produced no output at
+    all, which is the second time in this session I have handed Boris a long
+    statement with nothing to watch. It also did not finish:
+    step4_tract_site_tbl did not exist afterwards.
+
+    The size explains it. step4_carrier_tract_tbl carries about sixteen ITDK
+    domains per BDC provider applied to 785,168 provider triples, so roughly
+    twelve million carrier-technology-tract triples. comcast.net alone has
+    788 serving sites, and each of its triples must be compared against all
+    of them twice, for nearest and second nearest. That is of the order of a
+    hundred million distance computations for one carrier inside one
+    statement.
+
+    Iterating by carrier makes it reportable without making it slower: the
+    work is identical, it is simply divided along a boundary that already
+    exists. Carriers are taken largest first so the estimate settles early,
+    and each one is recorded so an interruption resumes.
+
+    NO BOUNDING BOX HERE, deliberately. Elsewhere in this project a box is
+    used to avoid a cross join, but here the search is already restricted to
+    ONE carrier's sites. A box would risk excluding the true nearest site
+    for a tract that carrier serves from a distance, which is exactly the
+    rural case that matters, and the saving is not needed once the work is
+    divided by carrier.
+    """
     require("provider_tract_tech_tbl",
             f"python3 -u {script('step4_build.py')} pairs")
     require("carrier_resolved_tbl",
             "Run geo/carrier_nodes/carrier_decisions.sql and "
             "load_decisions.py")
+    require("serving_site_tbl",
+            f"psql -X -P pager=off -f {script('step4_tract_site.sql')}")
 
     print("Attaching ITDK domains to the provider-level pairs. This is the "
-          "multiplication that had to come LAST: about sixteen domains per "
-          "provider, applied to a few million aggregated pairs instead of "
-          "to 519 million raw rows.\n", flush=True)
-
+          "multiplication that had to come last: about sixteen domains per "
+          "provider applied to aggregated pairs, not to 519 million raw "
+          "rows.", flush=True)
     t0 = time.monotonic()
     psql("-qc", """
 DROP TABLE IF EXISTS step4_carrier_tract_tbl;
@@ -230,55 +265,121 @@ WHERE EXISTS (SELECT 1 FROM serving_site_tbl s
               WHERE s.carrier_domain = r.itdk_domain);
 CREATE INDEX step4_ct_domain_idx ON step4_carrier_tract_tbl (itdk_domain);
 CREATE INDEX step4_ct_tract_idx ON step4_carrier_tract_tbl (tract_geoid);""")
-    print(f"  carrier, technology and tract triples: "
-          f"{int(psql_q('SELECT count(*) FROM step4_carrier_tract_tbl')):,} "
-          f"in {time.monotonic() - t0:.0f}s\n", flush=True)
+    triples = int(psql_q("SELECT count(*) FROM step4_carrier_tract_tbl") or 0)
+    print(f"  {triples:,} carrier, technology and tract triples in "
+          f"{time.monotonic() - t0:.0f}s\n", flush=True)
 
-    print("Measuring the distance from each tract centroid to that "
-          "carrier's own nearest site, and to its second nearest, which "
-          "step 5 needs. A carrier has few sites so no bounding box is "
-          "used: the nearest is unrestricted and therefore correct rather "
-          "than merely affordable.\n", flush=True)
+    psql("-qc", """
+CREATE TABLE IF NOT EXISTS step4_tract_site_tbl (
+    itdk_domain     text NOT NULL,
+    technology      smallint NOT NULL,
+    tract_geoid     text NOT NULL,
+    state_usps      text,
+    site_key        bigint,
+    grade           text,
+    city            text,
+    nearest_km      double precision,
+    second_site_key bigint,
+    second_km       double precision);
+CREATE TABLE IF NOT EXISTS step4_done_tbl (
+    itdk_domain text PRIMARY KEY,
+    triples     bigint,
+    seconds     double precision,
+    done_at     timestamptz NOT NULL DEFAULT now());
+COMMENT ON TABLE step4_tract_site_tbl IS
+  'Step 4: for each ITDK carrier domain, technology code and census tract that carrier serves over that technology per the BDC, the distance from the tract centroid to that carrier''s OWN nearest serving site, and to its second nearest, which step 5 needs for the twice-the-distance rule. Per carrier AND technology because a carrier serves a tract over Copper from one facility and over fibre from another.';""")
+
+    if not args.resume:
+        n = int(psql_q("SELECT count(*) FROM step4_done_tbl") or 0)
+        if n:
+            print(f"{n:,} carrier(s) are already measured. Pass --resume to "
+                  f"continue, which recomputes nothing. Nothing changed.")
+            return 1
+    else:
+        print(f"resuming: "
+              f"{int(psql_q('SELECT count(*) FROM step4_done_tbl') or 0):,} "
+              f"carrier(s) already measured\n", flush=True)
+
+    carriers = []
+    for line in psql("-qtAF|", "-c", """
+SELECT ct.itdk_domain, count(*) AS triples,
+       (SELECT count(*) FROM serving_site_tbl s
+        WHERE s.carrier_domain = ct.itdk_domain) AS sites
+FROM step4_carrier_tract_tbl ct
+WHERE NOT EXISTS (SELECT 1 FROM step4_done_tbl d
+                  WHERE d.itdk_domain = ct.itdk_domain)
+GROUP BY ct.itdk_domain
+ORDER BY count(*) DESC""").splitlines():
+        p = line.split("|")
+        if len(p) >= 3:
+            try:
+                carriers.append((p[0], int(p[1]), int(p[2])))
+            except ValueError:
+                continue
+
+    if not carriers:
+        print("Every carrier is already measured.")
+        print(f"  python3 -u {script('step4_build.py')} report")
+        return 0
+
+    total = sum(c[1] for c in carriers)
+    print(f"{len(carriers):,} carrier(s) to measure, {total:,} triples "
+          f"between them, largest first so the estimate settles early.")
+    print("A line per carrier. The cost of a carrier is its triples times "
+          "its sites, so the first few lines predict the rest.\n",
+          flush=True)
 
     t1 = time.monotonic()
-    psql("-qc", """
-DROP TABLE IF EXISTS step4_tract_site_tbl;
-CREATE TABLE step4_tract_site_tbl AS
+    seen = 0
+    for i, (dom, trip, sites) in enumerate(carriers, 1):
+        s0 = time.monotonic()
+        lit_dom = "'" + dom.replace("'", "''") + "'"
+        psql("-qc", f"""
+INSERT INTO step4_tract_site_tbl (itdk_domain, technology, tract_geoid,
+    state_usps, site_key, grade, city, nearest_km, second_site_key,
+    second_km)
 SELECT ct.itdk_domain, ct.technology, ct.tract_geoid, t.state_usps,
-       n.site_key, n.grade, n.city, n.km AS nearest_km,
-       n2.site_key AS second_site_key, n2.km AS second_km
+       n.site_key, n.grade, n.city, n.km, n2.site_key, n2.km
 FROM step4_carrier_tract_tbl ct
 JOIN census_tract_tbl t ON t.tract_geoid = ct.tract_geoid
 LEFT JOIN LATERAL (
-    SELECT s.site_key, s.grade, s.city,
-           6371 * sqrt(pow(radians(s.lat - t.lat), 2) +
-             pow(radians(((s.lon - t.lon + 540) -
-               floor((s.lon - t.lon + 540) / 360) * 360) - 180)
-                 * cos(radians(t.lat)), 2)) AS km
+    SELECT s.site_key, s.grade, s.city, {KM} AS km
     FROM serving_site_tbl s
     WHERE s.carrier_domain = ct.itdk_domain
     ORDER BY pow(s.lat - t.lat, 2) +
              pow((s.lon - t.lon) * cos(radians(t.lat)), 2)
     LIMIT 1) n ON true
 LEFT JOIN LATERAL (
-    SELECT s.site_key,
-           6371 * sqrt(pow(radians(s.lat - t.lat), 2) +
-             pow(radians(((s.lon - t.lon + 540) -
-               floor((s.lon - t.lon + 540) / 360) * 360) - 180)
-                 * cos(radians(t.lat)), 2)) AS km
+    SELECT s.site_key, {KM} AS km
     FROM serving_site_tbl s
     WHERE s.carrier_domain = ct.itdk_domain
       AND s.site_key <> n.site_key
     ORDER BY pow(s.lat - t.lat, 2) +
              pow((s.lon - t.lon) * cos(radians(t.lat)), 2)
-    LIMIT 1) n2 ON true;
-CREATE INDEX step4_ts_domain_idx ON step4_tract_site_tbl (itdk_domain);
-CREATE INDEX step4_ts_tract_idx ON step4_tract_site_tbl (tract_geoid);
-COMMENT ON TABLE step4_tract_site_tbl IS
-  'Step 4: for each ITDK carrier domain, technology code and census tract that carrier serves over that technology per the BDC, the distance from the tract centroid to that carrier''s own nearest serving site, and to its second nearest. Per carrier AND TECHNOLOGY because a carrier serves a tract over Copper from one facility and over fibre from another.';""")
-    print(f"  measured in {(time.monotonic() - t1) / 60:.1f} minutes\n",
+    LIMIT 1) n2 ON true
+WHERE ct.itdk_domain = {lit_dom}""")
+        el = time.monotonic() - s0
+        psql("-qc", "INSERT INTO step4_done_tbl (itdk_domain, triples, "
+                    f"seconds) VALUES ({lit_dom}, {trip}, {el:.1f}) "
+                    "ON CONFLICT (itdk_domain) DO NOTHING")
+        seen += trip
+        tel = time.monotonic() - t1
+        eta = ""
+        if seen:
+            eta = (f", about {(total - seen) * tel / seen / 60:.0f} min "
+                   f"left")
+        if i <= 20 or i % 25 == 0 or i == len(carriers):
+            print(f"[{i}/{len(carriers)}] {dom[:30]:<30} {trip:>9,} triples "
+                  f"x {sites:>4,} sites  {el:>6.1f}s{eta}", flush=True)
+
+    print(f"\nmeasured in {(time.monotonic() - t1) / 60:.1f} minutes",
           flush=True)
-    print(f"Next:\n  python3 -u {script('step4_build.py')} report")
+    psql("-qc", """
+CREATE INDEX IF NOT EXISTS step4_ts_domain_idx
+    ON step4_tract_site_tbl (itdk_domain);
+CREATE INDEX IF NOT EXISTS step4_ts_tract_idx
+    ON step4_tract_site_tbl (tract_geoid);""")
+    print(f"  python3 -u {script('step4_build.py')} report")
     return 0
 
 
@@ -341,7 +442,11 @@ def main():
                    help="continue a part-finished build, re-reading nothing")
     p.set_defaults(func=cmd_pairs)
 
-    d = sub.add_parser("distances", help="step 4 distances per carrier")
+    d = sub.add_parser("distances",
+                       help="step 4 distances, one carrier at a time with "
+                            "progress")
+    d.add_argument("--resume", action="store_true",
+                   help="continue a part-finished measurement")
     d.set_defaults(func=cmd_distances)
 
     r = sub.add_parser("report", help="step 4 results by technology")
