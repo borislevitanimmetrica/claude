@@ -1,0 +1,3 @@
+itdk_domain	decision	value	note
+charlestoncounty.org	not_an_isp		Boris 2026-11-19: not a carrier. Was credited with AT&T's 155,648 tract-technology pairs on 1 site, median 1,188.6 km, because ip-api reports AT&T Enterprises for its address space and the name test passed it on a token.
+ent.net	not_an_isp		Boris 2026-11-19: not a carrier. Present in my local fixture rather than the live data; recorded so the ruling stands if the domain ever appears. It is the case that killed the string test: 'ent' sits inside 'enterprises' exactly as 'att' sits inside 'attenterprisesllc', so no tightening separates it from att.com.

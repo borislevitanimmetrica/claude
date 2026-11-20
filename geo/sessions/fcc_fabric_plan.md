@@ -1551,3 +1551,88 @@ file named.
 
 This is the harness that should have existed before any of today's commands
 were issued.
+
+## 2026-11-19: status of the seven steps, measured
+
+Boris: "Advise the status of the multistep plan to join ITDK and BDC Fabric
+data." Figures are from his own runs, not estimates.
+
+| step | state | evidence |
+| --- | --- | --- |
+| 1 ingest | DONE | 519,469,683 availability rows, 333 files, satellite excluded; provider_tract_tech_tbl 785,168 provider-technology-tract rows |
+| 2 headend and CO locations per carrier AND technology | PART DONE, one half NOT met | 6,256 sites over 2,583 domains at infrastructure grade; per TECHNOLOGY not done at all |
+| 3 street addresses | NOT STARTED | co_site_tbl and geocode_sites.py built and tested, no data loaded |
+| 4 distance to tract centroid | RUN, OUTPUT UNUSABLE | 19,327,770 rows; 85.0 pct of them rest on unapproved name matches |
+| 5 twice-the-distance with four-block gap | NOT STARTED | needs step 4 correct; block_geoid is in the load, so the input exists |
+| 6 ascribe ip-api addresses | NOT STARTED | batch path measured at 1,500 addresses a minute; DIA tier agreed |
+| 7 tracts into ZIPs | NOT STARTED | Census tract-to-ZCTA relationship file verified, 23.2 MB, carries AREALAND_PART |
+
+### Two independent deficits, and conflating them would waste the fix
+
+**Deficit one, the carrier link.** domain_classify.sql over all 2,583 domains:
+
+    name does NOT match reported name, 10,000+ pairs per site   218 domains  15,798,174 rows  81.7 pct
+    name does NOT match, 1,000 to 10,000 per site                74 domains     638,919      3.3
+    name matches, 10,000+ per site                               24 domains   2,381,273     12.3
+
+Eight domains in the whole table rest on a ruling. The 85 pct is machine
+name-matching that was never approved and was being joined through anyway.
+
+**The string test is finished as a decision rule, and Boris's rulings are
+what finished it.** ent.net is not a carrier; att.com is. Both are
+three-character labels sitting inside 'AT&T Enterprises, LLC' compressed to
+attenterprisesllc: 'att' as its prefix, 'ent' inside 'enterprises'. No
+threshold separates them, because the difference between them is not in the
+strings. The test stays as a sort key for the approval queue and nothing more.
+
+The same day Boris ruled afes.com and snowcrest.net ARE carriers, both
+reporting AT&T Enterprises to ip-api, and charlestoncounty.org is not. So
+the reported name is not even weak evidence of the operator; it is evidence
+of whose registration the block sits in.
+
+**Deficit two, the site inventory, which fixing the link will not touch.**
+Measured medians from step 4, for links that are not in dispute:
+
+    cox.net        90 sites    9.0 km median
+    zayo.com      185          12.2
+    cogentco.com   94          15.8
+    123.net        14          11.2
+    qwest.net      75          39.8
+    verizon.net   157         718.2
+    att.com         1       1,412.0
+
+The first five show the method working. att.com with ONE located site cannot
+produce a usable distance for AT&T whatever the crosswalk says, and
+verizon.net's 718 km median says 157 sites is far short of Verizon's real
+footprint. That is step 2 and step 3 work: more sites, not a better join.
+
+**A third thing, not yet diagnosed, flagged as an inference.** comcast.net
+has 788 sites and 19 tract-technology pairs; spectrum.com 453 sites and 19;
+charter.com 98 and 19; while domains whose reported name reads 'Spectrum'
+carry 60,089. The same brand resolved to different providers depending on the
+domain, and the largest cable carriers appear linked to providers with almost
+no footprint. carrier_link_audit.sql settles which of two causes it is by
+listing the largest BDC providers against the domains that point at them.
+
+### Step 2's unmet half
+
+The plan says per carrier AND per network type, so that Verizon FIOS is
+separate from Verizon xDSL. serving_site_tbl has no technology column and
+cannot have one from ITDK alone. Step 4 takes technology from the BDC side,
+which means a Verizon fibre tract and a Verizon copper tract both measure to
+the same undifferentiated Verizon site set. The grain of the output is right
+and the measurement behind it is not.
+
+What might separate them, untested: hostname tokens such as fios, dsl, cbr
+and wireless, and separate domains per network, where verizon-gni.net,
+coxfiber.net and unitifiber.net against cox.net and uniti.net are candidates.
+Both are testable against the data already held.
+
+### Files added
+
+- geo/carrier_nodes/domain_classify.sql, every domain classified, no LIMIT.
+- geo/carrier_nodes/carrier_link_audit.sql, the link audited from both ends
+  plus the placeable-footprint percentage.
+- geo/carrier_nodes/bdc_brand_find.sql, the exact BDC brand string for a
+  pattern, so a use_bdc_name ruling carries a string from the data.
+- geo/carrier_nodes/decisions_2026_11_19.tsv, the two not_an_isp rulings.
