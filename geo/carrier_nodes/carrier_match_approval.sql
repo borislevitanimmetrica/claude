@@ -98,7 +98,12 @@ LEFT JOIN LATERAL (
              * sin(radians(c.lon - s.lon) / 2) ^ 2)) AS km
     FROM census_tract_tbl c
     WHERE c.lat BETWEEN s.lat - 0.75 AND s.lat + 0.75
-      AND c.lon BETWEEN s.lon - 1.00 AND s.lon + 1.00
+      -- Scaled with latitude for the same reason as in
+      -- carrier_match_v2.sql: a fixed longitude window is a smaller
+      -- distance the further north it is applied, and a plus or minus 1.00
+      -- degree box is 80 km in the lower 48 but only 47 km at 65 north.
+      AND c.lon BETWEEN s.lon - 0.75 / greatest(cos(radians(s.lat)), 0.05)
+                    AND s.lon + 0.75 / greatest(cos(radians(s.lat)), 0.05)
     ORDER BY (c.lat - s.lat) * (c.lat - s.lat)
            + (c.lon - s.lon) * (c.lon - s.lon)
     LIMIT 1

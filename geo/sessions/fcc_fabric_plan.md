@@ -1689,3 +1689,72 @@ geo/sessions/check_sql.sh already tests for exactly this and I did not run it.
 The tool was not missing; the discipline was. It is now a PostFileSave hook in
 .kiro/hooks/check-sql-on-save.json, and its known-meta-command list gained
 quit and a dozen others it had been rejecting wrongly.
+
+### 2026-11-20: the brand re-grain, and a scope error of mine in steps 4 to 6
+
+**provider_id was not corrupt.** Boris: "T-Mobile owns 50% of Lumos." That
+resolves provider 130403, which had looked like unrelated companies sharing
+an id. Measured shares under it: T-Mobile 84,569 pairs over 84,474 tracts,
+98.6 pct of the provider; lumos 864; Lumos 368. A parent filing beside a
+joint venture is what the FCC scheme is for.
+
+Brand grain is still the right fix, for a different reason than I gave. Two
+footprints two orders of magnitude apart share one label, so a Lumos domain
+would inherit T-Mobile's national footprint. The re-grain costs almost
+nothing: 794,708 rows against 785,168, so 1.2 pct more, meaning the brands
+of a provider barely overlap.
+
+Quantum Fiber under AT&T's provider id is 5,497 pairs, 3.5 pct, one
+technology. I do not know why Lumen's brand sits on an AT&T FRN and am not
+inventing a reason; at brand grain it separates and the question stops
+mattering. Zayo at 73.1 pct beside Allstream at 37.3 pct under 130982 is one
+company having owned the other. Brands split across several provider_ids are
+all tiny, the largest being Stimulus Technologies at 612 pairs, so the
+mirror-image fault is negligible.
+
+**What the re-grain did NOT fix.** Three brands still cover more than 80 pct
+of all census tracts: AT&T 97.4, Verizon 97.0, T-Mobile 98.9. Containment in
+a brand footprint is as uninformative as containment in a provider
+footprint, so the diagnosis of the ranking failure survives on clean
+numbers.
+
+**THE SCOPE ERROR, and it is mine.** Those three are national because of
+fixed wireless, and Boris wrote the consequence into this file on
+2026-11-17: licensed fixed wireless is served from cell sites, not from
+headends or central offices. I did not carry it through. The national
+tract-technology split:
+
+    71 Licensed Fixed Wireless    282,768
+    50 Fiber to the Premises      221,739
+    40 Cable                       99,151
+    10 Copper                      87,949
+    70 Unlicensed Fixed Wireless   71,322
+    72 LBR Fixed Wireless          22,011
+     0 Other                          228
+
+Fixed wireless is 376,101 of 785,168, which is 47.9 pct, and for all of it
+the thing steps 4 to 6 measure the distance TO does not exist. Steps 4 to 6
+can only apply to Copper, Cable and Fiber to the Premises, which is 408,839
+pairs, 52.1 pct. Every coverage percentage I have quoted for step 4,
+including the 94.2 pct "reachable" figure, was computed over a denominator
+that includes half a footprint the method cannot serve. The fixed wireless
+half needs tower locations, which is a different source: the FCC Antenna
+Structure Registration, unassessed because data.fcc.gov returned 403 to the
+sandbox and may not to Boris's machine.
+
+**The three candidate scores, none adopted.** carrier_match_v2.sql computes
+containment, which scored 7.3 pct precision at 1; lift, containment divided
+by the footprint share of the country; and blanket, the share of the brand
+footprint within 25 km of a site of the domain, which asks the reverse
+question of whether an owner covers its own territory. Demonstrated on a
+fixture before issuing: against one brand, containment returned 100.00 for
+four different domains while blanket separated them at 34.17, 27.07, 23.37
+and 15.40. Containment has no resolution; blanket has some. The truth-set
+score decides, not that demonstration.
+
+**A latitude bug found by thinking about Alaska rather than by running.**
+Both the nearest-tract lookup and the 25 km neighbourhood used a fixed
+longitude window. A degree of longitude is 111.32 km at the equator and 47
+km at 65 degrees north, so a fixed window is a shorter distance the further
+north it is applied, and Alaskan sites would have silently lost tracts.
+Both now divide the window by cos(latitude) with a floor.
