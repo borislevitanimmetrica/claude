@@ -25,6 +25,35 @@ the yield on a sample and prints it. It writes nothing to landmarks_usa. Build
 the full path only if the numbers here justify it; the 6-new-ZIP result is what
 happens when that order is reversed.
 
+PRE-MEASURED 2026-11-03, AND THE ANSWER LOOKS LIKE NO
+-----------------------------------------------------
+This script needs the database. The same question was put to a corpus that does
+not: the 8,412 distinct website hosts of the USFA fire registry, a population of
+small municipal institutions much like the ones the method depends on. DNS only,
+every record resolved, no sampling.
+
+  NS under the organisation's own apex      166 of 8,252     2.0 pct
+  MX under the organisation's own apex      656 of 8,252     7.9 pct
+  publish no MX at all                    1,620
+
+Those are UPPER bounds, and resolving the records collapses them. Of 612 hosts
+with a self-apex MX that resolves, 301 point at THE SAME ADDRESS as the website,
+and the PTR parents of the rest are bluehost.com, eigbox.net, unifiedlayer.com,
+secureserver.net, hostmonster.com: the mail bundled with a shared hosting plan,
+which rule 2 rejects for the same reason it rejects the website. On the NS side
+the self-apex addresses resolve into mn.us, af.mil, usmc.mil and army.mil, which
+ARE on-premises networks but are the STATE's or the BASE's premises, so they are
+the nwresd.k12.or.us problem again and node_fanout.sql would discard them.
+
+Concentration, for the record: 4,050 of 8,252 apexes take mail at outlook.com or
+google.com before counting Barracuda, Proofpoint and Mimecast in front of them;
+1,778 delegate DNS to GoDaddy and 1,288 to Cloudflare.
+
+So the expected newly-qualifying rate is one to two per cent, not the eight that
+the apex test suggests. Run this script once against landmarks_usa to confirm
+the same shape on the real corpus, since it writes nothing and costs one sample,
+and then close the question. Full detail in mx_ns_premeasurement.md.
+
 WHAT IT MEASURES
 ----------------
 For each sampled landmark whose website address was rejected:
@@ -259,6 +288,16 @@ def sample_landmarks(args):
     if args.source:
         srcs = ",".join(ovt.lit(s.strip()) for s in args.source.split(",") if s.strip())
         where.append(f"t.source IN ({srcs})")
+    # --category exists because the institution CLASSES that matter here do not
+    # line up with sources. dotgov and nces_ipeds are whole sources and --source
+    # reaches them, but the college class is mostly Overture rows carrying
+    # category 'college_university', 47,746 of the 61,288 in the class, and no
+    # source filter can select those.
+    if args.category:
+        pats = [p.strip() for p in args.category.split(",") if p.strip()]
+        if pats:
+            ors = " OR ".join(f"t.category ILIKE {ovt.lit(p)}" for p in pats)
+            where.append(f"({ors})")
     if args.zip_prefix:
         where.append(f"left(lpad(btrim(t.overture_zip), 5, '0'), {len(args.zip_prefix)}) "
                      f"= {ovt.lit(args.zip_prefix)}")
@@ -442,6 +481,10 @@ def main():
     p.add_argument("--sample", type=int, default=2000,
                    help="distinct website hosts to test (default 2000)")
     p.add_argument("--source", help="comma-separated sources, e.g. overture,nces_ipeds")
+    p.add_argument("--category",
+                   help="comma-separated ILIKE patterns on category, OR'd together, "
+                        "e.g. '%%college%%,%%universit%%'. Needed because the college "
+                        "class is a category within Overture, not a source")
     p.add_argument("--zip-prefix", help="restrict to ZIPs starting with this, e.g. 021")
     p.add_argument("--rule2-only", action="store_true",
                    help="only hosts that have a stored RDAP record")

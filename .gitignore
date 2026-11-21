@@ -10,3 +10,6 @@ geo/dma_export/*/bin/
 # outputs, not source, and tracking them would make every run dirty the tree.
 geo/*_rdap_errors.csv
 geo/landmark_sources/*.geojsonseq
+
+# Python bytecode caches, created by running the loader scripts in place.
+__pycache__/

@@ -1,3 +1,8 @@
+-- Disable the pager, so long result tables stay in the shell transcript
+-- instead of being discarded when q leaves less. See the same note in
+-- onpremises_hosting_rule.sql.
+\pset pager off
+
 -- node_fanout.sql
 --
 -- How wide is a last carrier node, measured in ZIP CLUSTERS rather than ZIPs,

@@ -1,0 +1,88 @@
+itdk_domain	decision	value	note
+lrmutual.com	use_bdc_name	Mutual Telephone Company	listed above the first instruction, a direct BDC pairing
+bright.net	use_bdc_of_asn	AS7106	use the name shown in BDC for the corresponding ASN
+cniteam.com	use_bdc_of_asn	AS7106	use the name shown in BDC for the corresponding ASN
+earthlinkbusiness.net	use_bdc_of_asn	AS397866	use the name shown in BDC for the corresponding ASN
+uniti.net	use_bdc_name	Windstream Accucomm Telecom, LLC	associated with various Windstream subsidiaries
+uniti.net	use_bdc_name	Windstream Alabama, LLC	associated with various Windstream subsidiaries
+uniti.net	use_bdc_name	Windstream Arkansas, LLC	associated with various Windstream subsidiaries
+uniti.net	use_bdc_name	Windstream Communications, LLC.	associated with various Windstream subsidiaries
+uniti.net	use_bdc_name	Windstream Florida, Inc.	associated with various Windstream subsidiaries
+uniti.net	use_bdc_name	Windstream Georgia Communications, LLC	associated with various Windstream subsidiaries
+uniti.net	use_bdc_name	Windstream Georgia, LLC	associated with various Windstream subsidiaries
+uniti.net	use_bdc_name	Windstream Georgia Telephone, LLC	associated with various Windstream subsidiaries
+uniti.net	use_bdc_name	Windstream Iowa Communications, Inc.	associated with various Windstream subsidiaries
+uniti.net	use_bdc_name	Windstream Kentucky East, LLC	associated with various Windstream subsidiaries
+uniti.net	use_bdc_name	Windstream Kentucky West, LLC	associated with various Windstream subsidiaries
+uniti.net	use_bdc_name	Windstream Lexcom Communications, Inc.	associated with various Windstream subsidiaries
+uniti.net	use_bdc_name	Windstream Missouri, Inc.	associated with various Windstream subsidiaries
+uniti.net	use_bdc_name	Windstream Montezuma, Inc.	associated with various Windstream subsidiaries
+uniti.net	use_bdc_name	Windstream Standard, LLC	associated with various Windstream subsidiaries
+netaxs.com	use_bdc_name	Windstream Accucomm Telecom, LLC	associated with various Windstream subsidiaries
+netaxs.com	use_bdc_name	Windstream Alabama, LLC	associated with various Windstream subsidiaries
+netaxs.com	use_bdc_name	Windstream Arkansas, LLC	associated with various Windstream subsidiaries
+netaxs.com	use_bdc_name	Windstream Communications, LLC.	associated with various Windstream subsidiaries
+netaxs.com	use_bdc_name	Windstream Florida, Inc.	associated with various Windstream subsidiaries
+netaxs.com	use_bdc_name	Windstream Georgia Communications, LLC	associated with various Windstream subsidiaries
+netaxs.com	use_bdc_name	Windstream Georgia, LLC	associated with various Windstream subsidiaries
+netaxs.com	use_bdc_name	Windstream Georgia Telephone, LLC	associated with various Windstream subsidiaries
+netaxs.com	use_bdc_name	Windstream Iowa Communications, Inc.	associated with various Windstream subsidiaries
+netaxs.com	use_bdc_name	Windstream Kentucky East, LLC	associated with various Windstream subsidiaries
+netaxs.com	use_bdc_name	Windstream Kentucky West, LLC	associated with various Windstream subsidiaries
+netaxs.com	use_bdc_name	Windstream Lexcom Communications, Inc.	associated with various Windstream subsidiaries
+netaxs.com	use_bdc_name	Windstream Missouri, Inc.	associated with various Windstream subsidiaries
+netaxs.com	use_bdc_name	Windstream Montezuma, Inc.	associated with various Windstream subsidiaries
+netaxs.com	use_bdc_name	Windstream Standard, LLC	associated with various Windstream subsidiaries
+mcleodusa.net	use_bdc_name	Windstream Accucomm Telecom, LLC	associated with various Windstream subsidiaries
+mcleodusa.net	use_bdc_name	Windstream Alabama, LLC	associated with various Windstream subsidiaries
+mcleodusa.net	use_bdc_name	Windstream Arkansas, LLC	associated with various Windstream subsidiaries
+mcleodusa.net	use_bdc_name	Windstream Communications, LLC.	associated with various Windstream subsidiaries
+mcleodusa.net	use_bdc_name	Windstream Florida, Inc.	associated with various Windstream subsidiaries
+mcleodusa.net	use_bdc_name	Windstream Georgia Communications, LLC	associated with various Windstream subsidiaries
+mcleodusa.net	use_bdc_name	Windstream Georgia, LLC	associated with various Windstream subsidiaries
+mcleodusa.net	use_bdc_name	Windstream Georgia Telephone, LLC	associated with various Windstream subsidiaries
+mcleodusa.net	use_bdc_name	Windstream Iowa Communications, Inc.	associated with various Windstream subsidiaries
+mcleodusa.net	use_bdc_name	Windstream Kentucky East, LLC	associated with various Windstream subsidiaries
+mcleodusa.net	use_bdc_name	Windstream Kentucky West, LLC	associated with various Windstream subsidiaries
+mcleodusa.net	use_bdc_name	Windstream Lexcom Communications, Inc.	associated with various Windstream subsidiaries
+mcleodusa.net	use_bdc_name	Windstream Missouri, Inc.	associated with various Windstream subsidiaries
+mcleodusa.net	use_bdc_name	Windstream Montezuma, Inc.	associated with various Windstream subsidiaries
+mcleodusa.net	use_bdc_name	Windstream Standard, LLC	associated with various Windstream subsidiaries
+cavtel.net	use_bdc_name	Windstream Accucomm Telecom, LLC	associated with various Windstream subsidiaries
+cavtel.net	use_bdc_name	Windstream Alabama, LLC	associated with various Windstream subsidiaries
+cavtel.net	use_bdc_name	Windstream Arkansas, LLC	associated with various Windstream subsidiaries
+cavtel.net	use_bdc_name	Windstream Communications, LLC.	associated with various Windstream subsidiaries
+cavtel.net	use_bdc_name	Windstream Florida, Inc.	associated with various Windstream subsidiaries
+cavtel.net	use_bdc_name	Windstream Georgia Communications, LLC	associated with various Windstream subsidiaries
+cavtel.net	use_bdc_name	Windstream Georgia, LLC	associated with various Windstream subsidiaries
+cavtel.net	use_bdc_name	Windstream Georgia Telephone, LLC	associated with various Windstream subsidiaries
+cavtel.net	use_bdc_name	Windstream Iowa Communications, Inc.	associated with various Windstream subsidiaries
+cavtel.net	use_bdc_name	Windstream Kentucky East, LLC	associated with various Windstream subsidiaries
+cavtel.net	use_bdc_name	Windstream Kentucky West, LLC	associated with various Windstream subsidiaries
+cavtel.net	use_bdc_name	Windstream Lexcom Communications, Inc.	associated with various Windstream subsidiaries
+cavtel.net	use_bdc_name	Windstream Missouri, Inc.	associated with various Windstream subsidiaries
+cavtel.net	use_bdc_name	Windstream Montezuma, Inc.	associated with various Windstream subsidiaries
+cavtel.net	use_bdc_name	Windstream Standard, LLC	associated with various Windstream subsidiaries
+broadviewnet.net	use_bdc_name	Windstream Accucomm Telecom, LLC	associated with various Windstream subsidiaries
+broadviewnet.net	use_bdc_name	Windstream Alabama, LLC	associated with various Windstream subsidiaries
+broadviewnet.net	use_bdc_name	Windstream Arkansas, LLC	associated with various Windstream subsidiaries
+broadviewnet.net	use_bdc_name	Windstream Communications, LLC.	associated with various Windstream subsidiaries
+broadviewnet.net	use_bdc_name	Windstream Florida, Inc.	associated with various Windstream subsidiaries
+broadviewnet.net	use_bdc_name	Windstream Georgia Communications, LLC	associated with various Windstream subsidiaries
+broadviewnet.net	use_bdc_name	Windstream Georgia, LLC	associated with various Windstream subsidiaries
+broadviewnet.net	use_bdc_name	Windstream Georgia Telephone, LLC	associated with various Windstream subsidiaries
+broadviewnet.net	use_bdc_name	Windstream Iowa Communications, Inc.	associated with various Windstream subsidiaries
+broadviewnet.net	use_bdc_name	Windstream Kentucky East, LLC	associated with various Windstream subsidiaries
+broadviewnet.net	use_bdc_name	Windstream Kentucky West, LLC	associated with various Windstream subsidiaries
+broadviewnet.net	use_bdc_name	Windstream Lexcom Communications, Inc.	associated with various Windstream subsidiaries
+broadviewnet.net	use_bdc_name	Windstream Missouri, Inc.	associated with various Windstream subsidiaries
+broadviewnet.net	use_bdc_name	Windstream Montezuma, Inc.	associated with various Windstream subsidiaries
+broadviewnet.net	use_bdc_name	Windstream Standard, LLC	associated with various Windstream subsidiaries
+musiciansgig.net	not_an_isp		not an ISP, delete as a carrier
+ppe.com	not_an_isp		not an ISP, delete as a carrier
+socialaw.com	not_an_isp		not an ISP, delete as a carrier
+daytonoffice.com	not_an_isp		not an ISP, delete as a carrier
+hobbsnm.org	not_an_isp		not an ISP, delete as a carrier
+avglens.com	not_an_isp		not an ISP, delete as a carrier
+mepeng.net	not_an_isp		not an ISP, delete as a carrier
+frisolilaw.com	not_an_isp		not an ISP, delete as a carrier

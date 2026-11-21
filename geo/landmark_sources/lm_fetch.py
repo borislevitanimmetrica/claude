@@ -60,6 +60,7 @@ Attribution:
 """
 
 import argparse
+import collections
 import csv
 import io
 import json
@@ -93,6 +94,17 @@ OVERPASS = "https://overpass-api.de/api/interpreter"
 WDQS = "https://query.wikidata.org/sparql"
 IPEDS = "https://nces.ed.gov/ipeds/datacenter/data/HD{year}.zip"
 NPS_API = "https://developer.nps.gov/api/v1/parks"
+
+# USFA National Fire Department Registry, national CSV.
+#
+# The download page is a Next.js app, so the CSV is behind an API route rather
+# than a link. The three routes are /api/download/national, /api/download/state
+# and /api/download/station, read out of the page's own JS bundle
+# (pages/download-*.js) rather than guessed.
+#
+# Measured 2026-11-03: HTTP 200, 8,831,230 bytes, 26 columns, 27,117 rows,
+# sha256 20c7871160688782103e8ef31e6bed826dadbebc62dc9f93174c3f27bb256d29.
+USFA_FIRE_URL = "https://apps.usfa.fema.gov/registry/api/download/national"
 
 ZIP5_RE = re.compile(r"\b(\d{5})(?:-\d{4})?\b")
 
@@ -629,6 +641,87 @@ SELECT (COUNT(*) AS ?n) WHERE {
 }
 """
 
+# --------------------------------------------------------------------------
+# THE POSTAL-CODE BRANCH (--by-postal-code), AND WHY IT EXISTS
+#
+# The query above requires P6375, the STREET ADDRESS. That is right for an
+# organisation and wrong for a place: a city does not have a street address, it
+# has a postal code. MEASURED 2026-11-12 via QLever, US items with an official
+# website:
+#
+#   city in the United States      5,767 with a site, 5,254 with P281, 8 with P6375
+#   town in the United States      2,255               1,833            1
+#   county seat                    1,595               1,584            1
+#
+# Eight of 5,767 cities. The loader asks for the one property these entities do
+# not carry, so it has never seen them. It is not only places, either; the
+# largest class by P281 is high school at 7,062.
+#
+#   US items with P856 and P281                      30,206
+#   of those also carrying P6375, already reachable   10,128
+#
+# WHY "EXACTLY ONE P281" AND NOT MIN(). Boris: "Normally it should be the city
+# or town hall, where the servers are." P281 is multi-valued and for a large
+# city it lists EVERY ZIP in the city. Boston carries 02108, 02109, 02110,
+# 02111, 02112, 02113, 02114, 02115, 02116, 02117, 02118, 02123 and more, and
+# City Hall is at 02201, which is not among the first of them. So MIN() would
+# invent a precise-looking answer that is simply wrong.
+#
+# Taking only items with exactly ONE P281 value makes the claim honest: one
+# value means the entity occupies one ZIP, so that ZIP IS the town hall's. This
+# is the same reasoning as the overture-zip locality tier's
+# HAVING count(DISTINCT z) = 1, and it is why that tier is trustworthy.
+#
+#   exactly one P281 value    28,176    93.3 per cent
+#   two to five                1,617
+#   six or more                  413
+#
+#   of the 28,176, already reachable via P6375    10,082
+#   so NEW to the corpus                          18,094
+#
+# The 2,030 multi-ZIP entities are deliberately left out. They need the
+# published street address from the entity's own website, measured at 76.7 per
+# cent of sites that answer, which locates the actual hall.
+# --------------------------------------------------------------------------
+
+WD_ZIP_QUERY = """PREFIX wdt: <http://www.wikidata.org/prop/direct/>
+PREFIX wd: <http://www.wikidata.org/entity/>
+PREFIX rdfs: <http://www.w3.org/2000/01/rdf-schema#>
+SELECT ?item ?itemLabel ?zipc ?site WHERE {{
+  {{
+    SELECT ?item (MIN(?z) AS ?zipc) (COUNT(DISTINCT ?z) AS ?nz) (MIN(?s) AS ?site)
+    WHERE {{ ?item wdt:P17 wd:Q30 ; wdt:P856 ?s ; wdt:P281 ?z . }}
+    GROUP BY ?item
+  }}
+  FILTER(?nz = 1)
+  ?item rdfs:label ?itemLabel .
+  FILTER(LANG(?itemLabel) = "en")
+}}
+ORDER BY ?item
+LIMIT {limit} OFFSET {offset}
+"""
+
+WD_ZIP_COUNT = """PREFIX wdt: <http://www.wikidata.org/prop/direct/>
+PREFIX wd: <http://www.wikidata.org/entity/>
+SELECT (COUNT(DISTINCT ?item) AS ?n) WHERE {
+  {
+    SELECT ?item (COUNT(DISTINCT ?z) AS ?nz) WHERE {
+      ?item wdt:P17 wd:Q30 ; wdt:P856 ?s ; wdt:P281 ?z .
+    } GROUP BY ?item
+  }
+  FILTER(?nz = 1)
+}
+"""
+
+# P281 is free text and not all of it is a ZIP. Observed in the data:
+# Weber Logistics carries "90670-50", which is neither a ZIP nor a ZIP+4. The
+# five leading digits must be the whole value or be followed by a hyphen, which
+# accepts 19023 and 02108-1234 and 90670-50, and rejects "ZIP 12345", "1234"
+# and anything non-numeric. A hyphenated range such as 12345-12399 also passes
+# and yields its first ZIP, which is the start of the range and the best
+# available answer.
+WD_P281_RE = re.compile(r"^(\d{5})(?:-\d+)?$")
+
 # The ZIP sits inside the address text. Prefer a ZIP that follows a 2-letter
 # state code, which is the reliable form ("Nashville, TN, 37240"), and fall back
 # to a trailing ZIP. Same precedence the chain's own freeform rule uses.
@@ -657,9 +750,26 @@ def cmd_wikidata(args):
     release = args.release or time.strftime("%Y-%m-%d")
     started = time.monotonic()
 
+    # A SEPARATE SOURCE NAME IS LOAD-BEARING, not cosmetic. --resume computes
+    # its offset as count(*) WHERE source = <this source>, so if the
+    # postal-code branch wrote 'wikidata' it would resume the address branch
+    # from the combined total and skip everything in between.
+    by_zip = bool(getattr(args, "by_postal_code", False))
+    source = "wikidata_zip" if by_zip else "wikidata"
+    query_tpl = WD_ZIP_QUERY if by_zip else WD_QUERY
+    count_q = WD_ZIP_COUNT if by_zip else WD_COUNT
+    if by_zip:
+        print("  --by-postal-code: items with ONE P281 value and an official "
+              "website.")
+        print("  Entities spanning several ZIPs are excluded on purpose: P281 "
+              "lists every")
+        print("  ZIP in a large city, so it cannot locate the hall. Those need "
+              "the address")
+        print("  published on the entity's own site.")
+
     total = None
     d = http_json(endpoint + "?" + urllib.parse.urlencode(
-        {"query": WD_COUNT, "format": "json"}),
+        {"query": count_q, "format": "json"}),
         headers={"Accept": "application/sparql-results+json"},
         timeout=args.timeout, max_backoff=args.max_backoff)
     if "__error__" not in d:
@@ -680,7 +790,7 @@ def cmd_wikidata(args):
     offset = 0
     if args.resume:
         offset = int(psql("-qtA", "-c", "SELECT count(*) FROM lm_places_usa "
-                                        "WHERE source = 'wikidata'").strip() or 0)
+                                        f"WHERE source = '{source}'").strip() or 0)
         print(f"  resuming from offset {offset:,}")
 
     # --limit counts rows fetched BY THIS RUN, not an absolute offset ceiling.
@@ -697,7 +807,7 @@ def cmd_wikidata(args):
             break
 
         n = args.page if stop_at == 0 else min(args.page, stop_at - offset)
-        q = WD_QUERY.format(limit=n, offset=offset)
+        q = query_tpl.format(limit=n, offset=offset)
         shown = f"/{total:,}" if total else ""
         print(f"  offset {offset:,}{shown} ...", end="", flush=True)
         d = http_json(endpoint + "?" + urllib.parse.urlencode(
@@ -717,27 +827,43 @@ def cmd_wikidata(args):
             break
 
         rows = []
+        dropped_zip = 0
         for b in binds:
-            addr = b.get("addr", {}).get("value", "")
             site = normalise_url(b.get("site", {}).get("value"))
             if not site:
                 continue
-            m = WD_ZIP_AFTER_STATE.search(addr)
-            if m:
-                region, zipc = m.group(1), m.group(2)
-            else:
-                m2 = WD_ZIP_AT_END.search(addr)
-                if not m2:
+            if by_zip:
+                # The ZIP arrives as its own property, so there is no address
+                # text to mine and no state to read. region is left empty, as
+                # the WD_ZIP_AT_END branch below already does for addresses
+                # with no state code. The chain only needs the postcode: its
+                # overture-zip step matches "postcode":"12345" in the
+                # addresses JSON that build_row synthesises.
+                mz = WD_P281_RE.match((b.get("zipc", {}).get("value") or "").strip())
+                if not mz:
+                    dropped_zip += 1
                     continue
-                region, zipc = "", m2.group(1)
+                addr, region, zipc = "", "", mz.group(1)
+            else:
+                addr = b.get("addr", {}).get("value", "")
+                m = WD_ZIP_AFTER_STATE.search(addr)
+                if m:
+                    region, zipc = m.group(1), m.group(2)
+                else:
+                    m2 = WD_ZIP_AT_END.search(addr)
+                    if not m2:
+                        continue
+                    region, zipc = "", m2.group(1)
             qid = b.get("item", {}).get("value", "").rsplit("/", 1)[-1]
             rows.append(build_row(
-                "wikidata", qid, release,
+                source, qid, release,
                 b.get("itemLabel", {}).get("value"), addr, "", region, zipc,
-                site, None, None, "wikidata"))
+                site, None, None, source))
+        if dropped_zip:
+            print(f"    {dropped_zip} dropped: P281 value is not a ZIP")
 
         # Merge per page, so an interrupted pull keeps what it already fetched.
-        load_rows("wikidata", rows, replace=False)
+        load_rows(source, rows, replace=False)
         merged += len(rows)
 
         if len(binds) < n:
@@ -824,9 +950,14 @@ def cmd_ca_cde(args):
     schools, so the state directory is maintained on a budget cycle while the
     federal CCD release lags a year. The CDE file also carries NCESDist and
     NCESSchool, so CCD remains available as a clean key-join for coverage
-    checking without any name matching. Decisive practical difference: CDE
-    publishes a WebSite column beside the address and ZIP, and CCD does not
-    publish a website at all, so CCD cannot anchor a landmark by itself.
+    checking without any name matching.
+
+    CORRECTION, 2026-11-02. This docstring used to say CCD publishes no website
+    at all, which was the project's belief and is wrong. The 2023-24 directory
+    file ccd_sch_029_2324_w_1a_073124.csv HAS a WEBSITE column: 67,417 open
+    schools carry both it and a physical ZIP (LZIP), in 16,768 ZIPs on 30,365
+    hosts. The reason to prefer the CDE file is now only recency, not the
+    presence of a website. See geo/landmark_sources/state_file_survey.md.
 
     THE SHARED-HOST PROBLEM, WHICH IS THE WHOLE RISK HERE. Schools very often
     publish their district's website rather than their own. Fifty schools in
@@ -1039,6 +1170,129 @@ def cmd_dotgov(args):
           "be labelled overture_zip_source='locality'.")
 
 
+def cmd_usfa_fire(args):
+    """Load the USFA National Fire Department Registry.
+
+    This is the best new landmark source found since the .gov registry, and it
+    beats every source already loaded on the one metric the readme says to
+    read. Measured 2026-11-03, by this loader, from the file itself:
+
+      27,117 rows, every one of them with a 5-digit HQ ZIP
+      8,721 carry a non-empty Website, of which 8,685 survive normalise_url
+      7,418 distinct ZIPs
+      8,408 distinct hosts, of which 99.2 pct serve exactly one department
+                             and 99.5 pct appear in exactly one ZIP
+
+    Compare the readme's benchmarks for pct_unique_hosts: NCES IPEDS 89.1 pct,
+    OSM in Rhode Island 97.4 pct. A volunteer fire department is one building
+    with one domain, so the fan-out that ruins retail and bank feeds does not
+    happen here.
+
+    WHERE the rows are is the real argument. CCD 2023-24, restricted to open
+    schools and parsed through this same normalise_url, yields 67,417 usable
+    rows in 16,768 ZIPs on 30,365 hosts. This file reaches 2,277 ZIPs that CCD
+    does not, and 8,400 of its 8,408 hosts are absent from CCD's. Fire
+    protection follows settlement rather than commercial density or
+    school-district geography: a town too small for a school still has a
+    volunteer department. The union is 19,045 ZIPs.
+
+    The 5,141 of its ZIPs that CCD already reaches are not wasted either.
+    node_fanout.sql classified 4,940 nodes as unmeasurable for having too few
+    landmarks, so a second independent landmark inside an already-covered ZIP
+    is exactly what moves a node from unmeasurable to measurable.
+
+    Two measured caveats, neither fatal:
+
+    STALENESS. Registration is voluntary and listings are updated by the
+    departments themselves, so some are very old: www.geocities.com appears 43
+    times and GeoCities shut down in 2009. A 400-host DNS sample resolved 347,
+    so about 86.8 pct are live. The resolve step already tolerates failures.
+
+    SOCIAL AND AGGREGATOR URLS. 61 departments list a Facebook page and
+    several dozen list firehouse.com or fire-ems.net. These are not filtered
+    here. The readme's position is that hosting has exactly one definition and
+    it lives in node_fanout.sql, and a second, different filter at load time
+    would undermine that. The counts are printed instead so the cost stays
+    visible.
+
+    HQ zip is used rather than Mail zip. Mail zip is frequently a PO box, which
+    is a mail-handling location and not where the server is.
+
+    FDID is NOT a national key: 27,117 rows share only 15,895 distinct FDIDs
+    and 217 are blank. (HQ state, FDID, name) is unique across the whole file,
+    so that is the source_id. The cost is that a department which renames
+    itself arrives as a new row rather than an update.
+    """
+    # --dry-run must not touch the database at all, so the table check is
+    # deliberately skipped there, as in ca-cde.
+    if not args.dry_run:
+        require_table()
+    release = args.release or time.strftime("%Y-%m-%d")
+    print(f"Downloading {USFA_FIRE_URL} ...", flush=True)
+    req = urllib.request.Request(USFA_FIRE_URL, headers={"User-Agent": UA})
+    try:
+        with urllib.request.urlopen(req, timeout=240) as r:
+            raw = r.read()
+    except (urllib.error.HTTPError, OSError) as exc:
+        sys.exit(f"USFA registry download failed: {exc}")
+    print(f"  {len(raw):,} bytes")
+
+    rows = []
+    total = no_site = no_zip = 0
+    org_types = collections.Counter()
+    hosts = collections.Counter()
+    host_zips = collections.defaultdict(set)
+    for d in read_csv_dicts(raw):
+        total += 1
+        url = normalise_url(d.get("Website"))
+        if not url:
+            no_site += 1
+            continue
+        if not ZIP5_RE.search(d.get("HQ zip") or ""):
+            no_zip += 1
+            continue
+        state = (d.get("HQ state") or "").strip().upper()
+        name = (d.get("Fire dept name") or "").strip()
+        source_id = f"{state}:{(d.get('FDID') or '').strip()}:{name}"
+        org_types[(d.get("Organization Type") or "").strip() or "unstated"] += 1
+        host = urllib.parse.urlsplit(url).hostname or ""
+        hosts[host] += 1
+        m = ZIP5_RE.search(d.get("HQ zip") or "")
+        host_zips[host].add(m.group(1))
+        rows.append(build_row(
+            "usfa_fire", source_id, release, name,
+            " ".join(x for x in ((d.get("HQ addr1") or "").strip(),
+                                 (d.get("HQ addr2") or "").strip()) if x),
+            d.get("HQ city"), state, d.get("HQ zip"), url, None, None,
+            (d.get("Dept Type") or "").strip().lower() or "fire department"))
+
+    print(f"  {total:,} departments read")
+    print(f"  {no_site:,} dropped for no usable website, "
+          f"{no_zip:,} for no 5-digit HQ zip")
+    print(f"  {len(rows):,} usable, in {len({r[7] for r in rows}):,} ZIPs, "
+          f"on {len(hosts):,} hosts")
+    if hosts:
+        single = sum(1 for h, c in hosts.items() if c == 1)
+        onezip = sum(1 for h, z in host_zips.items() if len(z) == 1)
+        print(f"  {single:,} hosts serve exactly one department "
+              f"({100.0 * single / len(hosts):.1f} pct); "
+              f"{onezip:,} appear in one ZIP "
+              f"({100.0 * onezip / len(host_zips):.1f} pct)")
+        print("  most shared hosts, NOT filtered, left for node_fanout.sql:")
+        for h, c in hosts.most_common(8):
+            if c < 2:
+                break
+            print(f"    {c:>5}  {h}  ({len(host_zips[h])} ZIPs)")
+    print("  organisation types:")
+    for k, v in org_types.most_common():
+        print(f"    {v:>6}  {k}")
+
+    if args.dry_run:
+        print("\nDry run: nothing written, no database connection opened.")
+        return
+    load_rows("usfa_fire", rows, replace=args.replace)
+
+
 def cmd_status(args):
     """Load state of lm_places_usa, plus enrichment state from landmarks_usa.
 
@@ -1122,7 +1376,19 @@ def main():
     n = common(sub.add_parser("nces-ipeds", help="NCES IPEDS colleges"))
     n.add_argument("--year", type=int, default=2023)
 
-    w = common(sub.add_parser("wikidata", help="Wikidata items with P856 + P6375"))
+    w = common(sub.add_parser("wikidata",
+                              help="Wikidata items with P856 + P6375, or "
+                                   "P856 + a single P281 with --by-postal-code"))
+    w.add_argument("--by-postal-code", action="store_true",
+                   help="take the ZIP from P281 instead of mining it out of the "
+                        "P6375 street address, and accept only items carrying "
+                        "exactly ONE P281 value. Reaches places, which have a "
+                        "postal code and no street address: MEASURED, 5,254 of "
+                        "5,767 US cities with a website carry P281 and EIGHT "
+                        "carry P6375. 28,176 items qualify, 18,094 of them "
+                        "invisible to the default branch. Writes "
+                        "source='wikidata_zip', kept separate so --resume "
+                        "counts the right rows")
     w.add_argument("--limit", type=int, default=0,
                    help="0 means ALL matching items, which is the default. Set a "
                         "number only to cap a deliberate smoke test")
@@ -1145,6 +1411,16 @@ def main():
                         "would collapse onto a few hosts, as with NPS")
     g.add_argument("--replace", action="store_true",
                    help="delete existing dotgov rows first")
+
+    f = common(sub.add_parser("usfa-fire", help="USFA National Fire Department "
+                                                "Registry (8,685 usable, "
+                                                "7,418 ZIPs, 99.2 pct unique hosts)"))
+    f.add_argument("--replace", action="store_true",
+                   help="delete existing usfa_fire rows first")
+    f.add_argument("--dry-run", action="store_true",
+                   help="download and parse, print the yield and the shared-host "
+                        "analysis, and touch no database. Run this first so a "
+                        "connection problem cannot be mistaken for a parsing one")
 
     s = common(sub.add_parser("nps", help="National Park Service (needs a key; low value)"))
     s.add_argument("--api-key")
@@ -1174,7 +1450,7 @@ def main():
     {"osm-overpass": cmd_osm_overpass, "osm-pbf": cmd_osm_pbf,
      "nces-ipeds": cmd_nces_ipeds, "wikidata": cmd_wikidata,
      "dotgov": cmd_dotgov, "nps": cmd_nps, "ca-cde": cmd_ca_cde,
-     "status": cmd_status}[args.cmd](args)
+     "usfa-fire": cmd_usfa_fire, "status": cmd_status}[args.cmd](args)
 
 
 if __name__ == "__main__":
