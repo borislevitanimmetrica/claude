@@ -25,7 +25,7 @@
 
 set -u
 
-KNOWN='echo|timing|pset|set|unset|i|ir|o|qecho|if|elif|else|endif|copy|d|dt|df|du|dn|l|x|c|conninfo|gexec|gset|watch|crosstabview|password|encoding|pager|a|t|H|f|g'
+KNOWN='echo|timing|pset|set|unset|i|ir|o|qecho|if|elif|else|endif|copy|d|dt|df|du|dn|l|x|c|conninfo|gexec|gset|watch|crosstabview|password|encoding|pager|a|t|H|f|g|quit|q|r|w|e|ef|sf|sv|setenv|getenv|lo_list|dv|di|ds|dp|z|sslinfo'
 
 status=0
 

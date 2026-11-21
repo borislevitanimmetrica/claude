@@ -1636,3 +1636,56 @@ Both are testable against the data already held.
 - geo/carrier_nodes/bdc_brand_find.sql, the exact BDC brand string for a
   pattern, so a use_bdc_name ruling carries a string from the data.
 - geo/carrier_nodes/decisions_2026_11_19.tsv, the two not_an_isp rulings.
+
+### 2026-11-19, later: the 19 is settled, and name matching is abandoned
+
+A tract-technology pair is one row of provider_tract_tech_tbl, whose grain is
+(provider_id, technology, tract_geoid): this provider offers service over this
+technology somewhere in this tract. The 519,469,683 availability rows are per
+LOCATION; collapsed to the tract they are 785,168 rows over 2,069 providers.
+
+Boris: the expected count is on the order of 130,000 PER CARRIER for a
+national one. Measured, and it agrees: AT&T 156,524 over 83,148 of 85,528
+tracts, 1.9 technologies per tract; Verizon 94,659 over 82,803; Xfinity
+57,577 over 36,151.
+
+So 19 is three to four orders of magnitude too low, and carrier_link_audit.sql
+section 2 says why rather than leaving it inferred: **provider 130317,
+Xfinity, 57,577 pairs, has ZERO ITDK domains linked to it.** Comcast cannot be
+placed at all, while comcast.net's 788 sites point at a 19-pair provider. The
+same hole, both sides present and simply not joined: Astound Broadband 7,904
+pairs with rcn.com at 8 sites and rcn.net at 6; Ziply Fiber 1,954 with
+ziplyfiber.com at 10; Cspire 2,219 with cspire.com at 5 linked instead to a
+31-pair provider.
+
+Placeable share of the BDC footprint today: 74.9 pct of 785,168 pairs, but
+only 13.4 pct through a link resting on a ruling.
+
+**A bug of mine in that audit.** bdc_brand came from min(brand_name) per
+provider_id, and one provider_id files under several brands, which the schema
+notes say explicitly. The footprint figures are sound; those name columns were
+alphabetically-first labels. carrier_match_approval.sql aggregates all brands
+per provider instead.
+
+**Why names are finished, in Boris's words.** Small carriers are numerous; an
+acquirer's name may reach the BDC filing late or never; and the domain of an
+acquired network persists for years. alter.net is Verizon and shares no
+substring with it. The rule being retired is carrier_crosswalk.sql line 845,
+substring containment in either direction between normalised names, which is
+how a reported 'Comcast Cable Communications' reached a brand ending in
+'COMMUNICATIONS'.
+
+**What replaces it: geography.** A carrier with a headend or central office in
+a tract files service in that tract. carrier_match_approval.sql places every
+serving site in its census tract by nearest centroid, then proposes, for each
+domain, the providers that file service in those tracts. Evidence per pairing
+is sites_in_footprint, pct_sites, the provider footprint, pairs_per_site and
+the state overlap, with name_link kept beside it so the two methods can be
+compared rather than one silently replacing the other. Nothing is filtered and
+carrier_resolved_tbl is untouched.
+
+**The apostrophe in a psql echo argument, for the fourth time.**
+geo/sessions/check_sql.sh already tests for exactly this and I did not run it.
+The tool was not missing; the discipline was. It is now a PostFileSave hook in
+.kiro/hooks/check-sql-on-save.json, and its known-meta-command list gained
+quit and a dozen others it had been rejecting wrongly.
