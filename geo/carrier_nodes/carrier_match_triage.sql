@@ -62,8 +62,11 @@ SELECT r.itdk_domain,
         WHERE s.carrier_domain = r.itdk_domain)        AS sites,
        coalesce(m.sites_in_footprint, 0)               AS sites_in_footprint,
        coalesce(m.pct_sites, 0)                        AS pct_sites,
-       CASE WHEN m.carrier_domain IS NULL
-            THEN 'NO SUPPORT - no site of this domain is in this footprint'
+       CASE WHEN (SELECT count(*) FROM serving_site_tbl s
+                  WHERE s.carrier_domain = r.itdk_domain) = 0
+            THEN 'UNSCOREABLE - this domain has no located site at all'
+            WHEN m.carrier_domain IS NULL
+            THEN 'NO SUPPORT - it has sites and none is in this footprint'
             ELSE 'supported' END                       AS geography
 FROM carrier_resolved_tbl r
 LEFT JOIN carrier_match_tbl m ON m.carrier_domain = r.itdk_domain

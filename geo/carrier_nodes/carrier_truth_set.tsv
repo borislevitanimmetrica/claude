@@ -1,0 +1,42 @@
+itdk_domain	provider_id	basis	note
+alter.net	131425	boris_ruling	Boris 2026-11-18: alter.net belongs to Verizon.
+uniti.net	131413	boris_ruling	Boris named Windstream Standard LLC for this domain.
+cavtel.net	131413	boris_ruling	Boris named Windstream Standard LLC for this domain.
+mcleodusa.net	131413	boris_ruling	Boris named Windstream Standard LLC for this domain.
+netaxs.com	131413	boris_ruling	Boris named Windstream Standard LLC for this domain.
+broadviewnet.net	131413	boris_ruling	Boris named Windstream for this domain.
+bright.net	131469	boris_ruling	Boris: BDC name of the operator of AS7106, Com Net Inc.
+cniteam.com	131469	boris_ruling	Boris: Com Net Inc.
+earthlinkbusiness.net	360061	boris_ruling	Boris: BDC name of the operator of AS3978, EarthLink.
+lrmutual.com	150120	boris_ruling	Boris named Mutual Telephone Company for this domain.
+verizon.net	131425	name_identity	The domain label is the brand. No outside knowledge used.
+frontiernet.net	130258	name_identity	Frontier.
+cox.net	130360	name_identity	Cox Communications.
+centurylink.net	130228	name_identity	CenturyLink.
+tds.net	131310	name_identity	TDS Telecom.
+123.net	460000	name_identity	123.NET Inc.
+acd.net	370064	name_identity	ACD.net.
+metronetinc.net	131081	name_identity	Metronet Holdings. Distinct from the legacy Metronet network Boris says Verizon absorbed.
+consolidated.net	130335	name_identity	Consolidated Communications.
+googlefiber.net	240041	name_identity	Google Fiber.
+unwiredbb.net	460087	name_identity	unWired Broadband.
+breezeline.net	280001	name_identity	Breezeline.
+ziplyfiber.com	420173	name_identity	Ziply Fiber.
+cspire.com	131302	name_identity	Cspire.
+gobrightspeed.net	470022	name_identity	Brightspeed.
+spectrum.com	130235	name_identity	Spectrum.
+lightpath.net	130370	name_identity	Lightpath.
+firstlight.net	130993	name_identity	FirstLight Fiber.
+tpx.net	131386	name_identity	TPx Communications.
+syringanetworks.net	190349	name_identity	Syringa Networks LLC.
+ussignalcom.net	130996	name_identity	US Signal Company.
+comcast.net	130317	my_assertion	Xfinity is Comcast's consumer brand. External knowledge, NOT verifiable from these tables. Needs Boris to confirm or reject.
+comcastbusiness.net	130317	my_assertion	Same company as comcast.net. Needs confirmation.
+charter.com	130235	my_assertion	Spectrum is Charter's brand. Needs confirmation.
+rcn.com	130079	my_assertion	RCN trades as Astound Broadband. Needs confirmation.
+rcn.net	130079	my_assertion	As above.
+qwest.net	130228	my_assertion	Qwest became CenturyLink. Needs confirmation.
+sbcglobal.net	130077	my_assertion	SBC legacy domain, now AT&T. Needs confirmation.
+wideopenwest.com	131480	my_assertion	WOW Internet Cable and Phone. Needs confirmation.
+sparklight.net	130183	my_assertion	Sparklight is Cable One's brand. The brand list for 130183 shows Cable America, so this one is doubtful and is here to be judged, not relied on.
+windstream.net	131413	my_assertion	Consistent with Boris's Windstream rulings on other domains. Needs confirmation.
