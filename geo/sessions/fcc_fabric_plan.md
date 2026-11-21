@@ -1758,3 +1758,80 @@ longitude window. A degree of longitude is 111.32 km at the equator and 47
 km at 65 degrees north, so a fixed window is a shorter distance the further
 north it is applied, and Alaskan sites would have silently lost tracts.
 Both now divide the window by cos(latitude) with a floor.
+
+### 2026-11-20, later: fixed wireless leaves ZIP scope, and the scores
+
+**TOWER LOCATIONS: PROPOSED BY ME, REFUTED BY BORIS, WITHDRAWN.** I proposed
+chasing FCC Antenna Structure Registration data to place fixed wireless.
+Boris: "Fixed and mobile wireless (CGNAT) cannot be targeted at ZIP code
+level because the customer-proximate IP routing point is usually one per
+DMA. Justify using tower locations. We are already flagging CGNAT in
+ip2city_dbiplite_probe_tbl.likely_mobile_cgnat = true."
+
+I cannot justify it and do not try. The deliverable is an IP to ZIP
+assignment. If the customer-proximate routing point is one CGNAT egress per
+DMA then the observable address carries DMA-level information and nothing
+finer, so tower precision is unusable: the tower is not recoverable from the
+address. It would only matter if subscriber addresses were allocated per
+site or sector, which is exactly what CGNAT removes.
+
+CONSEQUENCES, which are larger than dropping one data source:
+
+- Fixed wireless is OUT OF SCOPE for ZIP-level targeting, not pending a
+  better source. 376,101 of 785,168 tract-technology pairs, 47.9 pct.
+- The denominator for steps 4 to 7 is the wireline footprint, 408,839
+  pairs. Coverage percentages are to be quoted against that, and the 94.2
+  pct I reported on 2026-11-19 used a denominator containing half a
+  footprint the method cannot serve.
+- Step 6 must exclude likely_mobile_cgnat, which the probe table already
+  flags, rather than attempt to place those addresses.
+- The DMA API already in geo/dma_api is the right product for that segment.
+- A WISP-only domain therefore leaves the step 4 population. unwiredbb.net
+  is the measured example: it has sites, unWired Broadband files only fixed
+  wireless, and the wireline-restricted candidate set correctly omits it.
+
+**The three scores, measured.** containment 43.9 pct precision at 1, lift
+4.9, blanket 7.3. Containment rose from 7.3 to 43.9 and NONE of that came
+from my scoring work: it came from restricting to wireline, which removed
+the national fixed-wireless footprints. At wireline grain no brand exceeds
+44.3 pct of tracts on Copper, 40.5 on Cable or 36.4 on FTTP, and
+brands_over_80_pct is zero for every technology except 71. The signal was
+always there and fixed wireless was drowning it.
+
+My two proposed measures are both WORSE than the baseline, and symmetrically
+so: blanket rewards small footprints, which is the opposite bias to the one
+it was meant to correct, so comcast.net ranks 61st under it.
+
+Containment still fails all ten of Boris's rulings, four at ranks 2, 3, 5
+and 6 and six not proposed at all. Those are the acquired and legacy
+networks. The ceiling for any ranking is 82.9 pct, because 7 of the 41 truth
+pairings are not proposed by the candidate generator at all.
+
+### The artefact Boris asked for three times
+
+2026-11-17: "submit a list with fields per source for my approval."
+2026-11-19: "I want approval of all matching tables."
+2026-11-20: "I have not received a table of carrier name matches between
+ip-api.com and BDC Fabric for approval."
+
+He was right each time and I answered with candidate generators and scoring
+harnesses instead. carrier_name_approval.sql is the list: one row per ip-api
+name against each candidate BDC brand, with the ITDK domains, the RDAP
+registrants, the ASNs, the node and site counts, the brand wireline
+footprint, and three SEPARATE flags for what each candidate rests on,
+by_ruling, by_name and by_geography. Names with no candidate are listed
+rather than dropped. approved_brand_name is empty for his answer. Written
+whole to /home/boris/geo/carrier_name_approval.tsv.
+
+The grain is the ip-api name rather than the ITDK domain because ip-api
+reports one name per block of address space: on the fixture, three domains
+reporting AT&T Enterprises LLC collapse to one row, which is the duplication
+that made the earlier per-domain lists unreadable.
+
+**And a column I should not have used.** The first version read
+carrier_crosswalk_tbl.ipapi_as, which carrier_crosswalk.sql declares and the
+deployed table does not have. That is the recorded failure mode exactly: a
+source file states what the current build would write, not what the table
+holds. Replaced with asn, which resolve_asn.sql has already read from this
+database successfully, and the file now dumps the real column list before
+using any of it.
