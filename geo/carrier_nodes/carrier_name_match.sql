@@ -86,18 +86,58 @@
 -- dropped first. Nothing else is written. The probe table, the crosswalk,
 -- the decision tables and the step 4 inputs are all read-only.
 
+-- ON_ERROR_STOP IS NOT OPTIONAL. The previous run of this file hit one
+-- missing column and then emitted fifteen further errors about tables that
+-- were never created, burying the real cause. The first failure must be the
+-- last line of output.
+\set ON_ERROR_STOP on
 \timing on
 
 \echo
-\echo The columns the probe table actually has. Checked before use, because
-\echo I shipped a query against a declared-but-absent column yesterday.
+\echo ================================================================
+\echo PRECHECK. This BLOCKS rather than prints.
 \echo
-SELECT column_name, data_type
+\echo I guessed a column name yesterday and again today. Today it was
+\echo likely_mobile_cgnat, which Boris named in prose and which
+\echo geo/mobile_transit_migration.sql has since renamed to
+\echo mobile_transit. Worse than the guess: this file already queried
+\echo information_schema for that exact column, printed five rows where
+\echo six were asked for, and then used the missing column anyway. A
+\echo check that cannot stop the run is decoration.
+\echo ================================================================
+\echo
+SELECT 'ip2city_dbiplite_probe_tbl' AS tbl, column_name, data_type
 FROM information_schema.columns
 WHERE table_name = 'ip2city_dbiplite_probe_tbl'
   AND column_name IN ('isp', 'org', 'as', 'ran_at', 'network',
-                      'likely_mobile_cgnat')
+                      'mobile_transit', 'likely_mobile_cgnat')
 ORDER BY column_name;
+
+DO $precheck$
+DECLARE missing text;
+BEGIN
+    SELECT string_agg(c.needed, ', ')
+      INTO missing
+    FROM (VALUES ('isp'), ('org'), ('as'), ('ran_at')) AS c(needed)
+    WHERE NOT EXISTS (
+        SELECT 1 FROM information_schema.columns i
+        WHERE i.table_name = 'ip2city_dbiplite_probe_tbl'
+          AND i.column_name = c.needed);
+    IF missing IS NOT NULL THEN
+        RAISE EXCEPTION
+          'ip2city_dbiplite_probe_tbl is missing the column(s) %. Nothing was built.',
+          missing;
+    END IF;
+
+    IF NOT EXISTS (SELECT 1 FROM information_schema.columns
+                   WHERE table_name = 'bdc_carrier_tbl'
+                     AND column_name = 'brand_name') THEN
+        RAISE EXCEPTION 'bdc_carrier_tbl has no brand_name column. Nothing was built.';
+    END IF;
+
+    RAISE NOTICE 'precheck passed: every column this file reads exists';
+END
+$precheck$;
 
 -- ---------------------------------------------------------------------------
 -- The two reductions, as functions so they are testable and reusable.
@@ -225,19 +265,65 @@ FROM ipapi_bdc_name_map_tbl;
 \echo probed ranges is not lost.
 \echo ================================================================
 \echo
+-- THE ACCURACY TIER IS DISCOVERED, NOT ASSUMED. Boris referred to
+-- likely_mobile_cgnat, a boolean; geo/mobile_transit_migration.sql replaces
+-- it on four tables with mobile_transit, a one-character code whose
+-- meaning that file states: 'm' mobile CGNAT, 't' transit, both DMA
+-- accuracy; 'f' fixed, the only tier that can carry a ZIP; NULL not yet
+-- classified, deliberately not folded into 'f'. Whether a given database
+-- is before or after that migration is not something I can know from here,
+-- so the column is looked up and the query composed around whichever
+-- exists. If neither does, the tier counts come back NULL and the run
+-- continues, because name matching does not depend on them.
 DROP TABLE IF EXISTS ipapi_name_tbl;
-CREATE TABLE ipapi_name_tbl AS
-SELECT p.isp                                   AS ipapi_name,
-       carrier_name_compact(p.isp)             AS name_compact,
-       carrier_name_tokens(p.isp)              AS name_tokens,
-       count(*)                                AS ranges,
-       count(*) FILTER (WHERE p.likely_mobile_cgnat) AS cgnat_ranges,
-       max(p.org)                              AS an_org,
-       max(p."as")                             AS an_as
-FROM ip2city_dbiplite_probe_tbl p
-WHERE p.ran_at IS NOT NULL
-  AND p.isp IS NOT NULL AND p.isp <> ''
-GROUP BY 1, 2, 3;
+
+DO $build$
+DECLARE tier_col text;
+        zip_expr  text;
+        dma_expr  text;
+        unk_expr  text;
+BEGIN
+    SELECT i.column_name INTO tier_col
+    FROM information_schema.columns i
+    WHERE i.table_name = 'ip2city_dbiplite_probe_tbl'
+      AND i.column_name IN ('mobile_transit', 'likely_mobile_cgnat')
+    ORDER BY CASE i.column_name WHEN 'mobile_transit' THEN 1 ELSE 2 END
+    LIMIT 1;
+
+    IF tier_col = 'mobile_transit' THEN
+        zip_expr := 'count(*) FILTER (WHERE p.mobile_transit = ''f'')';
+        dma_expr := 'count(*) FILTER (WHERE p.mobile_transit IN (''m'', ''t''))';
+        unk_expr := 'count(*) FILTER (WHERE p.mobile_transit IS NULL)';
+        RAISE NOTICE 'accuracy tier read from mobile_transit: f is ZIP capable, m and t are DMA only';
+    ELSIF tier_col = 'likely_mobile_cgnat' THEN
+        zip_expr := 'count(*) FILTER (WHERE p.likely_mobile_cgnat IS FALSE)';
+        dma_expr := 'count(*) FILTER (WHERE p.likely_mobile_cgnat IS TRUE)';
+        unk_expr := 'count(*) FILTER (WHERE p.likely_mobile_cgnat IS NULL)';
+        RAISE NOTICE 'accuracy tier read from the pre-migration boolean likely_mobile_cgnat';
+    ELSE
+        zip_expr := 'NULL::bigint';
+        dma_expr := 'NULL::bigint';
+        unk_expr := 'count(*)';
+        RAISE NOTICE 'NEITHER mobile_transit NOR likely_mobile_cgnat exists on the probe table; every range is reported as unclassified and none is excluded on that basis';
+    END IF;
+
+    EXECUTE format($q$
+        CREATE TABLE ipapi_name_tbl AS
+        SELECT p.isp                       AS ipapi_name,
+               carrier_name_compact(p.isp) AS name_compact,
+               carrier_name_tokens(p.isp)  AS name_tokens,
+               count(*)                    AS ranges,
+               %s                          AS zip_capable_ranges,
+               %s                          AS dma_only_ranges,
+               %s                          AS unclassified_ranges,
+               max(p.org)                  AS an_org,
+               max(p."as")                 AS an_as
+        FROM ip2city_dbiplite_probe_tbl p
+        WHERE p.ran_at IS NOT NULL
+          AND p.isp IS NOT NULL AND p.isp <> ''
+        GROUP BY 1, 2, 3 $q$, zip_expr, dma_expr, unk_expr);
+END
+$build$;
 
 ALTER TABLE ipapi_name_tbl ADD PRIMARY KEY (ipapi_name);
 CREATE INDEX ipapi_name_compact_ix ON ipapi_name_tbl (name_compact);
@@ -245,7 +331,8 @@ ANALYZE ipapi_name_tbl;
 
 SELECT count(*)                                              AS ipapi_names,
        sum(ranges)                                           AS probed_ranges,
-       count(*) FILTER (WHERE cgnat_ranges = ranges)         AS names_wholly_cgnat,
+       count(*) FILTER (WHERE zip_capable_ranges = 0
+                          AND dma_only_ranges > 0)             AS names_wholly_dma_only,
        count(*) FILTER (WHERE EXISTS (
          SELECT 1 FROM ipapi_bdc_name_map_tbl m
          WHERE m.ipapi_name = ipapi_name_tbl.ipapi_name))     AS already_decided
@@ -438,7 +525,8 @@ WHERE NOT EXISTS (SELECT 1 FROM ipapi_name_candidate_tbl c
 SELECT left(n.ipapi_name, 40) AS ipapi_name,
        left(coalesce(n.an_org, ''), 26) AS ipapi_org,
        left(coalesce(n.an_as, ''), 30)  AS ipapi_as,
-       n.ranges, n.cgnat_ranges
+       n.ranges, n.zip_capable_ranges, n.dma_only_ranges,
+       n.unclassified_ranges
 FROM ipapi_name_tbl n
 WHERE NOT EXISTS (SELECT 1 FROM ipapi_name_candidate_tbl c
                   WHERE c.ipapi_name = n.ipapi_name)
@@ -472,8 +560,8 @@ LIMIT 80;
 \echo                                approved column per ip-api name.
 \echo   carrier_name_unmatched.tsv   the names no brand name resembles.
 \echo
-\copy (SELECT c.ipapi_name, c.ranges, c.rank_for_name, c.tier, c.provider_id, c.brand_name, c.shared_tokens, c.compact_equal, c.brand_within_name, c.name_within_brand, n.an_org AS ipapi_org, n.an_as AS ipapi_as, n.cgnat_ranges, NULL::text AS approved FROM ipapi_name_candidate_tbl c JOIN ipapi_name_tbl n ON n.ipapi_name = c.ipapi_name ORDER BY c.ranges DESC, c.ipapi_name, c.rank_for_name) TO '/home/boris/geo/carrier_name_candidates.tsv' WITH (FORMAT csv, DELIMITER E'\t', HEADER true)
+\copy (SELECT c.ipapi_name, c.ranges, c.rank_for_name, c.tier, c.provider_id, c.brand_name, c.shared_tokens, c.compact_equal, c.brand_within_name, c.name_within_brand, n.an_org AS ipapi_org, n.an_as AS ipapi_as, n.zip_capable_ranges, n.dma_only_ranges, n.unclassified_ranges, NULL::text AS approved FROM ipapi_name_candidate_tbl c JOIN ipapi_name_tbl n ON n.ipapi_name = c.ipapi_name ORDER BY c.ranges DESC, c.ipapi_name, c.rank_for_name) TO '/home/boris/geo/carrier_name_candidates.tsv' WITH (FORMAT csv, DELIMITER E'\t', HEADER true)
 
-\copy (SELECT n.ipapi_name, n.ranges, n.cgnat_ranges, n.an_org AS ipapi_org, n.an_as AS ipapi_as, NULL::text AS bdc_brand_name_you_give FROM ipapi_name_tbl n WHERE NOT EXISTS (SELECT 1 FROM ipapi_name_candidate_tbl c WHERE c.ipapi_name = n.ipapi_name) AND NOT EXISTS (SELECT 1 FROM ipapi_bdc_name_map_tbl m WHERE m.ipapi_name = n.ipapi_name) ORDER BY n.ranges DESC) TO '/home/boris/geo/carrier_name_unmatched.tsv' WITH (FORMAT csv, DELIMITER E'\t', HEADER true)
+\copy (SELECT n.ipapi_name, n.ranges, n.zip_capable_ranges, n.dma_only_ranges, n.unclassified_ranges, n.an_org AS ipapi_org, n.an_as AS ipapi_as, NULL::text AS bdc_brand_name_you_give FROM ipapi_name_tbl n WHERE NOT EXISTS (SELECT 1 FROM ipapi_name_candidate_tbl c WHERE c.ipapi_name = n.ipapi_name) AND NOT EXISTS (SELECT 1 FROM ipapi_bdc_name_map_tbl m WHERE m.ipapi_name = n.ipapi_name) ORDER BY n.ranges DESC) TO '/home/boris/geo/carrier_name_unmatched.tsv' WITH (FORMAT csv, DELIMITER E'\t', HEADER true)
 
 \timing off

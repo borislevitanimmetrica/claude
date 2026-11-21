@@ -40,6 +40,7 @@
 -- If a TSV is absent the \copy fails, the transaction is not started for
 -- that file, and the rest still runs; the counts at the end say what landed.
 
+\set ON_ERROR_STOP on
 \timing on
 
 CREATE TABLE IF NOT EXISTS ipapi_bdc_name_map_tbl (
@@ -64,11 +65,13 @@ CREATE TABLE name_cand_in (
     provider_id integer, brand_name text, shared_tokens integer,
     compact_equal boolean, brand_within_name boolean,
     name_within_brand boolean, ipapi_org text, ipapi_as text,
-    cgnat_ranges bigint, approved text);
+    zip_capable_ranges bigint, dma_only_ranges bigint,
+    unclassified_ranges bigint, approved text);
 
 DROP TABLE IF EXISTS name_unmatched_in;
 CREATE TABLE name_unmatched_in (
-    ipapi_name text, ranges bigint, cgnat_ranges bigint,
+    ipapi_name text, ranges bigint, zip_capable_ranges bigint,
+    dma_only_ranges bigint, unclassified_ranges bigint,
     ipapi_org text, ipapi_as text, bdc_brand_name_you_give text);
 
 \echo
