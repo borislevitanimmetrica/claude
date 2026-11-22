@@ -81,6 +81,14 @@ BEGIN
                    WHERE table_name = 'bdc_carrier_tbl' AND column_name = 'brand_name') THEN
         RAISE EXCEPTION 'bdc_carrier_tbl has no brand_name. Nothing was built.';
     END IF;
+    SELECT string_agg(c.needed, ', ') INTO missing
+    FROM (VALUES ('provider_id'), ('brand_name'), ('tract_geoid')) AS c(needed)
+    WHERE NOT EXISTS (SELECT 1 FROM information_schema.columns i
+                      WHERE i.table_name = 'provider_brand_tract_tech_tbl'
+                        AND i.column_name = c.needed);
+    IF missing IS NOT NULL THEN
+        RAISE EXCEPTION 'provider_brand_tract_tech_tbl is missing: %. Run provider_brand_footprint.sql first. Nothing was built.', missing;
+    END IF;
     RAISE NOTICE 'precheck passed';
 END
 $precheck$;
@@ -297,10 +305,11 @@ FROM asn_bdc_brand_map_tbl;
 
 \echo
 \echo ================================================================
-\echo SECTION 1. One row per ASN. The names are grouped and COUNTED
-\echo within the ASN, so what is shown is the commonest value with its
-\echo frequency. The previous file used max() on org, which is how an
-\echo unrelated company name appeared beside Charter.
+\echo SECTION 1. One row per ASN. Each name shown is the one carried by
+\echo the MOST PROBED RANGES within that ASN, and its share of them is
+\echo printed beside it. The previous version of this file grouped the
+\echo name combinations before taking mode(), which threw the range
+\echo counts away and left the pick arbitrary. That is fixed here.
 \echo ================================================================
 \echo
 DROP TABLE IF EXISTS ipapi_asn_tbl;
@@ -332,24 +341,55 @@ BEGIN
       WITH r AS (
           SELECT nullif(regexp_replace(p."as", '^AS([0-9]+).*$', '\1'), p."as")::bigint AS asn,
                  btrim(regexp_replace(p."as", '^AS[0-9]+[[:space:]]*', '')) AS as_operator,
-                 p.isp, p.org, p."as" AS as_raw,
+                 p.isp, p.org,
                  %s AS zipc, %s AS dmao, %s AS unkn
           FROM ip2city_dbiplite_probe_tbl p
           WHERE p.ran_at IS NOT NULL
             AND p."as" IS NOT NULL AND p."as" <> ''
-          GROUP BY 1,2,3,4,5
+          GROUP BY 1,2,3,4
+      ), tot AS (
+          SELECT asn,
+                 sum(zipc)                AS zip_capable_ranges,
+                 sum(dmao)                AS dma_only_ranges,
+                 sum(unkn)                AS unclassified_ranges,
+                 sum(zipc + dmao + unkn)  AS ranges,
+                 count(*)                 AS name_combinations,
+                 count(DISTINCT isp)      AS isp_variants
+          FROM r WHERE asn IS NOT NULL GROUP BY asn
+      ), op AS (
+          SELECT DISTINCT ON (asn) asn, as_operator, n AS as_operator_ranges
+          FROM (SELECT asn, as_operator, sum(zipc + dmao + unkn) AS n
+                FROM r WHERE asn IS NOT NULL GROUP BY 1, 2) s
+          ORDER BY asn, n DESC, as_operator
+      ), ispn AS (
+          SELECT DISTINCT ON (asn) asn, isp, n AS isp_commonest_ranges
+          FROM (SELECT asn, isp, sum(zipc + dmao + unkn) AS n
+                FROM r WHERE asn IS NOT NULL AND isp IS NOT NULL AND isp <> ''
+                GROUP BY 1, 2) s
+          ORDER BY asn, n DESC, isp
+      ), orgn AS (
+          SELECT DISTINCT ON (asn) asn, org, n AS org_commonest_ranges
+          FROM (SELECT asn, org, sum(zipc + dmao + unkn) AS n
+                FROM r WHERE asn IS NOT NULL AND org IS NOT NULL AND org <> ''
+                GROUP BY 1, 2) s
+          ORDER BY asn, n DESC, org
       )
-      SELECT asn,
-             mode() WITHIN GROUP (ORDER BY as_operator)        AS as_operator,
-             mode() WITHIN GROUP (ORDER BY isp)                AS isp_commonest,
-             mode() WITHIN GROUP (ORDER BY org)                AS org_commonest,
-             count(DISTINCT isp)                               AS isp_variants,
-             count(*)                                          AS name_combinations,
-             sum(zipc)                                         AS zip_capable_ranges,
-             sum(dmao)                                         AS dma_only_ranges,
-             sum(unkn)                                         AS unclassified_ranges
-      FROM r WHERE asn IS NOT NULL
-      GROUP BY asn $q$, zip_expr, dma_expr, unk_expr);
+      SELECT t.asn,
+             o.as_operator,
+             o.as_operator_ranges,
+             round(100.0 * o.as_operator_ranges / nullif(t.ranges, 0), 1)
+                                                        AS as_operator_pct,
+             i.isp                                      AS isp_commonest,
+             i.isp_commonest_ranges,
+             round(100.0 * i.isp_commonest_ranges / nullif(t.ranges, 0), 1)
+                                                        AS isp_commonest_pct,
+             g.org                                      AS org_commonest,
+             t.isp_variants, t.name_combinations, t.ranges,
+             t.zip_capable_ranges, t.dma_only_ranges, t.unclassified_ranges
+      FROM tot t
+      JOIN op         o ON o.asn = t.asn
+      LEFT JOIN ispn  i ON i.asn = t.asn
+      LEFT JOIN orgn  g ON g.asn = t.asn $q$, zip_expr, dma_expr, unk_expr);
 END
 $build$;
 
@@ -367,9 +407,12 @@ FROM ipapi_asn_tbl;
 \echo
 \echo ================================================================
 \echo SECTION 2. Candidates. Tier 1 and 2 ONLY, five per ASN at most.
-\echo Each ASN is matched on two names, its AS operator name from the
-\echo registry and its commonest ip-api ISP name, and the better tier of
-\echo the two is kept.
+\echo Candidates come from the AS OPERATOR NAME ALONE. The ip-api ISP name
+\echo no longer generates any, because it is often the upstream carrier
+\echo rather than the holder of the ASN; it is still shown, and the tier it
+\echo would have scored is reported as corroboration only.
+\echo The footprint size of each candidate brand is printed so that a
+\echo parent company name landing on a national brand is visible.
 \echo ================================================================
 \echo
 DROP TABLE IF EXISTS asn_brand_candidate_tbl;
@@ -382,13 +425,13 @@ WITH todo AS (
     FROM bdc_carrier_tbl c
     WHERE c.brand_name IS NOT NULL AND c.brand_name <> ''
 ), ntok AS (
-    SELECT t.asn, w.tok, 'as_operator'::text AS which
+    -- Only the AS operator name generates candidates. The ip-api ISP name
+    -- is frequently the UPSTREAM carrier rather than the holder of the ASN:
+    -- AS16509 is Amazon and ip-api reports its ISP as Windstream, which is
+    -- how the previous version matched Amazon to Windstream's footprint.
+    SELECT t.asn, w.tok
     FROM todo t, unnest(carrier_name_tokens(t.as_operator)) AS w(tok)
     WHERE length(w.tok) >= 2 AND NOT carrier_name_generic_only(t.as_operator)
-    UNION
-    SELECT t.asn, w.tok, 'isp'
-    FROM todo t, unnest(carrier_name_tokens(t.isp_commonest)) AS w(tok)
-    WHERE length(w.tok) >= 2 AND NOT carrier_name_generic_only(t.isp_commonest)
 ), btok AS (
     SELECT b.brand_name, b.provider_id, w.tok
     FROM brand b, unnest(carrier_name_tokens(b.brand_name)) AS w(tok)
@@ -401,19 +444,35 @@ WITH todo AS (
     UNION
     SELECT DISTINCT t.asn, b.brand_name, b.provider_id
     FROM todo t JOIN brand b
-      ON carrier_name_compact(b.brand_name) IN
-         (carrier_name_compact(t.as_operator), carrier_name_compact(t.isp_commonest))
+      ON carrier_name_compact(b.brand_name) = carrier_name_compact(t.as_operator)
+), fp AS (
+    -- How big the candidate brand's footprint is. A PARENT company name
+    -- matching the parent's own nationwide brand is the failure mode Boris
+    -- named on 2026-11-21: Verizon owns Frontier, so AS5650 now carries the
+    -- operator name Verizon Business, but the address space behind it serves
+    -- FRONTIER's footprint. Matching it to the brand Verizon, which reaches
+    -- 97% of tracts, would silently hand it half the country. The share is
+    -- printed, not filtered, because AT&T's own ASN legitimately matches a
+    -- nationwide brand and only Boris can tell the two apart.
+    SELECT f.provider_id, f.brand_name, count(DISTINCT f.tract_geoid) AS brand_tracts
+    FROM provider_brand_tract_tech_tbl f
+    GROUP BY 1, 2
+), fp_all AS (
+    SELECT count(DISTINCT tract_geoid)::numeric AS tracts
+    FROM provider_brand_tract_tech_tbl
 ), scored AS (
     SELECT p.asn, p.brand_name, p.provider_id,
-           t.as_operator, t.isp_commonest,
+           t.as_operator, t.as_operator_pct,
+           t.isp_commonest, t.isp_commonest_pct,
            t.zip_capable_ranges, t.dma_only_ranges,
-           least(
-             nullif(carrier_name_tier(t.as_operator,   p.brand_name), 0),
-             nullif(carrier_name_tier(t.isp_commonest, p.brand_name), 0)
-           )                                                     AS tier,
-           carrier_name_tier(t.as_operator,   p.brand_name)      AS tier_as_operator,
-           carrier_name_tier(t.isp_commonest, p.brand_name)      AS tier_isp
-    FROM pair p JOIN todo t ON t.asn = p.asn
+           carrier_name_tier(t.as_operator,   p.brand_name)      AS tier,
+           carrier_name_tier(t.isp_commonest, p.brand_name)      AS tier_isp_agrees,
+           f.brand_tracts,
+           round(100.0 * f.brand_tracts / nullif(a.tracts, 0), 1) AS brand_tract_pct
+    FROM pair p
+    JOIN todo t ON t.asn = p.asn
+    LEFT JOIN fp f ON f.provider_id = p.provider_id AND f.brand_name = p.brand_name
+    CROSS JOIN fp_all a
 ), kept AS (
     SELECT * FROM scored WHERE tier IN (1, 2)
 ), ranked AS (
@@ -448,13 +507,26 @@ $guard$;
 \echo
 \echo The candidates for the ASNs with the most ZIP-capable address space.
 \echo
-SELECT c.asn, left(c.as_operator, 30) AS as_operator,
-       left(c.isp_commonest, 26) AS ipapi_isp,
-       c.provider_id, left(c.brand_name, 28) AS bdc_brand,
-       c.tier, c.zip_capable_ranges
+SELECT c.asn, left(c.as_operator, 28) AS as_operator,
+       left(coalesce(c.isp_commonest, ''), 22) AS ipapi_isp,
+       c.provider_id, left(c.brand_name, 26) AS bdc_brand,
+       c.tier, c.brand_tract_pct AS brand_pct_of_usa, c.zip_capable_ranges
 FROM asn_brand_candidate_tbl c
 ORDER BY c.zip_capable_ranges DESC NULLS LAST, c.asn, c.rank_for_asn
 LIMIT 60;
+
+\echo
+\echo Candidates whose brand covers more than half the country. Each one
+\echo needs your eye: it is either the national brand of that carrier or a
+\echo PARENT name sitting on the address space of a subsidiary.
+\echo
+SELECT c.asn, left(c.as_operator, 30) AS as_operator,
+       c.provider_id, left(c.brand_name, 26) AS bdc_brand,
+       c.tier, c.brand_tract_pct AS brand_pct_of_usa, c.zip_capable_ranges
+FROM asn_brand_candidate_tbl c
+WHERE c.brand_tract_pct > 50
+ORDER BY c.zip_capable_ranges DESC NULLS LAST, c.asn
+LIMIT 40;
 
 \echo
 \echo ================================================================
@@ -485,8 +557,8 @@ LIMIT 60;
 \echo
 \echo Writing two files, every row, with an empty column for your answer.
 \echo
-\copy (SELECT c.asn, c.as_operator, c.isp_commonest, c.provider_id, c.brand_name, c.tier, c.tier_as_operator, c.tier_isp, c.rank_for_asn, c.zip_capable_ranges, c.dma_only_ranges, NULL::text AS approved FROM asn_brand_candidate_tbl c ORDER BY c.zip_capable_ranges DESC NULLS LAST, c.asn, c.rank_for_asn) TO '/home/boris/geo/asn_brand_candidates.tsv' WITH (FORMAT csv, DELIMITER E'\t', HEADER true)
+\copy (SELECT c.asn, c.as_operator, c.as_operator_pct, c.isp_commonest, c.isp_commonest_pct, c.provider_id, c.brand_name, c.tier, c.tier_isp_agrees, c.brand_tracts, c.brand_tract_pct, c.rank_for_asn, c.zip_capable_ranges, c.dma_only_ranges, NULL::text AS approved FROM asn_brand_candidate_tbl c ORDER BY c.zip_capable_ranges DESC NULLS LAST, c.asn, c.rank_for_asn) TO '/home/boris/geo/asn_brand_candidates.tsv' WITH (FORMAT csv, DELIMITER E'\t', HEADER true)
 
-\copy (SELECT a.asn, a.as_operator, a.isp_commonest, a.org_commonest, a.isp_variants, a.zip_capable_ranges, a.dma_only_ranges, a.unclassified_ranges, NULL::text AS bdc_brand_or_out_of_scope FROM ipapi_asn_tbl a WHERE NOT EXISTS (SELECT 1 FROM asn_brand_candidate_tbl c WHERE c.asn = a.asn) AND NOT EXISTS (SELECT 1 FROM asn_bdc_brand_map_tbl m WHERE m.asn = a.asn) ORDER BY a.zip_capable_ranges DESC NULLS LAST) TO '/home/boris/geo/asn_unmatched.tsv' WITH (FORMAT csv, DELIMITER E'\t', HEADER true)
+\copy (SELECT a.asn, a.as_operator, a.as_operator_pct, a.isp_commonest, a.isp_commonest_pct, a.org_commonest, a.isp_variants, a.zip_capable_ranges, a.dma_only_ranges, a.unclassified_ranges, NULL::text AS bdc_brand_or_out_of_scope FROM ipapi_asn_tbl a WHERE NOT EXISTS (SELECT 1 FROM asn_brand_candidate_tbl c WHERE c.asn = a.asn) AND NOT EXISTS (SELECT 1 FROM asn_bdc_brand_map_tbl m WHERE m.asn = a.asn) ORDER BY a.zip_capable_ranges DESC NULLS LAST) TO '/home/boris/geo/asn_unmatched.tsv' WITH (FORMAT csv, DELIMITER E'\t', HEADER true)
 
 \timing off

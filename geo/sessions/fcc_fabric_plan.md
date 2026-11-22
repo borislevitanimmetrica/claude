@@ -1835,3 +1835,92 @@ source file states what the current build would write, not what the table
 holds. Replaced with asn, which resolve_asn.sql has already read from this
 database successfully, and the file now dumps the real column list before
 using any of it.
+
+---
+
+## 2026-11-21, later: the two matcher bugs fixed, and an ownership fact
+
+### Boris: "Verizon owns Frontier"
+
+Recorded in `geo/carrier_nodes/carrier_ownership.md` alongside the
+earlier T-Mobile/Lumos fact, with the acquisition verified as having
+closed on 20 January 2026.
+
+**Retraction.** I cited AS5650 reporting `as_operator = "Verizon
+Business"` as evidence that the `mode()` name pick was arbitrary. The
+name is correct, so that was not evidence of anything. The unweighted
+`mode()` was nevertheless a real code defect; it is now demonstrated on
+a constructed fixture instead of on a misread row.
+
+### Fix 1: the commonest name is now the commonest
+
+`ipapi_asn_tbl` previously collapsed the distinct
+`(asn, as_operator, isp, org, as_raw)` combinations with `GROUP BY`
+before applying `mode()`, which threw away the range counts and left
+the pick arbitrary among spellings. The build now sums ranges per name
+and takes the argmax, and reports the winning share as
+`as_operator_pct` and `isp_commonest_pct` so a 51/49 split is not
+mistaken for a settled name. The section header, which claimed the
+names were "grouped and COUNTED", has been corrected; it was a false
+statement about the code beneath it.
+
+### Fix 2: the ip-api ISP name no longer generates candidates
+
+AS16509 is Amazon and ip-api reports its ISP as Windstream
+Communications, so the matcher offered Amazon a tier 1 match to
+Windstream's brands and 102,450 ZIP-capable ranges. The ISP name is
+frequently the **upstream** carrier rather than the holder of the ASN.
+Candidates now come from the AS operator name alone. The ISP name is
+still carried and the tier it would have scored is reported as
+`tier_isp_agrees`, because the disagreement between the two names is
+itself the useful signal.
+
+### Fix 3: parent footprints are flagged, not dropped
+
+See `carrier_ownership.md`. `brand_tracts` and `brand_tract_pct` are new
+candidate columns, there is a section listing every candidate brand
+above 50% of tracts, and the matcher now requires
+`provider_brand_tract_tech_tbl` in its precheck.
+
+### Amazon and the institution-only networks
+
+`geo/carrier_nodes/asn_out_of_scope.sql` records Boris's rulings. It is
+keyed on the **names** he ruled on, not on ASN numbers I do not have
+verified, and matches them to `ipapi_asn_tbl.as_operator` by full-string
+compact-key equality rather than token containment. It prints every ASN
+it is about to retire with the address space behind it, lists rulings
+that reached nothing, lists near misses sharing a first informative
+word, and is idempotent via `ON CONFLICT DO NOTHING`.
+
+Two decisions are kept apart: `not_a_carrier` for an enterprise, cloud
+or host located at its own premises, and `out_of_scope` for a real
+network whose customers are all institutions that ip-api already places
+at their own campus (OARnet, Merit, CENIC, MCNC).
+
+### Test evidence
+
+`asn_match_fixture.sql` plus `asn_match_assert.sql`, run on the
+throwaway cluster. The assert file first proves the fixture
+**discriminates** by recomputing the old expression on the same rows and
+raising if it returns the same answer as the new one. Measured:
+
+| check | result |
+|---|---|
+| old expression on AS99001 | `Aardvark Telephone Co` (1 range) |
+| new expression on AS99001 | `Zebra Telephone Company` (50 ranges, 98.0%) |
+| enterprise ASN with upstream ISP in BDC | 0 candidates, was 1 at tier 1 |
+| upstream ISP name still reported | yes, `Windstream Communications` |
+| parent-name ASN | still offered the parent brand, flagged at 90.0% of tracts, `tier_isp_agrees` = 0 |
+| `CABLE ONE, INC.` control | tier 1 to `Cable One`, 13.1% of tracts |
+| ZIP-capable vs DMA-only split | 70 / 30 on the same ASN |
+| unprobed row | excluded |
+| `asn_out_of_scope.sql` | retires 1 ASN and 400 ranges, idempotent on re-run, matcher then reports 0 undecided ASNs |
+
+### Still blocked
+
+The Form 499a filer spreadsheet Boris attached is not reachable from
+this sandbox. I searched the whole filesystem for `*499*`, `*.xlsx`,
+`*.xls` and `*.csv` modified after the attachment was sent and found
+nothing. Comcast, Level 3, Charter and Oculus remain unmatchable until
+the legal-name bridge exists, because their BDC brands share no token
+with their ip-api names.
