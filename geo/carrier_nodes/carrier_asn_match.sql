@@ -448,7 +448,7 @@ WITH todo AS (
 ), fp AS (
     -- How big the candidate brand's footprint is. A PARENT company name
     -- matching the parent's own nationwide brand is the failure mode Boris
-    -- named on 2026-11-21: Verizon owns Frontier, so AS5650 now carries the
+    -- named on 2026-11-22: Verizon owns Frontier, so AS5650 now carries the
     -- operator name Verizon Business, but the address space behind it serves
     -- FRONTIER's footprint. Matching it to the brand Verizon, which reaches
     -- 97% of tracts, would silently hand it half the country. The share is

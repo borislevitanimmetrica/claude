@@ -5,7 +5,7 @@
 -- whose headend has to be inferred, so every ASN it holds leaves the
 -- ITDK-BDC crosswalk permanently.
 --
--- Boris 2026-11-21: "Amazon.com, Inc. is not a public carrier and should not
+-- Boris 2026-11-22: "Amazon.com, Inc. is not a public carrier and should not
 -- be tracked. Its private network, currently by Windstream, is localized by
 -- ip-api.com to each facility, so is out of scope." The same reasoning covers
 -- the other organisations below: ip-api reports them at their own premises,
@@ -63,7 +63,7 @@ CREATE TABLE asn_scope_ruling_tbl (
 
 INSERT INTO asn_scope_ruling_tbl VALUES
  ('Amazon.com, Inc.', 'not_a_carrier',
-  'Boris 2026-11-21: not a public carrier. Private network, currently carried by Windstream, localised by ip-api to each facility.'),
+  'Boris 2026-11-22: not a public carrier. Private network, currently carried by Windstream, localised by ip-api to each facility.'),
  ('Apple Inc.',            'not_a_carrier', 'Boris: enterprise, located at its own premises.'),
  ('Microsoft Corporation', 'not_a_carrier', 'Boris: enterprise, located at its own premises.'),
  ('Akamai Technologies, Inc.', 'not_a_carrier', 'Boris: CDN, located at its own premises.'),
@@ -94,16 +94,16 @@ INSERT INTO asn_scope_ruling_tbl VALUES
  ('IBM Cloud',             'not_a_carrier', 'Boris: host.'),
  ('The Constant Company, LLC', 'not_a_carrier', 'Boris: host.'),
  -- Real networks, but every customer is an institution that ip-api already
- -- places at its own campus. Boris 2026-11-21.
- ('OARnet',                'out_of_scope', 'Boris 2026-11-21: serves institutional customers exclusively; ip-api localises to the institution.'),
- ('Merit Network Inc.',     'out_of_scope', 'Boris 2026-11-21: institutional customers only.'),
- ('CENIC',                  'out_of_scope', 'Boris 2026-11-21: institutional customers only.'),
- ('MCNC',                   'out_of_scope', 'Boris 2026-11-21: institutional customers only.'),
- ('Washington State K-20 Telecommunications Network', 'out_of_scope', 'Boris 2026-11-21: institutional customers only.'),
- ('University of California San Diego', 'out_of_scope', 'Boris 2026-11-21: institution.'),
- ('Rice University',        'out_of_scope', 'Boris 2026-11-21: institution.'),
- ('State of Wisconsin',     'out_of_scope', 'Boris 2026-11-21: institutional customers only.'),
- ('U.S. Department of the Interior', 'out_of_scope', 'Boris 2026-11-21: government body.');
+ -- places at its own campus. Boris 2026-11-22.
+ ('OARnet',                'out_of_scope', 'Boris 2026-11-22: serves institutional customers exclusively; ip-api localises to the institution.'),
+ ('Merit Network Inc.',     'out_of_scope', 'Boris 2026-11-22: institutional customers only.'),
+ ('CENIC',                  'out_of_scope', 'Boris 2026-11-22: institutional customers only.'),
+ ('MCNC',                   'out_of_scope', 'Boris 2026-11-22: institutional customers only.'),
+ ('Washington State K-20 Telecommunications Network', 'out_of_scope', 'Boris 2026-11-22: institutional customers only.'),
+ ('University of California San Diego', 'out_of_scope', 'Boris 2026-11-22: institution.'),
+ ('Rice University',        'out_of_scope', 'Boris 2026-11-22: institution.'),
+ ('State of Wisconsin',     'out_of_scope', 'Boris 2026-11-22: institutional customers only.'),
+ ('U.S. Department of the Interior', 'out_of_scope', 'Boris 2026-11-22: government body.');
 
 \echo
 \echo ================================================================

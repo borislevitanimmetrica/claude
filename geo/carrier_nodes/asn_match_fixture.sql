@@ -2,8 +2,8 @@
 -- asn_match_fixture.sql
 --
 -- A fixture that REPRODUCES the three defects Boris found in the output of
--- carrier_asn_match.sql on 2026-11-21, so that the fix can be shown to
--- change the answer rather than asserted to.
+-- carrier_asn_match.sql in the run he reported, so that the fix can be
+-- shown to change the answer rather than asserted to.
 --
 --   DEFECT 1  The commonest name was not the commonest. The build grouped
 --             the name combinations before taking mode(), which destroyed
@@ -18,7 +18,7 @@
 --
 --   DEFECT 3  A parent company name lands on the national brand of the
 --             parent while the address space belongs to a subsidiary with a
---             small footprint. Boris 2026-11-21: Verizon owns Frontier.
+--             small footprint. Boris 2026-11-22: Verizon owns Frontier.
 --             The candidate is legitimate as a NAME match, so it must not be
 --             silently dropped; it must be visibly flagged by footprint size.
 --

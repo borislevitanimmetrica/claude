@@ -1838,7 +1838,15 @@ using any of it.
 
 ---
 
-## 2026-11-21, later: the two matcher bugs fixed, and an ownership fact
+## 2026-11-22: the two matcher bugs fixed, and an ownership fact
+
+Boris corrected my clock at 17:29 EST on 2026-11-22. This section was
+first written headed 2026-11-21. Dates I wrote earlier in this session,
+including the `2026-11-20` attributions inside
+`carrier_asn_match.sql`, carry the same uncertainty of one day and I
+have not swept them, because I cannot verify which day each ruling
+arrived and would be guessing. Say the word and I will correct them
+from your own record.
 
 ### Boris: "Verizon owns Frontier"
 

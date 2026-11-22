@@ -9,8 +9,14 @@ ownership artefact as a bug in my own code.
 
 | parent | subsidiary | source | status |
 |---|---|---|---|
-| T-Mobile | Lumos (50%) | Boris 2026-11-21 | recorded |
-| Verizon | Frontier Communications | Boris 2026-11-21 | recorded, verified |
+| T-Mobile | Lumos (50%) | Boris, earlier in the same session | recorded, date not verified |
+| Verizon | Frontier Communications | Boris 2026-11-22 | recorded, verified |
+
+A note on the dates. My clock was wrong for part of this session, so any
+date I wrote before Boris corrected it on 2026-11-22 17:29 EST may be a
+day early. The two facts above are what matters and neither depends on
+the date; where I cannot verify which day a ruling arrived I say so
+rather than pick one.
 
 Verizon closed its $20 billion acquisition of Frontier on 20 January
 2026, making Frontier a wholly owned subsidiary
