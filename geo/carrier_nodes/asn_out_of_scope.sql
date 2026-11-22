@@ -179,4 +179,43 @@ FROM ipapi_asn_tbl a
 JOIN asn_bdc_brand_map_tbl m ON m.asn = a.asn
 WHERE m.decision IN ('not_a_carrier', 'out_of_scope');
 
+-- ---------------------------------------------------------------------------
+-- Refresh the two review files. carrier_asn_match.sql writes them BEFORE
+-- these rulings exist, and rebuilding ipapi_asn_tbl costs over an hour, so
+-- the retired ASNs are dropped from the candidate table and both files are
+-- written again here. Only rows now decided are removed; nothing else moves.
+-- ---------------------------------------------------------------------------
+DO $refresh$
+DECLARE removed bigint;
+BEGIN
+    IF NOT EXISTS (SELECT 1 FROM information_schema.tables
+                   WHERE table_name = 'asn_brand_candidate_tbl') THEN
+        RAISE EXCEPTION 'asn_brand_candidate_tbl does not exist, so the review files cannot be refreshed. The rulings above ARE written and will take effect on the next run of carrier_asn_match.sql.';
+    END IF;
+    DELETE FROM asn_brand_candidate_tbl c
+    WHERE EXISTS (SELECT 1 FROM asn_bdc_brand_map_tbl m
+                  WHERE m.asn = c.asn
+                    AND m.decision IN ('not_a_carrier', 'out_of_scope'));
+    GET DIAGNOSTICS removed = ROW_COUNT;
+    RAISE NOTICE 'removed % candidate rows belonging to retired ASNs', removed;
+END
+$refresh$;
+
+ANALYZE asn_brand_candidate_tbl;
+
+\echo
+\echo Rewriting the two review files so they reflect the rulings above.
+\echo
+\copy (SELECT c.asn, c.as_operator, c.as_operator_pct, c.isp_commonest, c.isp_commonest_pct, c.provider_id, c.brand_name, c.tier, c.tier_isp_agrees, c.brand_tracts, c.brand_tract_pct, c.rank_for_asn, c.zip_capable_ranges, c.dma_only_ranges, NULL::text AS approved FROM asn_brand_candidate_tbl c ORDER BY c.zip_capable_ranges DESC NULLS LAST, c.asn, c.rank_for_asn) TO '/home/boris/geo/asn_brand_candidates.tsv' WITH (FORMAT csv, DELIMITER E'\t', HEADER true)
+
+\copy (SELECT a.asn, a.as_operator, a.as_operator_pct, a.isp_commonest, a.isp_commonest_pct, a.org_commonest, a.isp_variants, a.zip_capable_ranges, a.dma_only_ranges, a.unclassified_ranges, NULL::text AS bdc_brand_or_out_of_scope FROM ipapi_asn_tbl a WHERE NOT EXISTS (SELECT 1 FROM asn_brand_candidate_tbl c WHERE c.asn = a.asn) AND NOT EXISTS (SELECT 1 FROM asn_bdc_brand_map_tbl m WHERE m.asn = a.asn) ORDER BY a.zip_capable_ranges DESC NULLS LAST) TO '/home/boris/geo/asn_unmatched.tsv' WITH (FORMAT csv, DELIMITER E'\t', HEADER true)
+
+\echo
+\echo What is left to rule on, after the rulings above.
+\echo
+SELECT count(*) AS asns_still_undecided,
+       sum(a.zip_capable_ranges) AS zip_capable_ranges_still_undecided
+FROM ipapi_asn_tbl a
+WHERE NOT EXISTS (SELECT 1 FROM asn_bdc_brand_map_tbl m WHERE m.asn = a.asn);
+
 \timing off
