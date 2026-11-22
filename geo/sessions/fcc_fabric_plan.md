@@ -1932,3 +1932,86 @@ this sandbox. I searched the whole filesystem for `*499*`, `*.xlsx`,
 nothing. Comcast, Level 3, Charter and Oculus remain unmatchable until
 the legal-name bridge exists, because their BDC brands share no token
 with their ip-api names.
+
+---
+
+## 2026-11-22, after Boris ran it: the footprint flag was junk
+
+### What the run proved
+
+| measure | value |
+|---|---|
+| ASNs | 19,729 |
+| ZIP-capable ranges | 1,838,444 |
+| DMA-only ranges | 72,216 |
+| ASNs with several ip-api ISP names | 4,381 |
+| section 1 build | 15.3 s |
+| section 2 build | 50.5 s, down from 01:09:21 |
+| candidates | 2,300 over 1,824 ASNs, 2,142 tier 1, 158 tier 2 |
+| ASNs with no candidate | 17,905, holding 1,069,063 ZIP-capable ranges |
+| scope rulings applied | 129 ASNs retired, 236,453 ZIP-capable ranges |
+| still undecided after that | 19,600 ASNs, 1,601,991 ranges |
+
+The 82-fold speedup came from removing the ip-api ISP arm of the token
+join and the double tier evaluation, not from any tuning.
+
+### The footprint flag is withdrawn
+
+The section listing candidates above 50% of the country returned 40
+rows, all AT&T and Verizon ASNs matching their own correct brands.
+AS5650, the one row that needed an eye, was indistinguishable among
+them. See `carrier_ownership.md` for the full retraction and the
+measurements. In short: the pooled share measured the out-of-scope
+wireless footprint, and from the other end it reported brand
+`Windstream` at 0.0% behind 63,297 ZIP-capable ranges.
+
+Replaced by `asn_isp_disagree_tbl`, which keys on the registry operator
+name and the ip-api ISP name DISAGREEING while the ISP name is itself a
+BDC brand, and names that brand. On his data the signal is two rows,
+AS5650 and AS46690, both reading Verizon Business against Frontier
+Communications. `brand_tract_pct` is rebuilt per technology over
+wireline 10, 40 and 50 only.
+
+### Gate cases that test nothing about coverage
+
+`CABLE ONE, INC.` to `Cable One` passes the gate at tier 1 and AS11492
+received no candidate, with 4,612 ZIP-capable ranges behind it. There is
+no brand `Cable One` in his BDC data: Cable One has traded as Sparklight
+since 2019. The gate tests the function, not the data, and that
+distinction was invisible. It now reports which of its BDC-side strings
+actually exist in `bdc_carrier_tbl`. Same class of error as the Comcast
+Business prediction.
+
+### com was never in the stoplist
+
+My notes said it was. Printing the tokens showed
+`carrier_name_tokens('Amazon.com, Inc.')` returning `{amazon,com}`, so
+every .com name shared a word with every other .com name. Added. All 45
+gate cases still pass and three reject cases moved from tier 3 to tier 0.
+
+### Near misses are now filtered by document frequency
+
+The first version matched on the first informative word and returned 40
+rows, about 30 of them noise: nine states beside `State of Wisconsin`
+and a dozen universities beside `University of California San Diego`.
+The fix is not a longer stoplist, which would have to contain `state`
+and `university` and would then break real carrier names. It is to
+ignore any word carried by more than 12 distinct operator names, which
+the corpus decides rather than me. The useful rows it did surface are
+now recorded as spelling variants of rulings already made: Akamai
+International B.V., Akamai Connected Cloud, Alibaba (US) Technology,
+Amazon Technologies, Amazon Data Services, FedEx Internet Technologies,
+Internap Holding, DXC US Latin America, Wal-Mart Stores, Hewlett Packard
+Enterprise, Bloomberg LP, SoftLayer, State of WI Dept. of
+Administration. Six rulings had reached no ASN at all because ip-api
+spells the operator differently.
+
+### The no-candidate list is a list of trade names
+
+The top of it, by ZIP-capable ranges, is almost entirely carriers whose
+BDC brand is a trade name no string shares with their legal name:
+Comcast 187,553; Charter across 13 ASNs about 209,000; Level 3 62,879;
+Cablevision Systems 13,882; RCN 10,636; Wave Broadband 6,822; Cable One
+4,612; Grande 4,004; Mediacom 3,741; WideOpenWest 2,787; Cincinnati Bell
+1,814; Midcontinent 1,800; Oculus 1,610. This is what the Form 499
+filer database is for, and it is still not on disk.

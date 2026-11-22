@@ -103,7 +103,25 @@ INSERT INTO asn_scope_ruling_tbl VALUES
  ('University of California San Diego', 'out_of_scope', 'Boris 2026-11-22: institution.'),
  ('Rice University',        'out_of_scope', 'Boris 2026-11-22: institution.'),
  ('State of Wisconsin',     'out_of_scope', 'Boris 2026-11-22: institutional customers only.'),
- ('U.S. Department of the Interior', 'out_of_scope', 'Boris 2026-11-22: government body.');
+ ('U.S. Department of the Interior', 'out_of_scope', 'Boris 2026-11-22: government body.'),
+ -- Alternate spellings of companies ALREADY ruled on above, surfaced by the
+ -- near-miss report on Boris's 2026-11-22 run. These add no new judgement:
+ -- each is the same company as a ruling and is listed so that the ruling
+ -- reaches the ASN it actually holds. Six of the rulings above reached no
+ -- ASN at all because ip-api spells the operator differently.
+ ('Akamai International B.V.',  'not_a_carrier', 'Same company as the Akamai ruling. Spelling used by ip-api, 14,537 ZIP-capable ranges.'),
+ ('Akamai Connected Cloud',     'not_a_carrier', 'Same company as the Akamai ruling.'),
+ ('Alibaba (US) Technology Co., Ltd.', 'not_a_carrier', 'Same company as the Alibaba ruling.'),
+ ('Amazon Technologies Inc.',   'not_a_carrier', 'Same company as the Amazon ruling.'),
+ ('Amazon Data Services',       'not_a_carrier', 'Same company as the Amazon ruling.'),
+ ('FedEx Internet Technologies Corporation', 'not_a_carrier', 'Same company as the FedEx ruling.'),
+ ('Internap Holding LLC',       'not_a_carrier', 'Same company as the Internap ruling.'),
+ ('DXC US Latin America Corporation', 'not_a_carrier', 'Same company as the DXC ruling.'),
+ ('Wal-Mart Stores, Inc.',      'not_a_carrier', 'Same company as the Walmart ruling.'),
+ ('HEWLETT PACKARD ENTERPRISE COMPANY', 'not_a_carrier', 'Same company as the Hewlett Packard ruling.'),
+ ('Bloomberg, LP',              'not_a_carrier', 'Same company as the Bloomberg ruling.'),
+ ('SoftLayer',                  'not_a_carrier', 'Same company as the SoftLayer ruling.'),
+ ('State of WI Dept. of Administration', 'out_of_scope', 'The spelling Boris used was State of WI. 1,448 ZIP-capable ranges.');
 
 \echo
 \echo ================================================================
@@ -136,18 +154,59 @@ FROM asn_scope_ruling_tbl r
 WHERE NOT EXISTS (SELECT 1 FROM asn_scope_hit_tbl h WHERE h.ruled_name = r.ruled_name)
 ORDER BY r.ruled_name;
 
+-- ---------------------------------------------------------------------------
+-- NEAR MISSES, filtered by how RARE the shared word is.
+--
+-- The first version matched on the first informative word and produced 40
+-- rows on Boris's 2026-11-22 run of which about 30 were noise: "University
+-- of Missouri" beside "University of California San Diego", and nine states
+-- beside "State of Wisconsin", because university and state are not in the
+-- stoplist and never could be without breaking real carrier names.
+--
+-- The fix is not a bigger stoplist, it is document frequency. A word shared
+-- by hundreds of probed operator names carries no information; a word shared
+-- by two or three identifies a company. akamai appears in a handful of names
+-- and university in hundreds, and the corpus says so without my having to
+-- decide which words are generic. The cutoff is printed with the results.
+-- ---------------------------------------------------------------------------
+DROP TABLE IF EXISTS asn_token_freq_tbl;
+CREATE TABLE asn_token_freq_tbl AS
+SELECT w.tok, count(DISTINCT a.as_operator) AS names_carrying_it
+FROM ipapi_asn_tbl a, unnest(carrier_name_tokens(a.as_operator)) AS w(tok)
+WHERE length(w.tok) >= 2
+GROUP BY w.tok;
+
+CREATE INDEX asn_token_freq_ix ON asn_token_freq_tbl (tok);
+ANALYZE asn_token_freq_tbl;
+
 \echo
-\echo Near misses: probed operator names that share the first informative
-\echo word with a ruling but did NOT match it. Check whether any of these
-\echo is the same company under another spelling, then add that spelling.
+\echo How common the shared words are. A word in the top band is useless for
+\echo identifying a company, which is why the near-miss report below ignores
+\echo any word carried by more than 12 distinct operator names.
 \echo
-SELECT DISTINCT left(a.as_operator, 44) AS probed_name, r.ruled_name,
+SELECT tok, names_carrying_it
+FROM asn_token_freq_tbl ORDER BY names_carrying_it DESC LIMIT 12;
+
+\echo
+\echo Near misses: probed operator names sharing a RARE word with a ruling
+\echo but not matching it. Check whether any is the same company under
+\echo another spelling, then add that spelling to the rulings above.
+\echo
+SELECT DISTINCT left(a.as_operator, 44) AS probed_name,
+       r.ruled_name, x.tok AS shared_word, f.names_carrying_it,
        a.zip_capable_ranges
 FROM ipapi_asn_tbl a
-JOIN asn_scope_ruling_tbl r
-  ON (carrier_name_tokens(r.ruled_name))[1] = (carrier_name_tokens(a.as_operator))[1]
-WHERE carrier_name_compact(r.ruled_name) <> carrier_name_compact(a.as_operator)
+CROSS JOIN asn_scope_ruling_tbl r
+JOIN LATERAL (
+    SELECT t.tok FROM unnest(carrier_name_tokens(a.as_operator)) AS t(tok)
+    INTERSECT
+    SELECT t.tok FROM unnest(carrier_name_tokens(r.ruled_name)) AS t(tok)
+) x ON true
+JOIN asn_token_freq_tbl f ON f.tok = x.tok
+WHERE f.names_carrying_it <= 12
+  AND carrier_name_compact(r.ruled_name) <> carrier_name_compact(a.as_operator)
   AND NOT carrier_name_generic_only(a.as_operator)
+  AND NOT EXISTS (SELECT 1 FROM asn_bdc_brand_map_tbl m WHERE m.asn = a.asn)
 ORDER BY a.zip_capable_ranges DESC NULLS LAST
 LIMIT 40;
 

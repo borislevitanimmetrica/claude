@@ -110,18 +110,62 @@ BEGIN
         failures := failures || format('AS99003 should still be offered the brand Verizon once for Boris to rule on, found %s', n);
     END IF;
 
-    SELECT brand_tract_pct INTO x FROM asn_brand_candidate_tbl
-    WHERE asn = 99003 AND brand_name = 'Verizon';
-    IF x IS NULL OR x <= 50 THEN
-        failures := failures || format('AS99003 Verizon candidate has brand_tract_pct %s, expected above 50 so the parent-footprint flag fires', x);
-    END IF;
+    -- The footprint-size flag that used to be asserted here is GONE. Boris
+    -- 2026-11-22: on his data it produced 40 rows, all AT&T and Verizon
+    -- matching their own correct brands, and the one row that mattered was
+    -- indistinguishable among them. Size is not the signal. The signal is
+    -- the two names disagreeing, asserted further down.
 
-    -- Frontier is the right answer but no string reaches it. If this ever
-    -- starts matching, the note in the plan has to be rewritten.
+    -- Frontier is the right answer and the OPERATOR name cannot reach it.
     SELECT count(*) INTO n FROM asn_brand_candidate_tbl
     WHERE asn = 99003 AND brand_name = 'Frontier';
     IF n <> 0 THEN
-        failures := failures || format('AS99003 reached the brand Frontier by name, which no string method can do. Expected 0, found %s.', n);
+        failures := failures || format('AS99003 reached the brand Frontier from the operator name, which no string method can do. Expected 0, found %s.', n);
+    END IF;
+
+    -- But the ip-api ISP name DOES reach it, and that is the instrument
+    -- that replaced the footprint-size flag. One row, naming Frontier.
+    SELECT count(*) INTO n FROM asn_isp_disagree_tbl WHERE asn = 99003;
+    IF n <> 1 THEN
+        failures := failures || format('AS99003 should produce exactly one parent-on-subsidiary row, found %s', n);
+    END IF;
+
+    SELECT isp_suggests_brand INTO t FROM asn_isp_disagree_tbl WHERE asn = 99003;
+    IF t IS DISTINCT FROM 'Frontier' THEN
+        failures := failures || format('AS99003 parent-on-subsidiary row suggests %L, expected Frontier', t);
+    END IF;
+
+    -- The brands that agree on both names must NOT appear there, or the
+    -- instrument is as useless as the footprint flag it replaced.
+    SELECT count(*) INTO n FROM asn_isp_disagree_tbl WHERE asn IN (99001, 99004);
+    IF n <> 0 THEN
+        failures := failures || format('AS99001 and AS99004 agree on both names and must not be flagged as parent-on-subsidiary. Found %s rows.', n);
+    END IF;
+
+    -- The footprint share is now per technology over wireline only.
+    SELECT brand_tract_pct INTO x FROM asn_brand_candidate_tbl
+    WHERE asn = 99003 AND brand_name = 'Verizon';
+    IF x IS DISTINCT FROM 30.0 THEN
+        failures := failures || format('Verizon brand_tract_pct is %s, expected 30.0 from FTTP alone. Pooled with its wireless rows it would be 100.0, which is the defect.', x);
+    END IF;
+
+    SELECT widest_technology INTO n FROM asn_brand_candidate_tbl
+    WHERE asn = 99003 AND brand_name = 'Verizon';
+    IF n IS DISTINCT FROM 50 THEN
+        failures := failures || format('Verizon widest wireline technology is %s, expected 50', n);
+    END IF;
+
+    -- A wireless-only brand has nothing to select on, however good the name.
+    SELECT count(*) INTO n FROM asn_brand_candidate_tbl
+    WHERE asn = 99006 AND brand_name = 'Skyhook Wireless Co' AND tier = 1;
+    IF n <> 1 THEN
+        failures := failures || format('AS99006 should match Skyhook Wireless Co at tier 1 on the name, found %s', n);
+    END IF;
+
+    SELECT wireline_technologies INTO n FROM asn_brand_candidate_tbl
+    WHERE asn = 99006 AND brand_name = 'Skyhook Wireless Co';
+    IF n IS DISTINCT FROM 0 THEN
+        failures := failures || format('Skyhook has %s wireline technologies, expected 0 so that the name match is visibly unusable', n);
     END IF;
 
     -- CONTROL. Legal suffix only, so CABLE ONE, INC. still lands.
@@ -153,6 +197,19 @@ BEGIN
     IF x IS DISTINCT FROM 13.1 THEN
         failures := failures || format('Cable One brand_tract_pct is %s, expected 13.1 (131 of 1000 tracts)', x);
     END IF;
+
+    -- And the pooled calculation, which is what shipped, would have called
+    -- the Verizon brand national. Proven here so the fix is not merely
+    -- asserted.
+    SELECT round(100.0 * count(DISTINCT tract_geoid)
+                 / (SELECT count(DISTINCT tract_geoid)
+                    FROM provider_brand_tract_tech_tbl), 1) INTO x
+    FROM provider_brand_tract_tech_tbl
+    WHERE provider_id = 900001 AND brand_name = 'Verizon';
+    IF x <= 50 THEN
+        failures := failures || format('FIXTURE DOES NOT DISCRIMINATE: the pooled share for Verizon is %s, so it would not have tripped the old 50%% flag and this fixture cannot show the difference.', x);
+    END IF;
+    RAISE NOTICE 'pooled share for the Verizon brand is %, per-technology wireline share is 30.0', x;
 
     IF cardinality(failures) > 0 THEN
         RAISE EXCEPTION E'ASN MATCHER ASSERTIONS FAILED:\n%',

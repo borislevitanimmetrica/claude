@@ -114,7 +114,14 @@ SELECT ARRAY[
   -- geographic and patriotic filler
   'america','american','national','usa','us','the','of','and','a','an',
   -- modifiers Boris named on 2026-11-20, each having produced a wrong match
-  'business','cablevision','one','united','wave'];
+  'business','cablevision','one','united','wave',
+  -- com, the top-level domain. My notes claimed this was already here and
+  -- the code said otherwise, found 2026-11-22 by printing the tokens:
+  -- carrier_name_tokens('Amazon.com, Inc.') returned {amazon,com}. It makes
+  -- every .com name share a word with every other .com name, which is three
+  -- of the reject cases in the gate and a large wasted cross product during
+  -- candidate generation. No accept case depends on it.
+  'com'];
 $fn$ LANGUAGE sql IMMUTABLE;
 
 CREATE OR REPLACE FUNCTION carrier_name_words(raw text)
@@ -283,6 +290,44 @@ END
 $gate$;
 
 -- ---------------------------------------------------------------------------
+-- WHICH GATE CASES ARE HYPOTHETICAL.
+--
+-- The gate tests the FUNCTION, not the data. A passing accept case proves
+-- only that the rule WOULD join those two strings if both existed. Boris's
+-- 2026-11-22 run exposed the gap: CABLE ONE, INC. to Cable One passes at
+-- tier 1, and AS11492 CABLE ONE, INC. still received no candidate at all,
+-- with 4,612 ZIP-capable ranges behind it. The reason is that there is no
+-- brand Cable One in his BDC data. Cable One has traded as Sparklight since
+-- 2019, so the brand I was testing against does not exist.
+--
+-- This is the same mistake as my Comcast Business prediction, which came
+-- from a fixture rather than from his data. So the gate now reports which
+-- of its BDC-side strings are real. It does NOT raise: a hypothetical case
+-- is still a valid statement about the rule, it just proves nothing about
+-- coverage, and the distinction has to be on the screen.
+-- ---------------------------------------------------------------------------
+\echo
+\echo Gate cases whose BDC-side string does NOT exist in bdc_carrier_tbl.
+\echo These test the rule only. An accept case here means the rule would
+\echo work IF the brand existed, and tells you nothing about whether that
+\echo carrier can actually be reached.
+\echo
+SELECT r.must, r.ipapi_side, r.bdc_side, r.source
+FROM carrier_name_regression_tbl r
+WHERE NOT EXISTS (SELECT 1 FROM bdc_carrier_tbl c
+                  WHERE lower(btrim(c.brand_name)) = lower(btrim(r.bdc_side)))
+ORDER BY r.must, r.ipapi_side;
+
+SELECT count(*) AS gate_cases,
+       count(*) FILTER (WHERE EXISTS (SELECT 1 FROM bdc_carrier_tbl c
+                        WHERE lower(btrim(c.brand_name)) = lower(btrim(carrier_name_regression_tbl.bdc_side))))
+                                                   AS bdc_side_is_a_real_brand,
+       count(*) FILTER (WHERE NOT EXISTS (SELECT 1 FROM bdc_carrier_tbl c
+                        WHERE lower(btrim(c.brand_name)) = lower(btrim(carrier_name_regression_tbl.bdc_side))))
+                                                   AS hypothetical
+FROM carrier_name_regression_tbl;
+
+-- ---------------------------------------------------------------------------
 -- The persistent decision map, keyed on the ASN.
 -- ---------------------------------------------------------------------------
 CREATE TABLE IF NOT EXISTS asn_bdc_brand_map_tbl (
@@ -446,20 +491,37 @@ WITH todo AS (
     FROM todo t JOIN brand b
       ON carrier_name_compact(b.brand_name) = carrier_name_compact(t.as_operator)
 ), fp AS (
-    -- How big the candidate brand's footprint is. A PARENT company name
-    -- matching the parent's own nationwide brand is the failure mode Boris
-    -- named on 2026-11-22: Verizon owns Frontier, so AS5650 now carries the
-    -- operator name Verizon Business, but the address space behind it serves
-    -- FRONTIER's footprint. Matching it to the brand Verizon, which reaches
-    -- 97% of tracts, would silently hand it half the country. The share is
-    -- printed, not filtered, because AT&T's own ASN legitimately matches a
-    -- nationwide brand and only Boris can tell the two apart.
-    SELECT f.provider_id, f.brand_name, count(DISTINCT f.tract_geoid) AS brand_tracts
+    -- How big the candidate brand's footprint is, PER TECHNOLOGY and over
+    -- the wireline technologies only.
+    --
+    -- The first version of this pooled all technologies, which made the
+    -- number meaningless. Boris 2026-11-22: a carrier's technologies are
+    -- separated because they are ROUTED DIFFERENTLY and the headends differ.
+    -- His nearest Verizon central office, one mile away, carries xDSL but not
+    -- FIOS; his FIOS is routed from four miles away. There is therefore no
+    -- such thing as the footprint of a brand, only one footprint per
+    -- technology, each with its own plant.
+    --
+    -- Pooling also let the out-of-scope wireless footprint dominate. On
+    -- Boris's data AT&T reaches 97.4% of tracts pooled and 97.3% on
+    -- technology 71 alone, against 44.3% on Copper and 36.4% on FTTP, and no
+    -- brand exceeds 80% in ANY technology except 71. So a pooled share
+    -- measures licensed fixed wireless, which cannot be targeted at ZIP
+    -- level and which this pipeline never selects on.
+    SELECT f.provider_id, f.brand_name, f.technology,
+           count(DISTINCT f.tract_geoid) AS tracts
     FROM provider_brand_tract_tech_tbl f
-    GROUP BY 1, 2
+    WHERE f.technology IN (10, 40, 50)
+    GROUP BY 1, 2, 3
 ), fp_all AS (
     SELECT count(DISTINCT tract_geoid)::numeric AS tracts
     FROM provider_brand_tract_tech_tbl
+), fp_best AS (
+    -- The widest single wireline technology, which is the only sense in
+    -- which a footprint can be called large.
+    SELECT DISTINCT ON (provider_id, brand_name)
+           provider_id, brand_name, technology AS widest_technology, tracts
+    FROM fp ORDER BY provider_id, brand_name, tracts DESC, technology
 ), scored AS (
     SELECT p.asn, p.brand_name, p.provider_id,
            t.as_operator, t.as_operator_pct,
@@ -467,11 +529,15 @@ WITH todo AS (
            t.zip_capable_ranges, t.dma_only_ranges,
            carrier_name_tier(t.as_operator,   p.brand_name)      AS tier,
            carrier_name_tier(t.isp_commonest, p.brand_name)      AS tier_isp_agrees,
-           f.brand_tracts,
-           round(100.0 * f.brand_tracts / nullif(a.tracts, 0), 1) AS brand_tract_pct
+           f.widest_technology,
+           f.tracts                                              AS brand_tracts,
+           round(100.0 * f.tracts / nullif(a.tracts, 0), 1)      AS brand_tract_pct,
+           (SELECT count(*) FROM fp x
+            WHERE x.provider_id = p.provider_id
+              AND x.brand_name = p.brand_name)                   AS wireline_technologies
     FROM pair p
     JOIN todo t ON t.asn = p.asn
-    LEFT JOIN fp f ON f.provider_id = p.provider_id AND f.brand_name = p.brand_name
+    LEFT JOIN fp_best f ON f.provider_id = p.provider_id AND f.brand_name = p.brand_name
     CROSS JOIN fp_all a
 ), kept AS (
     SELECT * FROM scored WHERE tier IN (1, 2)
@@ -510,23 +576,107 @@ $guard$;
 SELECT c.asn, left(c.as_operator, 28) AS as_operator,
        left(coalesce(c.isp_commonest, ''), 22) AS ipapi_isp,
        c.provider_id, left(c.brand_name, 26) AS bdc_brand,
-       c.tier, c.brand_tract_pct AS brand_pct_of_usa, c.zip_capable_ranges
+       c.tier, c.widest_technology AS tech, c.brand_tract_pct AS pct_of_tracts,
+       c.zip_capable_ranges
 FROM asn_brand_candidate_tbl c
 ORDER BY c.zip_capable_ranges DESC NULLS LAST, c.asn, c.rank_for_asn
 LIMIT 60;
 
 \echo
-\echo Candidates whose brand covers more than half the country. Each one
-\echo needs your eye: it is either the national brand of that carrier or a
-\echo PARENT name sitting on the address space of a subsidiary.
+\echo Candidates with NO wireline footprint at all. Technologies 10, 40 and
+\echo 50 are the only ones this pipeline can select on, so a brand that
+\echo appears only under fixed wireless has nothing here to match against
+\echo however good its name looks.
 \echo
 SELECT c.asn, left(c.as_operator, 30) AS as_operator,
-       c.provider_id, left(c.brand_name, 26) AS bdc_brand,
-       c.tier, c.brand_tract_pct AS brand_pct_of_usa, c.zip_capable_ranges
+       c.provider_id, left(c.brand_name, 30) AS bdc_brand,
+       c.tier, c.zip_capable_ranges
 FROM asn_brand_candidate_tbl c
-WHERE c.brand_tract_pct > 50
+WHERE c.wireline_technologies = 0
 ORDER BY c.zip_capable_ranges DESC NULLS LAST, c.asn
 LIMIT 40;
+
+-- ---------------------------------------------------------------------------
+-- THE PARENT-ON-SUBSIDIARY INSTRUMENT.
+--
+-- The first version of this flagged candidates whose brand footprint exceeded
+-- half the country. On Boris's 2026-11-22 run that produced 40 rows, every
+-- one of them an AT&T or Verizon ASN matching its own correct brand, and the
+-- one row that genuinely needed an eye, AS5650, was indistinguishable from
+-- the other 39. Zero discriminating power.
+--
+-- What DOES discriminate is already in the data: the registry operator name
+-- and the ip-api ISP name disagree, and the ISP name is itself a brand in
+-- BDC. AS5650 and AS46690 both read operator Verizon Business, ISP Frontier
+-- Communications. Those two rows, and no others among the forty, carry the
+-- signal. So the report asks which OTHER brand the ISP name points at, and
+-- names it, which turns the flag into a proposed answer.
+-- ---------------------------------------------------------------------------
+DROP TABLE IF EXISTS asn_isp_disagree_tbl;
+CREATE TABLE asn_isp_disagree_tbl AS
+WITH suspect AS (
+    SELECT DISTINCT c.asn, c.as_operator, c.isp_commonest
+    FROM asn_brand_candidate_tbl c
+    WHERE c.tier_isp_agrees = 0
+      AND c.isp_commonest IS NOT NULL
+      AND NOT carrier_name_generic_only(c.isp_commonest)
+), stok AS (
+    SELECT s.asn, w.tok
+    FROM suspect s, unnest(carrier_name_tokens(s.isp_commonest)) AS w(tok)
+    WHERE length(w.tok) >= 2
+), brand AS (
+    SELECT DISTINCT c.brand_name, c.provider_id
+    FROM bdc_carrier_tbl c
+    WHERE c.brand_name IS NOT NULL AND c.brand_name <> ''
+), btok AS (
+    SELECT b.brand_name, b.provider_id, w.tok
+    FROM brand b, unnest(carrier_name_tokens(b.brand_name)) AS w(tok)
+    WHERE length(w.tok) >= 2 AND NOT carrier_name_generic_only(b.brand_name)
+), hit AS (
+    SELECT DISTINCT s.asn, b.brand_name, b.provider_id
+    FROM stok s JOIN btok b ON b.tok = s.tok
+    UNION
+    SELECT DISTINCT s.asn, b.brand_name, b.provider_id
+    FROM suspect s JOIN brand b
+      ON carrier_name_compact(b.brand_name) = carrier_name_compact(s.isp_commonest)
+)
+SELECT s.asn, s.as_operator, s.isp_commonest,
+       h.provider_id            AS isp_suggests_provider_id,
+       h.brand_name             AS isp_suggests_brand,
+       carrier_name_tier(s.isp_commonest, h.brand_name) AS isp_tier,
+       a.zip_capable_ranges
+FROM suspect s
+JOIN hit h ON h.asn = s.asn
+JOIN ipapi_asn_tbl a ON a.asn = s.asn
+WHERE carrier_name_tier(s.isp_commonest, h.brand_name) IN (1, 2);
+
+CREATE INDEX asn_isp_disagree_ix ON asn_isp_disagree_tbl (asn);
+ANALYZE asn_isp_disagree_tbl;
+
+\echo
+\echo ----------------------------------------------------------------
+\echo PARENT ON SUBSIDIARY. The registry operator name and the ip-api
+\echo ISP name disagree, AND the ISP name is itself a BDC brand. The
+\echo brand named in the last columns is what the ISP name points at,
+\echo so each row is a proposed correction rather than a warning.
+\echo Verizon owns Frontier, so AS5650 should take Frontier plant and
+\echo not Verizon plant, because the merger EXTENDED the footprint
+\echo into territory Verizon had divested rather than overlapping it.
+\echo ----------------------------------------------------------------
+\echo
+SELECT d.asn, left(d.as_operator, 26) AS registry_says,
+       left(d.isp_commonest, 26) AS ipapi_isp_says,
+       d.isp_suggests_provider_id AS suggests_provider,
+       left(d.isp_suggests_brand, 24) AS suggests_brand,
+       d.isp_tier, d.zip_capable_ranges
+FROM asn_isp_disagree_tbl d
+ORDER BY d.zip_capable_ranges DESC NULLS LAST, d.asn
+LIMIT 40;
+
+SELECT count(DISTINCT asn) AS asns_where_the_two_names_disagree,
+       count(*)            AS proposed_corrections,
+       sum(zip_capable_ranges) FILTER (WHERE isp_tier = 1) AS ranges_behind_tier1
+FROM asn_isp_disagree_tbl;
 
 \echo
 \echo ================================================================

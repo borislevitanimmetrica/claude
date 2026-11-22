@@ -67,14 +67,35 @@ INSERT INTO bdc_carrier_tbl (provider_id, brand_name, frn) VALUES
  (900003, 'Windstream', '0001000003'),
  (900004, 'Cable One',  '0001000004'),
  (900005, 'Zebra Telephone Company', '0001000005'),
- (900006, 'Aardvark Telephone Co',   '0001000006');
+ (900006, 'Aardvark Telephone Co',   '0001000006'),
+ (900007, 'Skyhook Wireless Co',     '0001000007');
 
--- Footprints. Verizon is national, everyone else is small. 1000 tracts in
--- the fixture universe, so the shares are readable.
+-- Footprints. 1000 tracts in the fixture universe, so shares are readable.
+--
+-- Verizon is modelled the way Boris's data actually behaves: a MODEST
+-- wireline footprint and a near-total licensed fixed wireless one. That is
+-- what makes a pooled, all-technology share meaningless, and it is the
+-- arithmetic that refutes my claim of a 97% national wireline footprint.
+-- Pooled, this brand reaches 100% of the fixture. On FTTP it reaches 30%.
 INSERT INTO provider_brand_tract_tech_tbl (provider_id, brand_name, technology, tract_geoid)
-SELECT 900001, 'Verizon', 50, lpad(g::text, 11, '0') FROM generate_series(1, 900) g;
+SELECT 900001, 'Verizon', 50, lpad(g::text, 11, '0') FROM generate_series(1, 300) g;
 INSERT INTO provider_brand_tract_tech_tbl (provider_id, brand_name, technology, tract_geoid)
-SELECT 900002, 'Frontier', 50, lpad(g::text, 11, '0') FROM generate_series(1, 40) g;
+SELECT 900001, 'Verizon', 71, lpad(g::text, 11, '0') FROM generate_series(1, 1000) g;
+
+-- Frontier is DISJOINT from Verizon on FTTP, which is the real geography:
+-- Frontier's territory is ex-Verizon territory, divested by Verizon in 2010
+-- (14 mostly rural states) and 2016 (the California, Florida and Texas GTE
+-- properties). Verizon kept the northeast. The 2026 re-acquisition therefore
+-- EXTENDS Verizon's footprint into counties where Verizon had no plant
+-- rather than absorbing a competitor standing on the same streets.
+INSERT INTO provider_brand_tract_tech_tbl (provider_id, brand_name, technology, tract_geoid)
+SELECT 900002, 'Frontier', 50, lpad(g::text, 11, '0') FROM generate_series(501, 540) g;
+
+-- A brand with licensed fixed wireless and NOTHING ELSE. Its name matches an
+-- ASN perfectly and there is still nothing here to select on, because
+-- technologies 70, 71 and 72 cannot be targeted at ZIP level.
+INSERT INTO provider_brand_tract_tech_tbl (provider_id, brand_name, technology, tract_geoid)
+SELECT 900007, 'Skyhook Wireless Co', 71, lpad(g::text, 11, '0') FROM generate_series(1, 800) g;
 INSERT INTO provider_brand_tract_tech_tbl (provider_id, brand_name, technology, tract_geoid)
 SELECT 900003, 'Windstream', 10, lpad(g::text, 11, '0') FROM generate_series(100, 160) g;
 INSERT INTO provider_brand_tract_tech_tbl (provider_id, brand_name, technology, tract_geoid)
@@ -129,6 +150,13 @@ FROM generate_series(1, 30);
 -- An unprobed row, which must be excluded everywhere.
 INSERT INTO ip2city_dbiplite_probe_tbl (isp, org, "as", mobile_transit, ran_at)
 VALUES ('Never Probed', 'Never Probed', 'AS99005 Never Probed Inc', NULL, NULL);
+
+-- DEFECT 3b. A perfect name match to a brand that has licensed fixed
+-- wireless and no wireline plant. Nothing to select on, and the old pooled
+-- percentage made it look like an 80% national footprint.
+INSERT INTO ip2city_dbiplite_probe_tbl (isp, org, "as", mobile_transit, ran_at)
+SELECT 'Skyhook Wireless', 'Skyhook Wireless', 'AS99006 Skyhook Wireless Co', 'f', now()
+FROM generate_series(1, 200);
 
 ANALYZE ip2city_dbiplite_probe_tbl;
 ANALYZE bdc_carrier_tbl;
