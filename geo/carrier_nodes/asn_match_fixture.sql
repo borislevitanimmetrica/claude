@@ -68,7 +68,12 @@ INSERT INTO bdc_carrier_tbl (provider_id, brand_name, frn) VALUES
  (900004, 'Cable One',  '0001000004'),
  (900005, 'Zebra Telephone Company', '0001000005'),
  (900006, 'Aardvark Telephone Co',   '0001000006'),
- (900007, 'Skyhook Wireless Co',     '0001000007');
+ (900007, 'Skyhook Wireless Co',     '0001000007'),
+ -- The trade-name case. No string method can join the ip-api operator name
+ -- Comcast Cable Communications, LLC to the brand Xfinity, which is why
+ -- AS7922 sits at the head of Boris's no-candidate list with 187,553
+ -- ZIP-capable ranges behind it. Only carrier_entity.sql can join them.
+ (900008, 'Xfinity',                 '0001000008');
 
 -- Footprints. 1000 tracts in the fixture universe, so shares are readable.
 --
@@ -96,6 +101,9 @@ SELECT 900002, 'Frontier', 50, lpad(g::text, 11, '0') FROM generate_series(501, 
 -- technologies 70, 71 and 72 cannot be targeted at ZIP level.
 INSERT INTO provider_brand_tract_tech_tbl (provider_id, brand_name, technology, tract_geoid)
 SELECT 900007, 'Skyhook Wireless Co', 71, lpad(g::text, 11, '0') FROM generate_series(1, 800) g;
+
+INSERT INTO provider_brand_tract_tech_tbl (provider_id, brand_name, technology, tract_geoid)
+SELECT 900008, 'Xfinity', 40, lpad(g::text, 11, '0') FROM generate_series(600, 820) g;
 INSERT INTO provider_brand_tract_tech_tbl (provider_id, brand_name, technology, tract_geoid)
 SELECT 900003, 'Windstream', 10, lpad(g::text, 11, '0') FROM generate_series(100, 160) g;
 INSERT INTO provider_brand_tract_tech_tbl (provider_id, brand_name, technology, tract_geoid)
@@ -157,6 +165,13 @@ VALUES ('Never Probed', 'Never Probed', 'AS99005 Never Probed Inc', NULL, NULL);
 INSERT INTO ip2city_dbiplite_probe_tbl (isp, org, "as", mobile_transit, ran_at)
 SELECT 'Skyhook Wireless', 'Skyhook Wireless', 'AS99006 Skyhook Wireless Co', 'f', now()
 FROM generate_series(1, 200);
+
+-- THE TRADE NAME. Must produce no candidate from any string rule, and must
+-- be reachable through the entity layer.
+INSERT INTO ip2city_dbiplite_probe_tbl (isp, org, "as", mobile_transit, ran_at)
+SELECT 'Comcast Cable Communications', 'Comcast',
+       'AS99007 Comcast Cable Communications, LLC', 'f', now()
+FROM generate_series(1, 900);
 
 ANALYZE ip2city_dbiplite_probe_tbl;
 ANALYZE bdc_carrier_tbl;

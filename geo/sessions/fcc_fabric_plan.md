@@ -2015,3 +2015,98 @@ Cablevision Systems 13,882; RCN 10,636; Wave Broadband 6,822; Cable One
 4,612; Grande 4,004; Mediacom 3,741; WideOpenWest 2,787; Cincinnati Bell
 1,814; Midcontinent 1,800; Oculus 1,610. This is what the Form 499
 filer database is for, and it is still not on disk.
+
+---
+
+## 2026-11-22, late: names are attributes, not keys
+
+### Boris confirmed the trade names, with a correction that changes the shape
+
+"Each side of the table can contain variations. For example, Comcast might
+appear in BDC as Comcast rather than Xfinity. Charter and Spectrum are
+both used on the ip-api.com side depending on proximity to the customer."
+
+Everything up to here assumed one name per side. Two consequences.
+
+**`asn_bdc_brand_map_tbl` had `asn` as its PRIMARY KEY**, making one brand
+per ASN a hard constraint. His own run had already shown the shape:
+AS7029 Windstream drew two correct candidates, brand `Windstream` and
+brand `Windstream Communications,`, and the map could only have accepted
+one. `asn_map_multibrand_migration.sql` replaces the key with a unique
+index over the whole decision. Non-destructive, idempotent, and it aborts
+if the row count changes. Verified: the second brand was refused before
+and accepted after, a true duplicate is still refused, and a re-run
+reports "already migrated".
+
+**`carrier_entity.sql`** makes names attributes of a network entity, many
+per side. The entity is ONE NETWORK WEARING SEVERAL LABELS, not a
+corporate parent, and that distinction comes from Boris's own argument
+about mergers:
+
+| | |
+|---|---|
+| Comcast and Xfinity | one entity, same plant, two labels |
+| Charter and Spectrum | one entity, same plant, two labels |
+| Verizon and Frontier | TWO entities, one owner, complementary territory |
+
+Merging Verizon and Frontier would hand a Frontier ASN the right to
+select Verizon plant, which is the error he refuted. The fixture asserts
+that the brand `Frontier` is NOT attached to the verizon entity, and the
+file reports conflicts where an entity proposal disagrees with the
+parent-on-subsidiary evidence.
+
+Every BDC name in the seed is checked against `bdc_carrier_tbl` and
+reported as found or "not in your data", because asserting a brand string
+I had not seen is the Comcast Business mistake.
+
+### Fallback is exact match only
+
+Boris 2026-11-22. A name built entirely from noise words identifies
+nothing, so it may only reach another name by exact agreement, never by
+containment or a shared word. This is now structural rather than a
+comment: `carrier_name_tokens_strict()` returns NOTHING for such a name
+and is what every token JOIN uses, while the fallback form survives only
+inside `carrier_name_tier`, where the generic branch returns 0. The live
+bug this closes is in the near-miss report, which joined on
+`carrier_name_tokens` and could therefore relate two all-noise names on a
+shared generic word, which is the class of error he had just complained
+about.
+
+### State abbreviations are uppercase only
+
+Boris 2026-11-22. My first version tested them against the lowercased
+word, which destroys the ordinary English words in, or, me, hi, de, la,
+ma, pa, ok and twenty more wherever they appear in a real carrier name.
+Measured after the fix:
+
+| name | identifying tokens |
+|---|---|
+| `Internet in Motion` | in, motion |
+| `OR Fiber` | none, falls back to exact match |
+| `la Fiber Company` | la |
+| `LA Fiber` | none, falls back to exact match |
+| `State of WI Dept. of Administration` | none, falls back to exact match |
+
+### Every relation Boris called wrong, now scoring 0
+
+| ip-api name | was related to | tier |
+|---|---|---|
+| Database Mart LLC | Wal-Mart Stores, Inc. | 0 |
+| Winn-Dixie Stores, Inc. | Wal-Mart Stores, Inc. | 0 |
+| Spartan Stores, Inc. | Wal-Mart Stores, Inc. | 0 |
+| Colonial IU 20 | Washington State K-20 Telecommunications Network | 0 |
+| State of WI Dept. of Administration | State of Washington | 0 |
+
+Added to the stoplist: mart, stores, store, dept, department,
+administration, division, office, bureau, agency, authority, commission,
+county, city, town, state, states, and bare numbers by predicate. The two
+cases that depend on a suppressed character still score 1: `123.Net, Inc.`
+to `123.NET Inc` through the fallback, and `AT&T Enterprises, LLC` to
+`AT&T`. All 45 gate cases pass.
+
+### The trade-name claim is now tested, not asserted
+
+The fixture carries AS99007 `Comcast Cable Communications, LLC` with 900
+ranges and a brand `Xfinity` with a 221-tract cable footprint. Asserted:
+zero string candidates, `carrier_name_tier` returns 0 for that pair, and
+the entity layer proposes the pair exactly once with `entity_key` comcast.

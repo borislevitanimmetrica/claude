@@ -219,6 +219,66 @@ BEGIN
 END
 $assert$;
 
+-- ---------------------------------------------------------------------------
+-- The entity layer, if carrier_entity.sql has been run. Run order for the
+-- full check is fixture, matcher, carrier_entity.sql, then this file.
+-- ---------------------------------------------------------------------------
+DO $entity$
+DECLARE failures text[] := ARRAY[]::text[]; n bigint; t text;
+BEGIN
+    IF NOT EXISTS (SELECT 1 FROM information_schema.tables
+                   WHERE table_name = 'carrier_entity_proposal_tbl') THEN
+        RAISE NOTICE 'carrier_entity.sql has not been run; entity assertions skipped';
+        RETURN;
+    END IF;
+
+    -- No string rule may reach Xfinity from the Comcast operator name.
+    SELECT count(*) INTO n FROM asn_brand_candidate_tbl WHERE asn = 99007;
+    IF n <> 0 THEN
+        failures := failures || format('AS99007 Comcast should get 0 string candidates, found %s. If this ever passes, the trade-name problem was never real.', n);
+    END IF;
+
+    IF carrier_name_tier('Comcast Cable Communications, LLC', 'Xfinity') <> 0 THEN
+        failures := failures || 'carrier_name_tier joined Comcast to Xfinity, which no string method can legitimately do';
+    END IF;
+
+    -- The entity layer must reach it.
+    SELECT count(*) INTO n FROM carrier_entity_proposal_tbl
+    WHERE asn = 99007 AND brand_name = 'Xfinity';
+    IF n <> 1 THEN
+        failures := failures || format('the entity layer should propose AS99007 to Xfinity exactly once, found %s', n);
+    END IF;
+
+    SELECT entity_key INTO t FROM carrier_entity_proposal_tbl WHERE asn = 99007;
+    IF t IS DISTINCT FROM 'comcast' THEN
+        failures := failures || format('AS99007 resolved to entity %L, expected comcast', t);
+    END IF;
+
+    -- Verizon and Frontier must stay SEPARATE entities, or a Frontier ASN
+    -- gains the right to select Verizon plant.
+    SELECT count(*) INTO n FROM carrier_entity_name_tbl
+    WHERE entity_key = 'verizon' AND side = 'bdc' AND name = 'Frontier';
+    IF n <> 0 THEN
+        failures := failures || 'the brand Frontier is attached to the verizon entity. They are one owner and two networks in complementary territory; merging them is the error Boris refuted.';
+    END IF;
+
+    -- And the conflict between the entity proposal and the ISP evidence
+    -- must be detected rather than silently resolved.
+    SELECT count(*) INTO n
+    FROM carrier_entity_proposal_tbl p
+    JOIN asn_isp_disagree_tbl d ON d.asn = p.asn
+    WHERE d.isp_suggests_brand IS DISTINCT FROM p.brand_name AND p.asn = 99003;
+    IF n <> 1 THEN
+        failures := failures || format('the Verizon-against-Frontier conflict on AS99003 should be reported once, found %s', n);
+    END IF;
+
+    IF cardinality(failures) > 0 THEN
+        RAISE EXCEPTION E'ENTITY LAYER ASSERTIONS FAILED:\n%', array_to_string(failures, E'\n');
+    END IF;
+    RAISE NOTICE 'all entity layer assertions passed';
+END
+$entity$;
+
 \echo
 \echo Every ASN, as the matcher now sees it.
 \echo

@@ -121,7 +121,32 @@ SELECT ARRAY[
   -- every .com name share a word with every other .com name, which is three
   -- of the reject cases in the gate and a large wasted cross product during
   -- candidate generation. No accept case depends on it.
-  'com'];
+  'com',
+  -- Retail and administrative words Boris named on 2026-11-22, each from a
+  -- wrong relation in the near-miss report:
+  --   mart    Database Mart LLC was related to Wal-Mart Stores, Inc.
+  --   stores  Winn-Dixie Stores, Inc. was related to Wal-Mart Stores, Inc.
+  --   dept    several registrants were related to State of WI Dept. of
+  --           Administration
+  'mart','stores','store','dept','department','administration','division',
+  'office','bureau','agency','authority','commission','county','city','town',
+  -- state and states, for the same reason: on Boris's run a dozen "State of
+  -- X" registrants were relating to each other on the shared word alone.
+  'state','states'];
+$fn$ LANGUAGE sql IMMUTABLE;
+
+-- Two-letter US state and territory abbreviations, matched ONLY WHEN THE
+-- ORIGINAL TEXT IS UPPERCASE. Boris 2026-11-22 named this: my first version
+-- tested them against the lowercased word, which destroys the ordinary words
+-- in, or, me, hi, de, la, ma, pa, ok, id and twenty more wherever they appear
+-- inside a real carrier name. WI is a state; wi is not.
+CREATE OR REPLACE FUNCTION carrier_name_state_abbrevs()
+RETURNS text[] AS $fn$
+SELECT ARRAY[
+  'AL','AK','AZ','AR','CA','CO','CT','DE','DC','FL','GA','HI','ID','IL',
+  'IN','IA','KS','KY','LA','ME','MD','MA','MI','MN','MS','MO','MT','NE',
+  'NV','NH','NJ','NM','NY','NC','ND','OH','OK','OR','PA','RI','SC','SD',
+  'TN','TX','UT','VT','VA','WA','WV','WI','WY','PR','VI','GU'];
 $fn$ LANGUAGE sql IMMUTABLE;
 
 CREATE OR REPLACE FUNCTION carrier_name_words(raw text)
@@ -133,19 +158,55 @@ SELECT array_remove(
          '');
 $fn$ LANGUAGE sql IMMUTABLE;
 
+-- The words of a name with their ORIGINAL CASE preserved, which is what the
+-- state-abbreviation test needs.
+CREATE OR REPLACE FUNCTION carrier_name_words_cased(raw text)
+RETURNS text[] AS $fn$
+SELECT array_remove(
+         regexp_split_to_array(
+           btrim(regexp_replace(coalesce(raw, ''), '[^A-Za-z0-9]+', ' ', 'g')),
+           ' '),
+         '');
+$fn$ LANGUAGE sql IMMUTABLE;
+
+-- One predicate for "this word cannot identify a company", used by the token
+-- builder and the generic-only test so they can never disagree. It takes the
+-- word AS WRITTEN, because case carries meaning for the state abbreviations.
+--
+-- A BARE NUMBER is noise. Boris 2026-11-22: Colonial IU 20 was relating to
+-- Washington State K-20 Telecommunications Network on the shared word 20.
+CREATE OR REPLACE FUNCTION carrier_name_is_noise(w text)
+RETURNS boolean AS $fn$
+SELECT lower(w) = ANY (carrier_name_stopwords())
+    OR w ~ '^[0-9]+$'
+    OR (w = upper(w) AND w = ANY (carrier_name_state_abbrevs()));
+$fn$ LANGUAGE sql IMMUTABLE;
+
+-- STRICT tokens: the identifying words, and NOTHING when every word is
+-- noise. Everything that JOINS on a shared token must use this, so that a
+-- name carrying no information cannot reach anything through a generic word.
+CREATE OR REPLACE FUNCTION carrier_name_tokens_strict(raw text)
+RETURNS text[] AS $fn$
+SELECT ARRAY(SELECT lower(w) FROM unnest(carrier_name_words_cased(raw)) AS w
+             WHERE NOT carrier_name_is_noise(w));
+$fn$ LANGUAGE sql IMMUTABLE;
+
+-- The fallback form, for display and for the exact-match test only. Boris
+-- 2026-11-22: "Fallback should be exact match." When every word is noise
+-- this returns all of them, and carrier_name_tier then allows ONLY exact
+-- agreement on such a name: no containment, no shared word. USA
+-- COMMUNICATIONS to USA COMMUNICATIONS is the case that has to keep working,
+-- and it does, through the compact key.
 CREATE OR REPLACE FUNCTION carrier_name_tokens(raw text)
 RETURNS text[] AS $fn$
 SELECT CASE WHEN cardinality(k) > 0 THEN k ELSE carrier_name_words(raw) END
-FROM (SELECT ARRAY(SELECT w FROM unnest(carrier_name_words(raw)) AS w
-                   WHERE w <> ALL (carrier_name_stopwords())) AS k) x;
+FROM (SELECT carrier_name_tokens_strict(raw) AS k) x;
 $fn$ LANGUAGE sql IMMUTABLE;
 
--- TRUE when every word was generic, so the token set is only a fallback and
--- must not be used for matching.
+-- TRUE when every word was noise, so the name identifies nothing on its own.
 CREATE OR REPLACE FUNCTION carrier_name_generic_only(raw text)
 RETURNS boolean AS $fn$
-SELECT NOT EXISTS (SELECT 1 FROM unnest(carrier_name_words(raw)) AS w
-                   WHERE w <> ALL (carrier_name_stopwords()));
+SELECT cardinality(carrier_name_tokens_strict(raw)) = 0;
 $fn$ LANGUAGE sql IMMUTABLE;
 
 -- The compact key drops LEGAL SUFFIXES ONLY before compacting, so
@@ -167,7 +228,14 @@ $fn$ LANGUAGE sql IMMUTABLE;
 CREATE OR REPLACE FUNCTION carrier_name_tier(a text, b text)
 RETURNS integer AS $fn$
 SELECT CASE
+  -- EXACT. The compact key is the name with case, punctuation and legal
+  -- suffix removed, which is what makes CABLE ONE, INC. agree with Cable One.
   WHEN t.ca IS NOT NULL AND t.ca = t.cb                             THEN 1
+  -- FALLBACK IS EXACT MATCH ONLY. Boris 2026-11-22. If either name is built
+  -- entirely from noise words it identifies nothing, so the only way it can
+  -- reach anything is the exact agreement tested on the line above. No
+  -- containment, no shared word. This is why Wave Broadband cannot reach
+  -- Wave Wireless and CABLE ONE cannot reach One Communications.
   WHEN t.generic                                                    THEN 0
   WHEN t.ta <@ t.tb AND t.tb <@ t.ta                                THEN 1
   WHEN (t.ta <@ t.tb OR t.tb <@ t.ta)
@@ -475,12 +543,12 @@ WITH todo AS (
     -- AS16509 is Amazon and ip-api reports its ISP as Windstream, which is
     -- how the previous version matched Amazon to Windstream's footprint.
     SELECT t.asn, w.tok
-    FROM todo t, unnest(carrier_name_tokens(t.as_operator)) AS w(tok)
-    WHERE length(w.tok) >= 2 AND NOT carrier_name_generic_only(t.as_operator)
+    FROM todo t, unnest(carrier_name_tokens_strict(t.as_operator)) AS w(tok)
+    WHERE length(w.tok) >= 2
 ), btok AS (
     SELECT b.brand_name, b.provider_id, w.tok
-    FROM brand b, unnest(carrier_name_tokens(b.brand_name)) AS w(tok)
-    WHERE length(w.tok) >= 2 AND NOT carrier_name_generic_only(b.brand_name)
+    FROM brand b, unnest(carrier_name_tokens_strict(b.brand_name)) AS w(tok)
+    WHERE length(w.tok) >= 2
 ), pair AS (
     -- Pairs sharing an informative token, plus pairs agreeing on the
     -- compact key, which is the path that does not need a shared token.
@@ -622,7 +690,7 @@ WITH suspect AS (
       AND NOT carrier_name_generic_only(c.isp_commonest)
 ), stok AS (
     SELECT s.asn, w.tok
-    FROM suspect s, unnest(carrier_name_tokens(s.isp_commonest)) AS w(tok)
+    FROM suspect s, unnest(carrier_name_tokens_strict(s.isp_commonest)) AS w(tok)
     WHERE length(w.tok) >= 2
 ), brand AS (
     SELECT DISTINCT c.brand_name, c.provider_id
@@ -630,8 +698,8 @@ WITH suspect AS (
     WHERE c.brand_name IS NOT NULL AND c.brand_name <> ''
 ), btok AS (
     SELECT b.brand_name, b.provider_id, w.tok
-    FROM brand b, unnest(carrier_name_tokens(b.brand_name)) AS w(tok)
-    WHERE length(w.tok) >= 2 AND NOT carrier_name_generic_only(b.brand_name)
+    FROM brand b, unnest(carrier_name_tokens_strict(b.brand_name)) AS w(tok)
+    WHERE length(w.tok) >= 2
 ), hit AS (
     SELECT DISTINCT s.asn, b.brand_name, b.provider_id
     FROM stok s JOIN btok b ON b.tok = s.tok

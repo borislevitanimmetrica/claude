@@ -172,7 +172,7 @@ ORDER BY r.ruled_name;
 DROP TABLE IF EXISTS asn_token_freq_tbl;
 CREATE TABLE asn_token_freq_tbl AS
 SELECT w.tok, count(DISTINCT a.as_operator) AS names_carrying_it
-FROM ipapi_asn_tbl a, unnest(carrier_name_tokens(a.as_operator)) AS w(tok)
+FROM ipapi_asn_tbl a, unnest(carrier_name_tokens_strict(a.as_operator)) AS w(tok)
 WHERE length(w.tok) >= 2
 GROUP BY w.tok;
 
@@ -198,9 +198,9 @@ SELECT DISTINCT left(a.as_operator, 44) AS probed_name,
 FROM ipapi_asn_tbl a
 CROSS JOIN asn_scope_ruling_tbl r
 JOIN LATERAL (
-    SELECT t.tok FROM unnest(carrier_name_tokens(a.as_operator)) AS t(tok)
+    SELECT t.tok FROM unnest(carrier_name_tokens_strict(a.as_operator)) AS t(tok)
     INTERSECT
-    SELECT t.tok FROM unnest(carrier_name_tokens(r.ruled_name)) AS t(tok)
+    SELECT t.tok FROM unnest(carrier_name_tokens_strict(r.ruled_name)) AS t(tok)
 ) x ON true
 JOIN asn_token_freq_tbl f ON f.tok = x.tok
 WHERE f.names_carrying_it <= 12
