@@ -36,6 +36,45 @@
 
 \set ON_ERROR_STOP on
 
+-- ---------------------------------------------------------------------------
+-- A BLOCKING GUARD, BECAUSE THIS FILE IS DESTRUCTIVE.
+--
+-- It replaces the probe table, the BDC tables and, below, the persistent
+-- decision tables. Run against the production database it would destroy
+-- every approval Boris has given. The header has always said throwaway
+-- cluster only; a sentence in a header does not stop anything.
+--
+-- The test is evidence rather than a name: the production probe table holds
+-- on the order of two million probed ranges, measured 2026-11-22 at
+-- 1,880,420 ZIP-capable ranges across 19,909 ASNs. A fixture database holds
+-- a few hundred rows. Anything above ten thousand is not a fixture database
+-- and this file refuses to touch it.
+-- ---------------------------------------------------------------------------
+DO $guard$
+DECLARE n bigint;
+BEGIN
+    IF EXISTS (SELECT 1 FROM information_schema.tables
+               WHERE table_name = 'ip2city_dbiplite_probe_tbl') THEN
+        EXECUTE 'SELECT count(*) FROM ip2city_dbiplite_probe_tbl' INTO n;
+        IF n > 10000 THEN
+            RAISE EXCEPTION 'ip2city_dbiplite_probe_tbl holds % rows, so this is not a fixture database. This file DROPS the probe table, the BDC tables and the decision tables. Nothing was changed.', n;
+        END IF;
+        RAISE NOTICE 'existing probe table has % rows, treating this as a fixture database', n;
+    END IF;
+END
+$guard$;
+
+-- The persistent tables, dropped so that each fixture run starts from
+-- nothing. They survive by design in production: asn_bdc_brand_map_tbl holds
+-- Boris's approvals and carrier_unrelated_tbl holds his rulings, and both are
+-- created with IF NOT EXISTS so a rerun never loses them. In the fixture that
+-- same persistence is a defect. Leftover rows from an earlier run suppressed
+-- AS99001, AS99004 and AS99008 from the candidate queue, because an ASN that
+-- is already decided is not offered again, and three assertions failed
+-- against code that was correct. Found 2026-11-23.
+DROP TABLE IF EXISTS asn_bdc_brand_map_tbl;
+DROP TABLE IF EXISTS carrier_unrelated_tbl;
+
 DROP TABLE IF EXISTS ip2city_dbiplite_probe_tbl;
 CREATE TABLE ip2city_dbiplite_probe_tbl (
     range_id        bigserial PRIMARY KEY,
@@ -73,7 +112,15 @@ INSERT INTO bdc_carrier_tbl (provider_id, brand_name, frn) VALUES
  -- Comcast Cable Communications, LLC to the brand Xfinity, which is why
  -- AS7922 sits at the head of Boris's no-candidate list with 187,553
  -- ZIP-capable ranges behind it. Only carrier_entity.sql can join them.
- (900008, 'Xfinity',                 '0001000008');
+ (900008, 'Xfinity',                 '0001000008'),
+ -- DEFECT 4, the carrier universe. These two brands exist so that the
+ -- fixture can hold an ASN whose operator name DOES match a brand under the
+ -- tier rule while its compact key does NOT agree with any brand's. That is
+ -- the shape of AS7018 AT&T on Boris's database: the operator name is
+ -- AT&T Enterprises, LLC, compacting to attenterprises, and the brand is
+ -- AT&T, compacting to att.
+ (900009, 'Osprey',                  '0001000009'),
+ (900010, 'Blue Osprey',             '0001000010');
 
 -- Footprints. 1000 tracts in the fixture universe, so shares are readable.
 --
@@ -112,6 +159,10 @@ INSERT INTO provider_brand_tract_tech_tbl (provider_id, brand_name, technology, 
 SELECT 900005, 'Zebra Telephone Company', 10, lpad(g::text, 11, '0') FROM generate_series(300, 312) g;
 INSERT INTO provider_brand_tract_tech_tbl (provider_id, brand_name, technology, tract_geoid)
 SELECT 900006, 'Aardvark Telephone Co', 10, lpad(g::text, 11, '0') FROM generate_series(400, 407) g;
+INSERT INTO provider_brand_tract_tech_tbl (provider_id, brand_name, technology, tract_geoid)
+SELECT 900009, 'Osprey', 10, lpad(g::text, 11, '0') FROM generate_series(600, 617) g;
+INSERT INTO provider_brand_tract_tech_tbl (provider_id, brand_name, technology, tract_geoid)
+SELECT 900010, 'Blue Osprey', 40, lpad(g::text, 11, '0') FROM generate_series(700, 711) g;
 -- Tracts nobody serves, so the denominator is 1000 and not 900.
 INSERT INTO provider_brand_tract_tech_tbl (provider_id, brand_name, technology, tract_geoid)
 SELECT 900004, 'Cable One', 40, lpad(g::text, 11, '0') FROM generate_series(901, 1000) g;
@@ -187,6 +238,34 @@ INSERT INTO ip2city_dbiplite_probe_tbl (isp, org, "as", mobile_transit, ran_at)
 SELECT 'Comcast Cable Communications', 'Flowers Direct',
        'AS99009 Flowers Direct Retail, Inc.', 'f', now()
 FROM generate_series(1, 350);
+
+-- DEFECT 4. THE CARRIER WHOSE OPERATOR NAME CARRIES AN EXTRA NOISE WORD.
+-- AS99010 holds the name Osprey Enterprises, LLC against the brand Osprey.
+-- carrier_name_tier scores the pair 1, because enterprises and llc are both
+-- noise, so the matcher offers the brand. The first carrier universe tested
+-- compact-key equality instead, and ospreyenterprises does not equal osprey,
+-- so the holder was ruled not a carrier and the match was deleted.
+--
+-- This is AS7018 AT&T on Boris's database at 263,102 ZIP-capable ranges, one
+-- of 736 ASNs and 373,410 ranges his run destroyed. The same shape appeared
+-- as Google LLC against Google Fiber, Cogent Communications, LLC against
+-- Cogent Communication, Zayo Bandwidth against ZAYO GROUP LLC, LUMOS
+-- Networks, Inc. against lumos, Cablevision Lightpath LLC against Lightpath
+-- and Metronet against Metronet Holdings.
+INSERT INTO ip2city_dbiplite_probe_tbl (isp, org, "as", mobile_transit, ran_at)
+SELECT 'Osprey', 'Osprey', 'AS99010 Osprey Enterprises, LLC', 'f', now()
+FROM generate_series(1, 260);
+
+-- DEFECT 4b. The containment case, which the token key alone does NOT
+-- catch. AS99011 holds Blue Osprey Worldnet against the brand Blue Osprey:
+-- three informative tokens against two, so the token keys differ and the
+-- compact keys differ, and only carrier_name_tier reaches it, at tier 2.
+-- This is AT&T WorldNet against AT&T, 600 ranges on Boris's database. It is
+-- the case that forces the universe test to call the tier rule rather than
+-- compare one more key.
+INSERT INTO ip2city_dbiplite_probe_tbl (isp, org, "as", mobile_transit, ran_at)
+SELECT 'Blue Osprey', 'Blue Osprey', 'AS99011 Blue Osprey Worldnet', 'f', now()
+FROM generate_series(1, 45);
 
 -- THE TRADE NAME. Must produce no candidate from any string rule, and must
 -- be reachable through the entity layer.

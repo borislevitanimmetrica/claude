@@ -2334,3 +2334,107 @@ three rulings untouched, zero brand decisions left outside the universe.
 
 The 67.7% is an overstatement: it contains the DIA-customer rows the
 restriction now removes. The next run prints the corrected figure.
+
+## 2026-11-23: the universe test was stricter than the matcher, and it deleted 769 correct decisions
+
+### What happened
+
+Boris ran the chain I shipped on 2026-11-22. The restriction behaved as
+designed on the 1-800-Flowers case and then destroyed a large amount of
+correct work:
+
+| fact | value |
+|---|---|
+| candidates after the restriction | 296, down from 1,883 |
+| rows the cleanup deleted | 769 |
+| ASNs affected | 736 |
+| ZIP-capable ranges affected | 373,410 |
+| largest single loss | AS7018 AT&T, 263,102 ranges |
+| eligible after the restriction | 1,199 ASNs, 939,544 ranges, 50.0% |
+
+This was my defect, not a data problem. Every deleted row is in
+`/home/boris/geo/carrier_map_removed.tsv`, and re-running
+`carrier_asn_match.sql` and the two loaders recreates them.
+
+### The cause, measured rather than inferred
+
+`carrier_name_in_universe` tested COMPACT-KEY EQUALITY against the universe.
+The matcher uses `carrier_name_tier`. The compact key is far stricter, so a
+holder could be ruled "not a carrier" by a test its own match had already
+passed. Measured on Boris's database:
+
+| operator name | universe name | compact keys agree | token keys agree | tier |
+|---|---|---|---|---|
+| AT&T Enterprises, LLC | AT&T | no | yes | 1 |
+| Google LLC | Google Fiber | no | yes | 1 |
+| Cogent Communications, LLC | Cogent Communication | no | yes | 1 |
+| Zayo Bandwidth | ZAYO GROUP LLC | no | yes | 1 |
+| LUMOS Networks, Inc. | lumos | no | yes | 1 |
+| Cablevision Lightpath LLC | Lightpath | no | yes | 1 |
+| Metronet | Metronet Holdings | no | yes | 1 |
+| AT&T WorldNet | AT&T | no | NO | 2 |
+
+`carrier_name_compact('AT&T Enterprises, LLC')` is `attenterprises` and
+`carrier_name_compact('AT&T')` is `att`, because compacting strips legal
+suffixes only, while `enterprises` is a stopword to the tokeniser. The last
+row is why a second key is not enough on its own: three informative tokens
+against two, so only the tier rule reaches it.
+
+### The rule now
+
+Membership holds when ANY of three paths holds, and the third one IS the
+matcher's rule:
+
+1. the compact keys agree, the old test, kept because it is an index lookup;
+2. the token keys agree, which is tier 1 by token equality;
+3. the name scores tier 1 or 2 against some universe name.
+
+Path 3 subsumes 1 and 2. The prefilter on path 3 is exact, not approximate:
+tiers 1 and 2 both require one token set to be contained in the other, so the
+number of shared tokens must equal the smaller token count. Prefiltering on
+that cannot drop a pair the tier rule would have accepted.
+
+A name with no informative token reaches the universe only through path 1,
+which keeps Boris's fallback-is-exact-match-only rule intact.
+
+New: `carrier_name_token_key`, `carrier_name_token_count`,
+`carrier_universe_tbl.token_key`, `carrier_universe_token_tbl`.
+
+### The guard, which blocks
+
+`carrier_rulings.sql` now RAISES before the delete if any doomed row is
+mapped to a brand that its own operator name scores tier 1 or 2 against. Both
+facts cannot be true at once unless the universe test is wrong, and the right
+response is to stop rather than to delete. Every one of the 769 rows would
+have tripped it. Verified by planting AS99010 and reverting the function to
+its compact-only form: the run aborted, the row survived.
+
+`carrier_universe.sql` now reports which of the three paths admitted each
+eligible ASN, and lists the ones admitted only by the tier rule. That list is
+exactly what the first version threw away.
+
+### Two further defects found while testing this
+
+**The fixture was polluted by its own persistence.** `asn_bdc_brand_map_tbl`
+and `carrier_unrelated_tbl` are persistent by design, so decisions from an
+earlier fixture run suppressed AS99001, AS99004 and AS99008 from the
+candidate queue, because a decided ASN is not offered again. Three
+assertions failed against correct code. The fixture now drops both tables,
+and because that makes it destructive it also BLOCKS when the probe table
+holds more than ten thousand rows, which no fixture database does and
+Boris's does by a factor of a hundred and eighty.
+
+**A database built from scratch could not run `carrier_rulings.sql`.**
+`carrier_asn_match.sql` created the decision map with `asn` as the primary
+key, so the rulings precheck correctly refused to run until
+`asn_map_multibrand_migration.sql` had been applied. The table is now created
+in its migrated shape, with the composite unique index, and the migration is
+a verified no-op against it.
+
+### Still unknown
+
+The Form 499a filer list. It was pasted into the chat as raw XLSX bytes,
+which is a ZIP container, and the paste mangled it beyond recovery.
+Reconstructing the filer names from it would be guessing, so nothing was
+loaded. The universe remains BDC brand names plus Boris's entity rulings
+until the file is on disk and I have read its sheet names and header row.

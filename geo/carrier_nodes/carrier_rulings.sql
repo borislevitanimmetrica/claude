@@ -142,6 +142,55 @@ WHERE m.decision = 'brand'
 
 ANALYZE carrier_map_doomed_tbl;
 
+-- ---------------------------------------------------------------------------
+-- THE GUARD THAT SHOULD HAVE BEEN HERE THE FIRST TIME. IT BLOCKS.
+--
+-- A brand decision is only safe to delete if the holder of the ASN really is
+-- not a carrier. If the operator name SCORES TIER 1 OR 2 against the very
+-- brand it is mapped to, then the matcher would make that match again, and
+-- the only way both facts can hold is that the universe test is stricter
+-- than the matcher. That is not a reason to delete the row; it is a defect
+-- in the universe test.
+--
+-- This is not hypothetical. The 2026-11-22 run deleted 769 brand decisions
+-- covering 736 ASNs and 373,410 ZIP-capable ranges, among them AS7018
+-- AT&T Enterprises, LLC mapped to the brand AT&T at 263,102 ranges, because
+-- the universe test compared compact keys: attenterprises against att. Every
+-- one of those rows would have tripped this guard.
+--
+-- It raises rather than reporting, because by the time a report is read the
+-- rows are gone. The deleted rows of that run are in
+-- /home/boris/geo/carrier_map_removed.tsv and are recreated by rerunning
+-- carrier_asn_match.sql and the two loaders.
+-- ---------------------------------------------------------------------------
+DO $guard$
+DECLARE
+    n       bigint;
+    worst   text;
+BEGIN
+    SELECT count(*) INTO n FROM carrier_map_doomed_tbl d
+    WHERE d.bdc_brand_name IS NOT NULL
+      AND carrier_name_tier(d.as_operator, d.bdc_brand_name) IN (1, 2);
+
+    IF n > 0 THEN
+        SELECT string_agg(format('AS%s %s mapped to %s at tier %s, %s ranges',
+                                 d.asn, d.as_operator, d.bdc_brand_name,
+                                 carrier_name_tier(d.as_operator, d.bdc_brand_name),
+                                 coalesce(d.zip_capable_ranges, 0)),
+                          E'\n' ORDER BY d.zip_capable_ranges DESC NULLS LAST)
+          INTO worst
+        FROM (SELECT * FROM carrier_map_doomed_tbl d2
+              WHERE d2.bdc_brand_name IS NOT NULL
+                AND carrier_name_tier(d2.as_operator, d2.bdc_brand_name) IN (1, 2)
+              ORDER BY d2.zip_capable_ranges DESC NULLS LAST
+              LIMIT 10) d;
+
+        RAISE EXCEPTION E'THE CLEANUP WOULD DELETE CORRECT MATCHES: % rows. NOTHING WAS DELETED.\nEach of these ASNs is mapped to a brand that its own operator name matches at tier 1 or 2, so the matcher agrees with the mapping while carrier_name_in_universe says the holder is not a carrier. The universe test is wrong, not the mapping. Largest:\n%', n, worst;
+    END IF;
+    RAISE NOTICE 'guard passed: no doomed row is a match the name rule would make again';
+END
+$guard$;
+
 \echo
 \echo ABOUT TO DELETE. Every one of these is a brand decision for an ASN whose
 \echo holder is not in the carrier universe. Hand-entered not_a_carrier and

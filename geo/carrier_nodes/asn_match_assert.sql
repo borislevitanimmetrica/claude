@@ -357,6 +357,54 @@ BEGIN
         failures := failures || 'neither Comcast name is in the universe, so the restriction has cut out a real carrier'::text;
     END IF;
 
+    -- DEFECT 4. THE UNIVERSE TEST MUST NOT BE STRICTER THAN THE MATCHER.
+    -- A name the matcher scores tier 1 or 2 against a universe name has to
+    -- be IN the universe, or the restriction deletes correct decisions. On
+    -- Boris's 2026-11-22 run the compact-key-only test deleted 769 brand
+    -- decisions covering 736 ASNs and 373,410 ZIP-capable ranges, AS7018
+    -- AT&T among them at 263,102 ranges.
+    IF NOT carrier_name_in_universe('Osprey Enterprises, LLC') THEN
+        failures := failures || 'Osprey Enterprises, LLC is outside the carrier universe although it scores tier 1 against the brand Osprey. This is the AT&T Enterprises against AT&T case that deleted 769 decisions.'::text;
+    END IF;
+
+    IF NOT carrier_name_in_universe('Blue Osprey Worldnet') THEN
+        failures := failures || 'Blue Osprey Worldnet is outside the carrier universe although it scores tier 2 against the brand Blue Osprey. This is the AT&T WorldNet against AT&T case, which neither the compact key nor the token key reaches.'::text;
+    END IF;
+
+    -- DISCRIMINATION. The fixture is only a test of the fix if the OLD rule
+    -- fails on it. Both names above must disagree with every universe
+    -- compact key, so a universe test built on compact keys alone would have
+    -- excluded them. If this ever passes, the fixture has stopped
+    -- reproducing the defect and the assertions above prove nothing.
+    SELECT count(*) INTO n FROM carrier_universe_tbl u
+    WHERE u.name_key IN (carrier_name_compact('Osprey Enterprises, LLC'),
+                         carrier_name_compact('Blue Osprey Worldnet'));
+    IF n <> 0 THEN
+        failures := failures || format('the universe holds a compact key equal to one of the two defect-4 operator names (%s rows), so the fixture no longer reproduces the defect it was built for', n);
+    END IF;
+
+    -- And the match itself must be offered, not merely permitted.
+    SELECT count(*) INTO n FROM asn_brand_candidate_tbl
+    WHERE asn = 99010 AND brand_name = 'Osprey' AND tier = 1;
+    IF n <> 1 THEN
+        failures := failures || format('AS99010 should be offered the brand Osprey at tier 1 exactly once, found %s', n);
+    END IF;
+
+    SELECT count(*) INTO n FROM asn_brand_candidate_tbl
+    WHERE asn = 99011 AND brand_name = 'Blue Osprey' AND tier = 2;
+    IF n <> 1 THEN
+        failures := failures || format('AS99011 should be offered the brand Blue Osprey at tier 2 exactly once, found %s', n);
+    END IF;
+
+    -- The widened test must not have widened into admitting the DIA
+    -- customer through a shared noise word. Flowers Direct Retail, Inc. is
+    -- checked above; this checks the mechanism rather than the one name, by
+    -- requiring that no universe name is reachable from a name built only
+    -- from noise.
+    IF carrier_name_in_universe('Communications Services Group, LLC') THEN
+        failures := failures || 'a name built entirely from noise words is in the carrier universe, so the widened test has lost the fallback-is-exact-match-only rule'::text;
+    END IF;
+
     -- Verizon and Frontier must stay SEPARATE entities, or a Frontier ASN
     -- gains the right to select Verizon plant.
     SELECT count(*) INTO n FROM carrier_entity_name_tbl

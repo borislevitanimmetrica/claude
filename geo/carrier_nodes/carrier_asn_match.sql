@@ -223,6 +223,40 @@ SELECT nullif(
   '');
 $fn$ LANGUAGE sql IMMUTABLE;
 
+-- The TOKEN KEY. The informative tokens, lowercased, de-duplicated and
+-- sorted, joined with a bar. Two names with the same token key are tier 1 to
+-- each other by the token-equality arm of carrier_name_tier, whatever their
+-- word order and whatever non-informative words they carry. NULL when the
+-- name has no informative token at all, so an empty key can never be used
+-- as evidence of agreement.
+--
+-- It exists because the carrier universe was keyed on the compact key alone,
+-- and the compact key is STRICTER than the matching rule. Measured
+-- 2026-11-22: carrier_name_compact('AT&T Enterprises, LLC') is
+-- attenterprises and carrier_name_compact('AT&T') is att, so they do not
+-- agree, while both have token key at|t and carrier_name_tier scores them 1.
+-- That gap excluded AS7018 from the universe and the cleanup then deleted
+-- its correct decision along with 768 others.
+CREATE OR REPLACE FUNCTION carrier_name_token_key(raw text)
+RETURNS text AS $fn$
+SELECT nullif(
+  (SELECT coalesce(string_agg(DISTINCT t.tok, '|' ORDER BY t.tok), '')
+   FROM unnest(carrier_name_tokens_strict(raw)) AS t(tok)),
+  '');
+$fn$ LANGUAGE sql IMMUTABLE;
+
+-- How many DISTINCT informative tokens a name carries. Used to prefilter the
+-- universe test: tier 1 and tier 2 both require that one name's token set is
+-- contained in the other's, so the number of tokens the two share must equal
+-- the smaller of the two counts. That is an exact precondition, not an
+-- approximation, so prefiltering on it cannot drop a pair the tier rule
+-- would have accepted.
+CREATE OR REPLACE FUNCTION carrier_name_token_count(raw text)
+RETURNS integer AS $fn$
+SELECT count(DISTINCT t.tok)::integer
+FROM unnest(carrier_name_tokens_strict(raw)) AS t(tok);
+$fn$ LANGUAGE sql IMMUTABLE;
+
 -- 1 exact, 2 strong containment, 3 a single shared word and therefore NOT
 -- offered, 0 nothing.
 CREATE OR REPLACE FUNCTION carrier_name_tier(a text, b text)
@@ -477,9 +511,10 @@ ANALYZE carrier_entity_name_tbl;
 -- ---------------------------------------------------------------------------
 DROP TABLE IF EXISTS carrier_universe_tbl;
 CREATE TABLE carrier_universe_tbl (
-    name_key text NOT NULL,
-    name     text NOT NULL,
-    source   text NOT NULL,
+    name_key  text NOT NULL,
+    token_key text,
+    name      text NOT NULL,
+    source    text NOT NULL,
     PRIMARY KEY (name_key, source));
 
 COMMENT ON TABLE carrier_universe_tbl IS
@@ -503,8 +538,9 @@ BEGIN
         ORDER BY column_name
     LOOP
         EXECUTE format($q$
-            INSERT INTO carrier_universe_tbl (name_key, name, source)
-            SELECT DISTINCT carrier_name_compact(c.%1$I), c.%1$I, 'bdc.%1$s'
+            INSERT INTO carrier_universe_tbl (name_key, token_key, name, source)
+            SELECT DISTINCT carrier_name_compact(c.%1$I),
+                   carrier_name_token_key(c.%1$I), c.%1$I, 'bdc.%1$s'
             FROM bdc_carrier_tbl c
             WHERE c.%1$I IS NOT NULL AND btrim(c.%1$I) <> ''
               AND carrier_name_compact(c.%1$I) IS NOT NULL
@@ -538,8 +574,9 @@ BEGIN
         ORDER BY column_name
     LOOP
         EXECUTE format($q$
-            INSERT INTO carrier_universe_tbl (name_key, name, source)
-            SELECT DISTINCT carrier_name_compact(f.%1$I), f.%1$I, 'fcc499.%1$s'
+            INSERT INTO carrier_universe_tbl (name_key, token_key, name, source)
+            SELECT DISTINCT carrier_name_compact(f.%1$I),
+                   carrier_name_token_key(f.%1$I), f.%1$I, 'fcc499.%1$s'
             FROM fcc499_filer_tbl f
             WHERE f.%1$I IS NOT NULL AND btrim(f.%1$I) <> ''
               AND carrier_name_compact(f.%1$I) IS NOT NULL
@@ -558,8 +595,9 @@ $f499$;
 -- trade-name problem the entity layer was built for. These names are still
 -- his rulings, just recorded in a different table, and they are reported
 -- under their own source so the universe is auditable.
-INSERT INTO carrier_universe_tbl (name_key, name, source)
-SELECT DISTINCT carrier_name_compact(n.name), n.name,
+INSERT INTO carrier_universe_tbl (name_key, token_key, name, source)
+SELECT DISTINCT carrier_name_compact(n.name),
+       carrier_name_token_key(n.name), n.name,
        'entity.' || n.status
 FROM carrier_entity_name_tbl n
 WHERE n.side = 'ipapi'
@@ -567,13 +605,81 @@ WHERE n.side = 'ipapi'
 ON CONFLICT DO NOTHING;
 
 CREATE INDEX carrier_universe_key_ix ON carrier_universe_tbl (name_key);
+CREATE INDEX carrier_universe_token_key_ix ON carrier_universe_tbl (token_key);
 ANALYZE carrier_universe_tbl;
 
+-- One row per informative token per universe name, so the membership test
+-- can find the universe names that share a token with a candidate name
+-- through an index instead of scanning every universe name.
+DROP TABLE IF EXISTS carrier_universe_token_tbl;
+CREATE TABLE carrier_universe_token_tbl AS
+SELECT DISTINCT u.name, t.tok,
+       carrier_name_token_count(u.name) AS tok_count
+FROM carrier_universe_tbl u, unnest(carrier_name_tokens_strict(u.name)) AS t(tok);
+
+CREATE INDEX carrier_universe_token_ix ON carrier_universe_token_tbl (tok);
+ANALYZE carrier_universe_token_tbl;
+
+-- ---------------------------------------------------------------------------
+-- MEMBERSHIP. This has to use THE SAME RULE AS MATCHING, or it throws away
+-- correct work.
+--
+-- The first version tested compact-key equality alone, and that is far
+-- stricter than carrier_name_tier. Measured on Boris's database 2026-11-22,
+-- every one of these pairs scores tier 1 and so would be matched, yet the
+-- compact keys disagree and the holder was therefore ruled not a carrier:
+--
+--   AT&T Enterprises, LLC      against AT&T
+--   Google LLC                 against Google Fiber
+--   Cogent Communications, LLC against Cogent Communication
+--   Zayo Bandwidth             against ZAYO GROUP LLC
+--   LUMOS Networks, Inc.       against lumos
+--   Cablevision Lightpath LLC  against Lightpath
+--   Metronet                   against Metronet Holdings
+--
+-- The consequence was not theoretical. His run deleted 769 brand decisions
+-- covering 736 ASNs and 373,410 ZIP-capable ranges, AS7018 AT&T among them
+-- at 263,102 ranges, because the holder of each had been judged not to be a
+-- carrier by a test the matcher itself would have passed.
+--
+-- So membership now holds when ANY of the three paths that make two names
+-- the same name holds:
+--   1. the compact keys agree, which is the old test and still the cheapest;
+--   2. the token keys agree, which is tier 1 by token equality and catches
+--      AT&T Enterprises, LLC;
+--   3. the name scores tier 1 or 2 against some universe name, which is
+--      exactly the condition the matcher uses, and catches the containment
+--      cases such as AT&T WorldNet against AT&T.
+--
+-- Path 3 subsumes 1 and 2; they are kept because they are index lookups and
+-- answer most names without touching the token join.
+--
+-- The prefilter on path 3 is exact rather than approximate. Tier 1 and 2
+-- both require that one name's token set is contained in the other's, so the
+-- count of shared tokens must equal the smaller of the two token counts.
+-- Prefiltering on that cannot drop a pair the tier rule would accept.
+--
+-- A name with no informative token reaches the universe only through path 1,
+-- because the token join produces no rows for it. That is the same
+-- fallback-is-exact-match-only rule Boris gave for the matcher.
+-- ---------------------------------------------------------------------------
 CREATE OR REPLACE FUNCTION carrier_name_in_universe(raw text)
 RETURNS boolean AS $fn$
 SELECT carrier_name_compact(raw) IS NOT NULL
-   AND EXISTS (SELECT 1 FROM carrier_universe_tbl u
-               WHERE u.name_key = carrier_name_compact(raw));
+   AND (EXISTS (SELECT 1 FROM carrier_universe_tbl u
+                WHERE u.name_key = carrier_name_compact(raw))
+     OR (carrier_name_token_key(raw) IS NOT NULL
+         AND EXISTS (SELECT 1 FROM carrier_universe_tbl u
+                     WHERE u.token_key = carrier_name_token_key(raw)))
+     OR EXISTS (
+          SELECT 1
+          FROM (SELECT ut.name, ut.tok_count,
+                       count(DISTINCT ut.tok) AS shared
+                FROM unnest(carrier_name_tokens_strict(raw)) AS t(tok)
+                JOIN carrier_universe_token_tbl ut ON ut.tok = t.tok
+                GROUP BY ut.name, ut.tok_count) c
+          WHERE c.shared = least(c.tok_count, carrier_name_token_count(raw))
+            AND carrier_name_tier(raw, c.name) IN (1, 2)));
 $fn$ LANGUAGE sql STABLE;
 
 
@@ -709,14 +815,31 @@ FROM carrier_name_regression_tbl;
 -- ---------------------------------------------------------------------------
 -- The persistent decision map, keyed on the ASN.
 -- ---------------------------------------------------------------------------
+-- CREATED IN ITS MIGRATED SHAPE. One row per ASN PER BRAND, enforced by the
+-- composite unique index below rather than by a primary key on asn, because
+-- a carrier can own several brands. This file used to create it with
+-- asn as the primary key, which meant a database built from scratch had to
+-- run asn_map_multibrand_migration.sql before carrier_rulings.sql would do
+-- anything; found 2026-11-23 on the test cluster, where carrier_rulings.sql
+-- blocked on exactly that. The migration is still needed for Boris's
+-- existing database and is a no-op against a table created here.
 CREATE TABLE IF NOT EXISTS asn_bdc_brand_map_tbl (
-    asn             bigint PRIMARY KEY,
+    asn             bigint NOT NULL,
     decision        text NOT NULL
                     CHECK (decision IN ('brand', 'not_a_carrier', 'out_of_scope', 'unknown')),
     bdc_brand_name  text,
     bdc_provider_id integer,
     note            text,
     approved_at     timestamptz NOT NULL DEFAULT now());
+
+-- Only on a table this file just created. Against Boris's database both
+-- already exist, put there by asn_map_multibrand_migration.sql, and these
+-- statements do nothing.
+CREATE UNIQUE INDEX IF NOT EXISTS asn_bdc_brand_map_uq
+    ON asn_bdc_brand_map_tbl (asn, coalesce(bdc_brand_name, ''),
+                              coalesce(bdc_provider_id, 0));
+CREATE INDEX IF NOT EXISTS asn_bdc_brand_map_asn_ix
+    ON asn_bdc_brand_map_tbl (asn);
 
 COMMENT ON TABLE asn_bdc_brand_map_tbl IS
 'Boris-approved mapping from an AS number to a BDC brand. The ASN is the key because it is the only hard identifier on the ip-api side: one decision per operator rather than one per spelling of its name. PERSISTENT. carrier_asn_match.sql never drops or truncates it and proposes candidates only for ASNs absent from it, which is what makes new carriers integrate automatically as the remaining half of the decomposed ranges is probed. decision out_of_scope records Boris 2026-11-20: a non-carrier is localised by ip-api to its own premises, so it needs no headend inference at all.';

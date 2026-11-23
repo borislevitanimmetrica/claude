@@ -97,6 +97,59 @@ SELECT CASE WHEN carrier_name_in_universe(a.as_operator) THEN 'in_universe'
 FROM ipapi_asn_tbl a
 GROUP BY 1 ORDER BY 3 DESC;
 
+-- ---------------------------------------------------------------------------
+-- WHICH PATH ADMITTED EACH NAME.
+--
+-- Membership holds on compact-key agreement, token-key agreement or a tier 1
+-- or 2 score against a universe name. The first version tested the compact
+-- key alone and that is stricter than the matcher, so it excluded holders
+-- the matcher matches; on 2026-11-22 the cleanup then deleted 769 of their
+-- decisions, 373,410 ZIP-capable ranges, AS7018 AT&T included. The rows
+-- counted under tier_rule below are exactly the ones that version lost.
+-- ---------------------------------------------------------------------------
+\echo
+\echo Which path admits each eligible ASN. tier_rule counts the ASNs that a
+\echo compact-key-only test would have thrown away.
+\echo
+WITH p AS (
+    SELECT a.asn, a.zip_capable_ranges,
+           EXISTS (SELECT 1 FROM carrier_universe_tbl u
+                   WHERE u.name_key = carrier_name_compact(a.as_operator)) AS by_compact,
+           EXISTS (SELECT 1 FROM carrier_universe_tbl u
+                   WHERE u.token_key = carrier_name_token_key(a.as_operator)
+                     AND carrier_name_token_key(a.as_operator) IS NOT NULL) AS by_token,
+           carrier_name_in_universe(a.as_operator) AS eligible
+    FROM ipapi_asn_tbl a
+)
+SELECT CASE WHEN NOT eligible          THEN 'not in the universe'
+            WHEN by_compact            THEN 'compact key'
+            WHEN by_token              THEN 'token key'
+            ELSE                            'tier rule' END AS admitted_by,
+       count(*) AS asns, sum(zip_capable_ranges) AS zip_capable_ranges
+FROM p GROUP BY 1 ORDER BY 3 DESC NULLS LAST;
+
+\echo
+\echo The ASNs admitted ONLY by the tier rule, largest first. Each is a
+\echo holder whose name matches a carrier name without the two keys agreeing.
+\echo
+SELECT a.asn, left(a.as_operator, 40) AS as_operator,
+       left((SELECT u.name FROM carrier_universe_token_tbl ut
+             JOIN carrier_universe_tbl u ON u.name = ut.name
+             WHERE ut.tok = ANY (carrier_name_tokens_strict(a.as_operator))
+               AND carrier_name_tier(a.as_operator, ut.name) IN (1, 2)
+             ORDER BY carrier_name_tier(a.as_operator, ut.name), u.name
+             LIMIT 1), 34) AS matched_universe_name,
+       a.zip_capable_ranges
+FROM ipapi_asn_tbl a
+WHERE carrier_name_in_universe(a.as_operator)
+  AND NOT EXISTS (SELECT 1 FROM carrier_universe_tbl u
+                  WHERE u.name_key = carrier_name_compact(a.as_operator))
+  AND NOT EXISTS (SELECT 1 FROM carrier_universe_tbl u
+                  WHERE u.token_key = carrier_name_token_key(a.as_operator)
+                    AND carrier_name_token_key(a.as_operator) IS NOT NULL)
+ORDER BY a.zip_capable_ranges DESC NULLS LAST
+LIMIT 40;
+
 \echo
 \echo The largest ASNs the restriction EXCLUDES. Check that none of these is
 \echo a carrier you expect to target. Anything here that is a carrier means
