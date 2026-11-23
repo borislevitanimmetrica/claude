@@ -2254,3 +2254,83 @@ is what put those forty rows in front of him; it now asserts the candidate
 count is zero while the name rule still scores the pair 1, so the case tests
 the scope rule rather than the string rule. A blanket check also fails the
 file if ANY candidate or entity proposal lacks wireline plant.
+
+---
+
+## 2026-11-22: the carrier universe, and the DIA-customer leak I opened
+
+### 1-800-Flowers was my error, twice over
+
+Boris: "1-800-Flowers, ASNs 20190 and 54986, are related to Comcast and
+Verizon, respectively, probably an error. But 1-800-Flowers is NOT a carrier
+and is out of scope."
+
+When I made the entity layer resolve the ip-api side on the ISP name as well
+as the operator name, I wrote in the file that it was safe "because it is
+checked against a name Boris has already ruled belongs to this entity". That
+reasoning was wrong, and it is the Amazon-to-Windstream failure again through
+a door I opened immediately after closing the first one. 1-800-Flowers buys
+transit from Comcast, so ip-api reports its ISP as Comcast, the name matched
+the comcast entity, and the ASN was mapped to Xfinity plant.
+
+The ISP arm now additionally requires the HOLDER of the ASN to be a carrier.
+
+### The carrier universe
+
+Boris: "You have a table with carrier names. You have the FCC Form 499a list
+from me. Restrict carriers to the superset of those sources and do not
+process the rest."
+
+`carrier_universe_tbl` is built in `carrier_asn_match.sql` from every
+DISCOVERED name column of `bdc_carrier_tbl` (columns found from
+`information_schema` and printed, not assumed), from `fcc499_filer_tbl` when
+it exists, and from the ip-api-side entity names. Eligibility is tested on
+the AS OPERATOR NAME ONLY; testing it on the ISP name would admit every DIA
+customer of every carrier, which is the bug being fixed.
+
+**A BDC-only universe cuts Comcast, and I verified this before shipping.**
+`Comcast Cable Communications, LLC` is not a BDC brand, which is the entire
+trade-name problem. On the fixture a BDC-only universe reduced the candidates
+to three and lost the Comcast-to-Xfinity match. The entity names are
+therefore a third source. They are still Boris's rulings, recorded in a
+different table, and they are reported under their own source so the universe
+stays auditable. Consequence: the entity seed moved out of `carrier_entity.sql`
+and into `carrier_asn_match.sql`, ahead of the universe build, because the
+universe depends on it.
+
+**The Form 499a list is still not on disk.** Without it the universe is BDC
+names plus Boris's entity rulings, so any carrier that files with the FCC and
+appears in neither is excluded and silently not processed. The exclusion list
+is printed, largest first, for exactly this reason.
+
+### Verizon, not Frontier
+
+Boris: "Verizon rather than Frontier, although Frontier wouldn't disrupt the
+plan." `carrier_rulings.sql` writes AS5650, 46690, 3593, 26127, 32587 and
+7011 to the Verizon brand, and AS20190 and 54986 to not_a_carrier.
+
+### The deletion, and its pre-mortem
+
+`carrier_rulings.sql` deletes brand decisions for ASNs outside the universe.
+What it can destroy: machine-written `decision = 'brand'` rows only, all
+reproducible by re-running the two loaders. What it cannot reach: every
+`not_a_carrier` and `out_of_scope` row, because the DELETE is restricted to
+`decision = 'brand'` and the count of the other two is compared before and
+after, aborting the transaction if it moved. Every doomed row is written to
+`/home/boris/geo/carrier_map_removed.tsv` before deletion.
+
+Verified on the fixture by planting a contaminated row: one row removed,
+three rulings untouched, zero brand decisions left outside the universe.
+
+### Measured on Boris's 2026-11-22 run, before the restriction
+
+| state | ASNs | ZIP-capable ranges | share |
+|---|---|---|---|
+| approved | 1,603 | 1,269,984 | 67.7% |
+| no match from any source | 17,885 | 307,705 | 16.4% |
+| retired | 151 | 269,006 | 14.3% |
+| conflict, needs a ruling | 20 | 21,502 | 1.1% |
+| proposed | 235 | 7,393 | 0.4% |
+
+The 67.7% is an overstatement: it contains the DIA-customer rows the
+restriction now removes. The next run prints the corrected figure.

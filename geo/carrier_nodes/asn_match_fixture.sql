@@ -177,6 +177,17 @@ SELECT 'Zebra Telephone', 'Aardvark Telephone',
        'AS99008 Aardvark Telephone Co', 'f', now()
 FROM generate_series(1, 20);
 
+-- THE DIA CUSTOMER. An enterprise that buys transit from Comcast, so ip-api
+-- reports its ISP as Comcast while the ASN is held by the enterprise. It
+-- must NOT inherit Comcast plant. Boris 2026-11-22 found this as
+-- 1-800-Flowers at ASNs 20190 and 54986, mapped to Comcast and Verizon,
+-- after I added the ISP arm to the entity layer and wrongly argued it was
+-- safe. The guard is the carrier universe: this name is in no carrier list.
+INSERT INTO ip2city_dbiplite_probe_tbl (isp, org, "as", mobile_transit, ran_at)
+SELECT 'Comcast Cable Communications', 'Flowers Direct',
+       'AS99009 Flowers Direct Retail, Inc.', 'f', now()
+FROM generate_series(1, 350);
+
 -- THE TRADE NAME. Must produce no candidate from any string rule, and must
 -- be reachable through the entity layer.
 INSERT INTO ip2city_dbiplite_probe_tbl (isp, org, "as", mobile_transit, ran_at)

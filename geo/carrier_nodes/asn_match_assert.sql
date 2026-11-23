@@ -332,6 +332,31 @@ BEGIN
         failures := failures || 'carrier_pair_is_unrelated does not recognise a pair that is in the table'::text;
     END IF;
 
+    -- A DIA CUSTOMER MUST NOT INHERIT ITS UPSTREAM CARRIER'S PLANT.
+    -- AS99009 is an enterprise whose ip-api ISP is Comcast. The entity ISP
+    -- arm would reach the comcast entity through that name; the carrier
+    -- universe is what stops it, because the holder of the ASN is in no
+    -- carrier list. This is the 1-800-Flowers case.
+    IF carrier_name_in_universe('Flowers Direct Retail, Inc.') THEN
+        failures := failures || 'the fixture DIA customer is in the carrier universe, so this case cannot test the guard'::text;
+    END IF;
+
+    SELECT count(*) INTO n FROM carrier_entity_proposal_tbl WHERE asn = 99009;
+    IF n <> 0 THEN
+        failures := failures || format('AS99009 is a DIA customer of Comcast and got %s entity proposals. It must get none; its ISP name is its upstream carrier.', n);
+    END IF;
+
+    SELECT count(*) INTO n FROM asn_brand_candidate_tbl WHERE asn = 99009;
+    IF n <> 0 THEN
+        failures := failures || format('AS99009 got %s string candidates despite being outside the carrier universe', n);
+    END IF;
+
+    -- and the carrier whose name IS in the universe still gets through.
+    IF NOT carrier_name_in_universe('Comcast Cable Communications, LLC')
+       AND NOT carrier_name_in_universe('Xfinity') THEN
+        failures := failures || 'neither Comcast name is in the universe, so the restriction has cut out a real carrier'::text;
+    END IF;
+
     -- Verizon and Frontier must stay SEPARATE entities, or a Frontier ASN
     -- gains the right to select Verizon plant.
     SELECT count(*) INTO n FROM carrier_entity_name_tbl

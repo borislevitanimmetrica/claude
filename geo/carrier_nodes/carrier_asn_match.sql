@@ -358,6 +358,226 @@ END
 $gate$;
 
 -- ---------------------------------------------------------------------------
+-- THE ENTITY SEED. Boris's rulings about which names belong to which network.
+--
+-- This lives HERE, ahead of the carrier universe, because the universe is
+-- built partly from it. Restricting the universe to BDC names alone cuts out
+-- Comcast: its operator name, Comcast Cable Communications, LLC, is not a
+-- BDC brand, which is the whole reason the entity layer exists. Verified on
+-- the fixture, where a BDC-only universe reduced the candidates to three and
+-- lost the Comcast to Xfinity match entirely.
+--
+-- carrier_entity.sql does the resolving and proposing and now requires these
+-- tables to exist.
+-- ---------------------------------------------------------------------------
+DROP TABLE IF EXISTS carrier_entity_name_tbl;
+DROP TABLE IF EXISTS carrier_entity_tbl;
+
+CREATE TABLE carrier_entity_tbl (
+    entity_key   text PRIMARY KEY,
+    display_name text NOT NULL,
+    note         text);
+
+CREATE TABLE carrier_entity_name_tbl (
+    entity_key text NOT NULL REFERENCES carrier_entity_tbl(entity_key),
+    side       text NOT NULL CHECK (side IN ('ipapi', 'bdc')),
+    name       text NOT NULL,
+    status     text NOT NULL CHECK (status IN ('confirmed', 'proposed')),
+    PRIMARY KEY (side, name));
+
+COMMENT ON TABLE carrier_entity_name_tbl IS
+'Names belonging to a network entity, several per side. The primary key is (side, name) rather than (entity_key, side, name) on purpose: one name must not belong to two entities, and the database should refuse that rather than let it be reported later. status confirmed means Boris confirmed the trade name; proposed means I supplied the spelling and it needs his eye.';
+
+INSERT INTO carrier_entity_tbl VALUES
+ ('comcast',       'Comcast',            'Boris confirmed the trade name. BDC may hold either label.'),
+ ('charter',       'Charter / Spectrum', 'Boris: both names appear on the ip-api side depending on proximity to the customer.'),
+ ('lumen',         'Lumen',              'Level 3 and CenturyLink are the same network under the Lumen name.'),
+ ('astound',       'Astound Broadband',  'RCN, Grande, Wave, enTouch and Digital West were unified under this brand in January 2022.'),
+ ('cableone',      'Cable One',          'Trading as Sparklight since 2019.'),
+ ('altice',        'Optimum',            'Cablevision and Suddenlink both became Optimum. Lightpath is deliberately NOT included: it was separated from Altice and I have not verified its current footprint ownership.'),
+ ('wow',           'WideOpenWest',       'Trades as WOW!.'),
+ ('cincinnatibell','Cincinnati Bell',    'Trading as altafiber since 2022.'),
+ ('midco',         'Midco',              'Midcontinent Communications trades as Midco.'),
+ ('mediacom',      'Mediacom',           'Xtream is a Mediacom product name; included as proposed only.'),
+ ('frontier',      'Frontier',           'Owned by Verizon since 20 January 2026 and kept SEPARATE from the verizon entity on purpose. Its plant is the plant Verizon divested in 2010 and 2016, so the two footprints are complementary, not interchangeable.'),
+ ('verizon',       'Verizon',            'Kept separate from frontier. See carrier_ownership.md.');
+
+-- ip-api side. Spellings taken from Boris's own 2026-11-22 run, so these are
+-- observed rather than guessed.
+INSERT INTO carrier_entity_name_tbl (entity_key, side, name, status) VALUES
+ ('comcast','ipapi','Comcast Cable Communications, LLC','confirmed'),
+ ('charter','ipapi','Charter Communications LLC','confirmed'),
+ ('charter','ipapi','Charter Communications Inc','confirmed'),
+ ('charter','ipapi','Charter Communications, Inc','confirmed'),
+ ('charter','ipapi','Spectrum','confirmed'),
+ ('lumen','ipapi','Level 3 Parent, LLC','confirmed'),
+ ('lumen','ipapi','Level 3 Communications, Inc.','confirmed'),
+ ('lumen','ipapi','CenturyLink Communications, LLC','proposed'),
+ ('astound','ipapi','RCN','confirmed'),
+ ('astound','ipapi','Wave Broadband','confirmed'),
+ ('astound','ipapi','Grande Communications Networks, LLC','confirmed'),
+ ('cableone','ipapi','CABLE ONE, INC.','confirmed'),
+ ('altice','ipapi','Cablevision Systems Corp.','confirmed'),
+ ('altice','ipapi','Optimum','confirmed'),
+ ('altice','ipapi','Suddenlink Communications','proposed'),
+ ('wow','ipapi','WideOpenWest Finance LLC','confirmed'),
+ ('cincinnatibell','ipapi','Cincinnati Bell Telephone Company LLC','confirmed'),
+ ('midco','ipapi','Midcontinent Communications','confirmed'),
+ ('mediacom','ipapi','Mediacom Communications Corp','confirmed'),
+ ('frontier','ipapi','Frontier Communications','proposed'),
+ ('verizon','ipapi','Verizon Business','confirmed');
+
+-- BDC side. Boris 2026-11-22: BDC may hold the legal label as well as the
+-- trade name, so BOTH are listed for every entity and the report below says
+-- which of them actually exist in bdc_carrier_tbl.
+INSERT INTO carrier_entity_name_tbl (entity_key, side, name, status) VALUES
+ ('comcast','bdc','Xfinity','confirmed'),
+ ('comcast','bdc','Comcast','proposed'),
+ ('charter','bdc','Spectrum','confirmed'),
+ ('charter','bdc','Charter Communications','proposed'),
+ ('lumen','bdc','Lumen','confirmed'),
+ ('lumen','bdc','CenturyLink','confirmed'),
+ ('lumen','bdc','Quantum Fiber','proposed'),
+ ('lumen','bdc','Level 3','proposed'),
+ ('astound','bdc','Astound Broadband','confirmed'),
+ ('astound','bdc','RCN','proposed'),
+ ('astound','bdc','Wave','proposed'),
+ ('astound','bdc','Grande','proposed'),
+ ('astound','bdc','Digital West','proposed'),
+ ('cableone','bdc','Sparklight','confirmed'),
+ ('cableone','bdc','Cable One','proposed'),
+ ('altice','bdc','Optimum','confirmed'),
+ ('altice','bdc','Suddenlink','proposed'),
+ ('wow','bdc','WOW!','confirmed'),
+ ('wow','bdc','WideOpenWest','proposed'),
+ ('cincinnatibell','bdc','altafiber','confirmed'),
+ ('cincinnatibell','bdc','Cincinnati Bell','proposed'),
+ ('midco','bdc','Midco','confirmed'),
+ ('midco','bdc','Midcontinent Communications','proposed'),
+ ('mediacom','bdc','Mediacom','confirmed'),
+ ('mediacom','bdc','Xtream','proposed'),
+ ('frontier','bdc','Frontier','confirmed'),
+ ('verizon','bdc','Verizon','confirmed');
+
+ANALYZE carrier_entity_tbl;
+ANALYZE carrier_entity_name_tbl;
+
+-- ---------------------------------------------------------------------------
+-- THE CARRIER UNIVERSE. Boris 2026-11-22: "You have a table with carrier
+-- names. You have the FCC Form 499a list from me. Restrict carriers to the
+-- superset of those sources and do not process the rest."
+--
+-- Built HERE rather than in its own file because it needs
+-- carrier_name_compact(), which is defined above. carrier_universe.sql is
+-- the report over what this builds.
+--
+-- Eligibility is tested on the AS OPERATOR NAME ONLY. Testing it on the
+-- ip-api ISP name would admit every DIA customer of every carrier, which is
+-- exactly how 1-800-Flowers came to be mapped to Comcast plant.
+-- ---------------------------------------------------------------------------
+DROP TABLE IF EXISTS carrier_universe_tbl;
+CREATE TABLE carrier_universe_tbl (
+    name_key text NOT NULL,
+    name     text NOT NULL,
+    source   text NOT NULL,
+    PRIMARY KEY (name_key, source));
+
+COMMENT ON TABLE carrier_universe_tbl IS
+'The superset of names that are allowed to be carriers: every name column of bdc_carrier_tbl plus the FCC Form 499a filers when loaded. Boris 2026-11-22: restrict carriers to the superset of those sources and do not process the rest. Eligibility is tested on the AS OPERATOR name only; testing it on the ip-api ISP name would admit every DIA customer of every carrier, which is how 1-800-Flowers was mapped to Comcast.';
+
+-- Build from every DISCOVERED name column of bdc_carrier_tbl. brand_name is
+-- verified to exist by the matcher's own precheck; anything else is found
+-- here and reported, so no column name is assumed.
+DO $build$
+DECLARE
+    col     record;
+    used    text[] := ARRAY[]::text[];
+    added   bigint;
+BEGIN
+    FOR col IN
+        SELECT column_name
+        FROM information_schema.columns
+        WHERE table_name = 'bdc_carrier_tbl'
+          AND data_type IN ('text', 'character varying', 'character')
+          AND (column_name = 'brand_name' OR column_name LIKE '%name%')
+        ORDER BY column_name
+    LOOP
+        EXECUTE format($q$
+            INSERT INTO carrier_universe_tbl (name_key, name, source)
+            SELECT DISTINCT carrier_name_compact(c.%1$I), c.%1$I, 'bdc.%1$s'
+            FROM bdc_carrier_tbl c
+            WHERE c.%1$I IS NOT NULL AND btrim(c.%1$I) <> ''
+              AND carrier_name_compact(c.%1$I) IS NOT NULL
+            ON CONFLICT DO NOTHING $q$, col.column_name);
+        GET DIAGNOSTICS added = ROW_COUNT;
+        used := used || format('%s (%s names)', col.column_name, added);
+    END LOOP;
+
+    IF cardinality(used) = 0 THEN
+        RAISE EXCEPTION 'no name columns found on bdc_carrier_tbl, so no universe could be built. Nothing else will run.';
+    END IF;
+    RAISE NOTICE 'built from bdc_carrier_tbl columns: %', array_to_string(used, ', ');
+END
+$build$;
+
+-- And the Form 499a filers, if they are loaded. Column names are discovered
+-- the same way rather than assumed, because I have not seen the file.
+DO $f499$
+DECLARE col record; used text[] := ARRAY[]::text[]; added bigint;
+BEGIN
+    IF NOT EXISTS (SELECT 1 FROM information_schema.tables
+                   WHERE table_name = 'fcc499_filer_tbl') THEN
+        RAISE NOTICE 'fcc499_filer_tbl absent: the universe is BDC names only. Every carrier that files with the FCC but does not appear in BDC is therefore OUT of the universe and will not be processed.';
+        RETURN;
+    END IF;
+    FOR col IN
+        SELECT column_name FROM information_schema.columns
+        WHERE table_name = 'fcc499_filer_tbl'
+          AND data_type IN ('text', 'character varying', 'character')
+          AND column_name LIKE '%name%'
+        ORDER BY column_name
+    LOOP
+        EXECUTE format($q$
+            INSERT INTO carrier_universe_tbl (name_key, name, source)
+            SELECT DISTINCT carrier_name_compact(f.%1$I), f.%1$I, 'fcc499.%1$s'
+            FROM fcc499_filer_tbl f
+            WHERE f.%1$I IS NOT NULL AND btrim(f.%1$I) <> ''
+              AND carrier_name_compact(f.%1$I) IS NOT NULL
+            ON CONFLICT DO NOTHING $q$, col.column_name);
+        GET DIAGNOSTICS added = ROW_COUNT;
+        used := used || format('%s (%s names)', col.column_name, added);
+    END LOOP;
+    RAISE NOTICE 'built from fcc499_filer_tbl columns: %', array_to_string(used, ', ');
+END
+$f499$;
+
+-- THIRD SOURCE, AND IT IS NOT ONE BORIS NAMED. The ip-api-side names he
+-- confirmed for each entity. Without it the restriction removes Comcast,
+-- Charter, Level 3, Cablevision, RCN, Wave, Grande, Cable One and
+-- Midcontinent, because their operator names are not BDC brands; that is the
+-- trade-name problem the entity layer was built for. These names are still
+-- his rulings, just recorded in a different table, and they are reported
+-- under their own source so the universe is auditable.
+INSERT INTO carrier_universe_tbl (name_key, name, source)
+SELECT DISTINCT carrier_name_compact(n.name), n.name,
+       'entity.' || n.status
+FROM carrier_entity_name_tbl n
+WHERE n.side = 'ipapi'
+  AND carrier_name_compact(n.name) IS NOT NULL
+ON CONFLICT DO NOTHING;
+
+CREATE INDEX carrier_universe_key_ix ON carrier_universe_tbl (name_key);
+ANALYZE carrier_universe_tbl;
+
+CREATE OR REPLACE FUNCTION carrier_name_in_universe(raw text)
+RETURNS boolean AS $fn$
+SELECT carrier_name_compact(raw) IS NOT NULL
+   AND EXISTS (SELECT 1 FROM carrier_universe_tbl u
+               WHERE u.name_key = carrier_name_compact(raw));
+$fn$ LANGUAGE sql STABLE;
+
+
+-- ---------------------------------------------------------------------------
 -- THE UNRELATED LIST. Boris 2026-11-22: "Delete the records I marked as
 -- unrelated and ensure they are not matched."
 --
@@ -632,6 +852,11 @@ WITH todo AS (
       -- and deliberately is not folded into 'f'.
       AND (coalesce(a.zip_capable_ranges, 0) > 0
         OR coalesce(a.unclassified_ranges, 0) > 0)
+      -- AND THE HOLDER OF THE ASN MUST BE A CARRIER. Boris 2026-11-22:
+      -- restrict carriers to the superset of the BDC names and the Form 499a
+      -- filers, and do not process the rest. Tested on the operator name,
+      -- never the ISP name.
+      AND carrier_name_in_universe(a.as_operator)
 ), brand AS (
     -- ONLY BRANDS WITH WIRELINE PLANT. Boris 2026-11-22: "Wireless is out of
     -- scope for the ITDK-BDC subsystem." A brand that appears only under

@@ -55,101 +55,27 @@ BEGIN
     IF missing IS NOT NULL THEN
         RAISE EXCEPTION 'missing %. Run carrier_asn_match.sql first. Nothing was built.', missing;
     END IF;
-    IF NOT EXISTS (SELECT 1 FROM pg_proc WHERE proname = 'carrier_name_compact') THEN
-        RAISE EXCEPTION 'carrier_name_compact() is not defined. Run carrier_asn_match.sql first. Nothing was built.';
+    IF NOT EXISTS (SELECT 1 FROM pg_proc WHERE proname = 'carrier_name_compact')
+    OR NOT EXISTS (SELECT 1 FROM pg_proc WHERE proname = 'carrier_name_in_universe') THEN
+        RAISE EXCEPTION 'the carrier name functions are not defined. Run carrier_asn_match.sql first. Nothing was built.';
+    END IF;
+    IF NOT EXISTS (SELECT 1 FROM information_schema.tables
+                   WHERE table_name = 'carrier_universe_tbl') THEN
+        RAISE EXCEPTION 'carrier_universe_tbl does not exist. Run carrier_asn_match.sql first. Nothing was built.';
     END IF;
     RAISE NOTICE 'precheck passed';
 END
 $precheck$;
 
-DROP TABLE IF EXISTS carrier_entity_name_tbl;
-DROP TABLE IF EXISTS carrier_entity_tbl;
-
-CREATE TABLE carrier_entity_tbl (
-    entity_key   text PRIMARY KEY,
-    display_name text NOT NULL,
-    note         text);
-
-CREATE TABLE carrier_entity_name_tbl (
-    entity_key text NOT NULL REFERENCES carrier_entity_tbl(entity_key),
-    side       text NOT NULL CHECK (side IN ('ipapi', 'bdc')),
-    name       text NOT NULL,
-    status     text NOT NULL CHECK (status IN ('confirmed', 'proposed')),
-    PRIMARY KEY (side, name));
-
-COMMENT ON TABLE carrier_entity_name_tbl IS
-'Names belonging to a network entity, several per side. The primary key is (side, name) rather than (entity_key, side, name) on purpose: one name must not belong to two entities, and the database should refuse that rather than let it be reported later. status confirmed means Boris confirmed the trade name; proposed means I supplied the spelling and it needs his eye.';
-
-INSERT INTO carrier_entity_tbl VALUES
- ('comcast',       'Comcast',            'Boris confirmed the trade name. BDC may hold either label.'),
- ('charter',       'Charter / Spectrum', 'Boris: both names appear on the ip-api side depending on proximity to the customer.'),
- ('lumen',         'Lumen',              'Level 3 and CenturyLink are the same network under the Lumen name.'),
- ('astound',       'Astound Broadband',  'RCN, Grande, Wave, enTouch and Digital West were unified under this brand in January 2022.'),
- ('cableone',      'Cable One',          'Trading as Sparklight since 2019.'),
- ('altice',        'Optimum',            'Cablevision and Suddenlink both became Optimum. Lightpath is deliberately NOT included: it was separated from Altice and I have not verified its current footprint ownership.'),
- ('wow',           'WideOpenWest',       'Trades as WOW!.'),
- ('cincinnatibell','Cincinnati Bell',    'Trading as altafiber since 2022.'),
- ('midco',         'Midco',              'Midcontinent Communications trades as Midco.'),
- ('mediacom',      'Mediacom',           'Xtream is a Mediacom product name; included as proposed only.'),
- ('frontier',      'Frontier',           'Owned by Verizon since 20 January 2026 and kept SEPARATE from the verizon entity on purpose. Its plant is the plant Verizon divested in 2010 and 2016, so the two footprints are complementary, not interchangeable.'),
- ('verizon',       'Verizon',            'Kept separate from frontier. See carrier_ownership.md.');
-
--- ip-api side. Spellings taken from Boris's own 2026-11-22 run, so these are
--- observed rather than guessed.
-INSERT INTO carrier_entity_name_tbl (entity_key, side, name, status) VALUES
- ('comcast','ipapi','Comcast Cable Communications, LLC','confirmed'),
- ('charter','ipapi','Charter Communications LLC','confirmed'),
- ('charter','ipapi','Charter Communications Inc','confirmed'),
- ('charter','ipapi','Charter Communications, Inc','confirmed'),
- ('charter','ipapi','Spectrum','confirmed'),
- ('lumen','ipapi','Level 3 Parent, LLC','confirmed'),
- ('lumen','ipapi','Level 3 Communications, Inc.','confirmed'),
- ('lumen','ipapi','CenturyLink Communications, LLC','proposed'),
- ('astound','ipapi','RCN','confirmed'),
- ('astound','ipapi','Wave Broadband','confirmed'),
- ('astound','ipapi','Grande Communications Networks, LLC','confirmed'),
- ('cableone','ipapi','CABLE ONE, INC.','confirmed'),
- ('altice','ipapi','Cablevision Systems Corp.','confirmed'),
- ('altice','ipapi','Optimum','confirmed'),
- ('altice','ipapi','Suddenlink Communications','proposed'),
- ('wow','ipapi','WideOpenWest Finance LLC','confirmed'),
- ('cincinnatibell','ipapi','Cincinnati Bell Telephone Company LLC','confirmed'),
- ('midco','ipapi','Midcontinent Communications','confirmed'),
- ('mediacom','ipapi','Mediacom Communications Corp','confirmed'),
- ('frontier','ipapi','Frontier Communications','proposed'),
- ('verizon','ipapi','Verizon Business','confirmed');
-
--- BDC side. Boris 2026-11-22: BDC may hold the legal label as well as the
--- trade name, so BOTH are listed for every entity and the report below says
--- which of them actually exist in bdc_carrier_tbl.
-INSERT INTO carrier_entity_name_tbl (entity_key, side, name, status) VALUES
- ('comcast','bdc','Xfinity','confirmed'),
- ('comcast','bdc','Comcast','proposed'),
- ('charter','bdc','Spectrum','confirmed'),
- ('charter','bdc','Charter Communications','proposed'),
- ('lumen','bdc','Lumen','confirmed'),
- ('lumen','bdc','CenturyLink','confirmed'),
- ('lumen','bdc','Quantum Fiber','proposed'),
- ('lumen','bdc','Level 3','proposed'),
- ('astound','bdc','Astound Broadband','confirmed'),
- ('astound','bdc','RCN','proposed'),
- ('astound','bdc','Wave','proposed'),
- ('astound','bdc','Grande','proposed'),
- ('astound','bdc','Digital West','proposed'),
- ('cableone','bdc','Sparklight','confirmed'),
- ('cableone','bdc','Cable One','proposed'),
- ('altice','bdc','Optimum','confirmed'),
- ('altice','bdc','Suddenlink','proposed'),
- ('wow','bdc','WOW!','confirmed'),
- ('wow','bdc','WideOpenWest','proposed'),
- ('cincinnatibell','bdc','altafiber','confirmed'),
- ('cincinnatibell','bdc','Cincinnati Bell','proposed'),
- ('midco','bdc','Midco','confirmed'),
- ('midco','bdc','Midcontinent Communications','proposed'),
- ('mediacom','bdc','Mediacom','confirmed'),
- ('mediacom','bdc','Xtream','proposed'),
- ('frontier','bdc','Frontier','confirmed'),
- ('verizon','bdc','Verizon','confirmed');
+DO $haveseed$
+BEGIN
+    IF NOT EXISTS (SELECT 1 FROM information_schema.tables
+                   WHERE table_name = 'carrier_entity_name_tbl') THEN
+        RAISE EXCEPTION 'carrier_entity_name_tbl does not exist. The entity seed now lives in carrier_asn_match.sql, which must run first because the carrier universe is built from it. Nothing was built.';
+    END IF;
+    RAISE NOTICE 'entity seed present';
+END
+$haveseed$;
 
 ANALYZE carrier_entity_tbl;
 ANALYZE carrier_entity_name_tbl;
@@ -197,13 +123,20 @@ FROM carrier_entity_name_tbl n
 JOIN ipapi_asn_tbl a
   ON carrier_name_compact(a.as_operator) = carrier_name_compact(n.name)
 WHERE n.side = 'ipapi'
+  AND carrier_name_in_universe(a.as_operator)
 UNION ALL
+-- The ISP arm, with the guard that was missing. An ASN may be reached by its
+-- ISP name ONLY IF THE HOLDER OF THE ASN IS ITSELF A CARRIER. Without this,
+-- every DIA customer of Comcast inherits Comcast plant, which is how
+-- 1-800-Flowers, ASNs 20190 and 54986, reached Comcast and Verizon. Boris
+-- found that; my note claiming the ISP arm was safe here was wrong.
 SELECT n.entity_key, n.side, n.name, n.status,
        NULL, NULL, a.asn, a.zip_capable_ranges, 'isp'
 FROM carrier_entity_name_tbl n
 JOIN ipapi_asn_tbl a
   ON carrier_name_compact(a.isp_commonest) = carrier_name_compact(n.name)
 WHERE n.side = 'ipapi'
+  AND carrier_name_in_universe(a.as_operator)
   AND NOT EXISTS (SELECT 1 FROM carrier_entity_name_tbl n2
                   WHERE n2.side = 'ipapi'
                     AND carrier_name_compact(n2.name) = carrier_name_compact(a.as_operator));
