@@ -142,6 +142,25 @@ BEGIN
         failures := failures || format('AS99001 and AS99004 agree on both names and must not be flagged as parent-on-subsidiary. Found %s rows.', n);
     END IF;
 
+    -- The Frontier case is ownership, so it must NOT be marked transit.
+    SELECT count(*) INTO n FROM asn_isp_disagree_tbl
+    WHERE asn = 99003 AND isp_is_a_larger_asn_upstream;
+    IF n <> 0 THEN
+        failures := failures || 'AS99003 was marked transit. No ASN carries Frontier as its operator name, which is exactly why it needed finding.';
+    END IF;
+
+    -- And the transit case MUST be marked, or the Cogent rows return.
+    SELECT count(*) INTO n FROM asn_isp_disagree_tbl WHERE asn = 99008;
+    IF n <> 1 THEN
+        failures := failures || format('AS99008 should produce one disagreement row, found %s. Without it the transit flag is untested.', n);
+    END IF;
+
+    SELECT count(*) INTO n FROM asn_isp_disagree_tbl
+    WHERE asn = 99008 AND isp_is_a_larger_asn_upstream;
+    IF n <> 1 THEN
+        failures := failures || format('AS99008 has an ISP name that is the operator name of a larger ASN and must be marked transit. Found %s.', n);
+    END IF;
+
     -- The footprint share is now per technology over wireline only.
     SELECT brand_tract_pct INTO x FROM asn_brand_candidate_tbl
     WHERE asn = 99003 AND brand_name = 'Verizon';

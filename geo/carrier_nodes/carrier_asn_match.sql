@@ -712,7 +712,19 @@ SELECT s.asn, s.as_operator, s.isp_commonest,
        h.provider_id            AS isp_suggests_provider_id,
        h.brand_name             AS isp_suggests_brand,
        carrier_name_tier(s.isp_commonest, h.brand_name) AS isp_tier,
-       a.zip_capable_ranges
+       a.zip_capable_ranges,
+       -- TRANSIT, NOT OWNERSHIP. If the ISP name is the registry name of a
+       -- DIFFERENT and much larger ASN, the relationship is upstream transit
+       -- and the brand is the wrong answer. Boris's 2026-11-22 run showed
+       -- five small carriers pointing at Cogent and two at AT&T this way.
+       -- Frontier does not trip it, because no ASN carries Frontier as its
+       -- operator name any more; that is the whole reason it needed finding.
+       EXISTS (SELECT 1 FROM ipapi_asn_tbl o
+               WHERE o.asn <> s.asn
+                 AND carrier_name_compact(o.as_operator)
+                     = carrier_name_compact(s.isp_commonest)
+                 AND o.zip_capable_ranges > a.zip_capable_ranges)
+                                AS isp_is_a_larger_asn_upstream
 FROM suspect s
 JOIN hit h ON h.asn = s.asn
 JOIN ipapi_asn_tbl a ON a.asn = s.asn
@@ -732,18 +744,37 @@ ANALYZE asn_isp_disagree_tbl;
 \echo into territory Verizon had divested rather than overlapping it.
 \echo ----------------------------------------------------------------
 \echo
-SELECT d.asn, left(d.as_operator, 26) AS registry_says,
-       left(d.isp_commonest, 26) AS ipapi_isp_says,
+SELECT d.asn, left(d.as_operator, 24) AS registry_says,
+       left(d.isp_commonest, 24) AS ipapi_isp_says,
        d.isp_suggests_provider_id AS suggests_provider,
-       left(d.isp_suggests_brand, 24) AS suggests_brand,
+       left(d.isp_suggests_brand, 22) AS suggests_brand,
        d.isp_tier, d.zip_capable_ranges
 FROM asn_isp_disagree_tbl d
+WHERE NOT d.isp_is_a_larger_asn_upstream
 ORDER BY d.zip_capable_ranges DESC NULLS LAST, d.asn
 LIMIT 40;
 
-SELECT count(DISTINCT asn) AS asns_where_the_two_names_disagree,
-       count(*)            AS proposed_corrections,
-       sum(zip_capable_ranges) FILTER (WHERE isp_tier = 1) AS ranges_behind_tier1
+\echo
+\echo And the ones where the ISP name is the registry name of a LARGER ASN,
+\echo which is transit rather than ownership. Shown separately because the
+\echo suggested brand is the wrong answer for these.
+\echo
+SELECT d.asn, left(d.as_operator, 30) AS registry_says,
+       left(d.isp_commonest, 24) AS ipapi_isp_says,
+       left(d.isp_suggests_brand, 22) AS would_have_suggested,
+       d.zip_capable_ranges
+FROM asn_isp_disagree_tbl d
+WHERE d.isp_is_a_larger_asn_upstream
+ORDER BY d.zip_capable_ranges DESC NULLS LAST, d.asn
+LIMIT 20;
+
+SELECT count(DISTINCT asn)                                   AS asns_disagreeing,
+       count(*)                                              AS rows_total,
+       count(*) FILTER (WHERE NOT isp_is_a_larger_asn_upstream) AS proposed_corrections,
+       count(*) FILTER (WHERE isp_is_a_larger_asn_upstream)     AS discarded_as_transit,
+       (SELECT sum(z.zip_capable_ranges) FROM
+          (SELECT DISTINCT asn, zip_capable_ranges FROM asn_isp_disagree_tbl
+           WHERE NOT isp_is_a_larger_asn_upstream) z)        AS ranges_behind_corrections
 FROM asn_isp_disagree_tbl;
 
 \echo

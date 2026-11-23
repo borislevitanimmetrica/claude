@@ -192,32 +192,54 @@ FROM asn_token_freq_tbl ORDER BY names_carrying_it DESC LIMIT 12;
 \echo but not matching it. Check whether any is the same company under
 \echo another spelling, then add that spelling to the rulings above.
 \echo
-SELECT DISTINCT left(a.as_operator, 44) AS probed_name,
-       r.ruled_name, x.tok AS shared_word, f.names_carrying_it,
-       a.zip_capable_ranges
-FROM ipapi_asn_tbl a
-CROSS JOIN asn_scope_ruling_tbl r
-JOIN LATERAL (
-    SELECT t.tok FROM unnest(carrier_name_tokens_strict(a.as_operator)) AS t(tok)
-    INTERSECT
-    SELECT t.tok FROM unnest(carrier_name_tokens_strict(r.ruled_name)) AS t(tok)
-) x ON true
-JOIN asn_token_freq_tbl f ON f.tok = x.tok
+-- Both sides are expanded to one row per token FIRST and then joined on the
+-- token. The previous form cross-joined every ASN with every ruling and ran
+-- an INTERSECT inside a LATERAL for each pair, which is 19,798 times 52
+-- evaluations and took 01:39.755 on Boris's 2026-11-22 run, longer than the
+-- matcher it is a footnote to. This is a hash join on one text column.
+WITH ruling_tok AS (
+    SELECT r.ruled_name, t.tok
+    FROM asn_scope_ruling_tbl r,
+         unnest(carrier_name_tokens_strict(r.ruled_name)) AS t(tok)
+    WHERE length(t.tok) >= 2
+), probed_tok AS (
+    SELECT a.asn, a.as_operator, a.zip_capable_ranges, t.tok
+    FROM ipapi_asn_tbl a,
+         unnest(carrier_name_tokens_strict(a.as_operator)) AS t(tok)
+    WHERE length(t.tok) >= 2
+      AND NOT EXISTS (SELECT 1 FROM asn_bdc_brand_map_tbl m WHERE m.asn = a.asn)
+)
+SELECT DISTINCT left(p.as_operator, 44) AS probed_name,
+       r.ruled_name, p.tok AS shared_word, f.names_carrying_it,
+       p.zip_capable_ranges
+FROM probed_tok p
+JOIN ruling_tok r ON r.tok = p.tok
+JOIN asn_token_freq_tbl f ON f.tok = p.tok
 WHERE f.names_carrying_it <= 12
-  AND carrier_name_compact(r.ruled_name) <> carrier_name_compact(a.as_operator)
-  AND NOT carrier_name_generic_only(a.as_operator)
-  AND NOT EXISTS (SELECT 1 FROM asn_bdc_brand_map_tbl m WHERE m.asn = a.asn)
-ORDER BY a.zip_capable_ranges DESC NULLS LAST
+  AND carrier_name_compact(r.ruled_name) <> carrier_name_compact(p.as_operator)
+ORDER BY p.zip_capable_ranges DESC NULLS LAST
 LIMIT 40;
 
 -- ---------------------------------------------------------------------------
 -- Write them.
 -- ---------------------------------------------------------------------------
+-- NOT EXISTS rather than ON CONFLICT. asn_map_multibrand_migration.sql drops
+-- the single-column primary key on asn and replaces it with a unique index
+-- over an EXPRESSION, (asn, coalesce(brand,''), coalesce(provider_id,0)), and
+-- ON CONFLICT (asn) then fails with "there is no unique or exclusion
+-- constraint matching the ON CONFLICT specification". That is what happened
+-- on Boris's 2026-11-22 run, and the same failure on the same database is
+-- already recorded at carrier_crosswalk.sql:715, so this is the second time.
+-- NOT EXISTS does not care what the index looks like, which is why it is now
+-- the only form used against this table.
 INSERT INTO asn_bdc_brand_map_tbl (asn, decision, bdc_brand_name, bdc_provider_id, note)
 SELECT h.asn, h.decision, NULL, NULL,
        h.note || ' Ruled name: ' || h.ruled_name || '. ip-api operator name: ' || h.as_operator
 FROM asn_scope_hit_tbl h
-ON CONFLICT (asn) DO NOTHING;
+WHERE NOT EXISTS (SELECT 1 FROM asn_bdc_brand_map_tbl m
+                  WHERE m.asn = h.asn
+                    AND m.bdc_brand_name IS NULL
+                    AND m.bdc_provider_id IS NULL);
 
 \echo
 \echo The decision map after writing.

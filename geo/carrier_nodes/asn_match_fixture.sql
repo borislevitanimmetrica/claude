@@ -166,6 +166,17 @@ INSERT INTO ip2city_dbiplite_probe_tbl (isp, org, "as", mobile_transit, ran_at)
 SELECT 'Skyhook Wireless', 'Skyhook Wireless', 'AS99006 Skyhook Wireless Co', 'f', now()
 FROM generate_series(1, 200);
 
+-- TRANSIT, NOT OWNERSHIP. A small carrier whose ip-api ISP name is the
+-- registry name of a LARGER ASN. The disagreement report must produce the
+-- row and mark it transit, because the suggested brand is the wrong answer.
+-- On Boris's 2026-11-22 run five small carriers pointed at Cogent this way
+-- and two at AT&T. AS99001 Zebra carries 51 ranges against these 20, and its
+-- operator name compacts to the same key as this ISP name.
+INSERT INTO ip2city_dbiplite_probe_tbl (isp, org, "as", mobile_transit, ran_at)
+SELECT 'Zebra Telephone', 'Aardvark Telephone',
+       'AS99008 Aardvark Telephone Co', 'f', now()
+FROM generate_series(1, 20);
+
 -- THE TRADE NAME. Must produce no candidate from any string rule, and must
 -- be reachable through the entity layer.
 INSERT INTO ip2city_dbiplite_probe_tbl (isp, org, "as", mobile_transit, ran_at)

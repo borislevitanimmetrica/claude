@@ -2110,3 +2110,115 @@ The fixture carries AS99007 `Comcast Cable Communications, LLC` with 900
 ranges and a brand `Xfinity` with a 221-tract cable footprint. Asserted:
 zero string candidates, `carrier_name_tier` returns 0 for that pair, and
 the entity layer proposes the pair exactly once with `entity_key` comcast.
+
+---
+
+## 2026-11-22, status of the seven steps after the entity layer
+
+Boris: "Proposals confirmed. Show status of ITDK-BDC Fabric relation system
+on the multistep plan, and proceed."
+
+### The run found a hard failure I caused
+
+`asn_out_of_scope.sql` died with `there is no unique or exclusion constraint
+matching the ON CONFLICT specification`. The multi-brand migration drops the
+single-column primary key on `asn` and replaces it with a unique index over
+an EXPRESSION, and `ON CONFLICT (asn)` no longer matches. I wrote the
+migration without checking what else referenced the key it removed.
+
+**The same failure on the same database is already recorded in this repo at
+`carrier_crosswalk.sql:715`.** Second time. Every write against
+`asn_bdc_brand_map_tbl` now uses `NOT EXISTS`, which does not care what the
+index looks like, and the loader's precheck REFUSES to run if the old primary
+key is still present.
+
+Nothing was lost: the 151 rulings were already written by the previous run,
+and the hits list was empty because those ASNs were already decided. What did
+not happen is the rewrite of the two review files at the end of the file.
+
+### Three more defects from the same output
+
+**The entity layer was only looking at `as_operator`.** Boris's point was
+that "Charter and Spectrum are both used on the ip-api.com side depending on
+proximity to the customer", and the customer-proximate field is the ISP name.
+The run proved it: the name `Spectrum` came back "not in your data" while 31
+Charter ASNs sat there, and `Frontier Communications` failed the same way.
+The ip-api side now resolves against `as_operator` AND `isp_commonest`. This
+is not the upstream-carrier hazard that stopped the ISP name generating
+candidates: there it guessed an unknown identity, here it is checked against
+a name already ruled to belong to that entity.
+
+**I reported an inflated total.** `ranges_in_proposals` came out at
+1,330,456, summing `zip_capable_ranges` once per proposal ROW. Charter's
+three spellings all compact to `chartercommunications`, so every Charter ASN
+resolved three times and was counted three times. Both the payload and the
+proposal counters now sum over DISTINCT ASNs, and the proposal table is one
+row per ASN and brand with the matching names aggregated into a column.
+
+**The disagreement report was full of transit.** Five small carriers pointed
+at Cogent and two at AT&T, which is upstream transit and not ownership. The
+discriminator is that the ISP name is the registry operator name of a
+DIFFERENT and LARGER ASN: Cogent is AS174, while no ASN carries Frontier as
+its operator name any more, which is exactly why Frontier needed finding.
+`isp_is_a_larger_asn_upstream` splits the report in two and the loader
+refuses to write either kind without a ruling. Fixture cases added for both,
+AS99003 ownership and AS99008 transit.
+
+**The near-miss report took 01:39.755**, longer than the matcher. It
+cross-joined 19,798 ASNs with 52 rulings and ran an INTERSECT in a LATERAL
+for each pair. Rewritten as a hash join on one expanded token column.
+
+### The document-frequency filter worked
+
+| word | operator names carrying it |
+|---|---|
+| university | 636 |
+| college | 354 |
+| health | 332 |
+| district | 276 |
+| center | 273 |
+| school | 241 |
+
+All six correctly ignored. The 40 near misses it did return are almost all
+real spelling variants: `Amazon.com Services`, `Akamai Technologies Tokyo
+ASN`, `Alibaba Cloud (Singapore)`, `IBM`, `Rackspace Ltd.`, `FedEx Freight`,
+`BLOOMBERG INDUSTRY GROUP`, `Apple Distribution International`, `Constant
+Contact`. Worth noting that `RICE BELT TELEPHONE CO., INC.` appears beside
+the Rice University ruling and is a REAL carrier that must not be retired.
+
+### Per-technology footprint, measured on his data
+
+The pooled 97% is gone and the numbers are now the ones that matter:
+
+| brand | widest wireline technology | share of tracts |
+|---|---|---|
+| AT&T | 10 Copper | 44.5% |
+| Verizon | 50 FTTP | 14.0% |
+| CenturyLink | 10 Copper | 13.4% |
+| Cox Communications | 40 Cable | 7.5% |
+| Windstream | 10 Copper | 0.0% |
+
+Verizon's wireline footprint is 14% of tracts, not 97%. Boris's refutation
+is confirmed by the corrected instrument.
+
+Also surfaced: 40 candidates whose brand has NO wireline footprint at all,
+including `Buckeye Wireless`, `C Spire Wireless`, `Ziply Wireless`,
+`Unwired Ltd` and `Webpass, Inc.`. A perfect name match to one of these is
+unusable, which the old pooled column hid.
+
+### Status of the seven steps
+
+| step | state | evidence from the 2026-11-22 run |
+| --- | --- | --- |
+| 1 ingest | DONE | 519,469,683 availability rows; `provider_brand_tract_tech_tbl` 794,708 brand-technology-tract rows |
+| 2a carrier identity | SUBSTANTIALLY DONE | 19,798 ASNs, 1,853,114 ZIP-capable ranges; 2,391 string candidates over 1,873 ASNs; entity layer reaches Comcast, Charter, Level 3, Cablevision, RCN, Wave, Grande, Cable One and Midcontinent, which no string could |
+| 2b headends per TECHNOLOGY | NOT STARTED | the BDC side is technology-grained; the SITE side is not. 6,256 sites carry no technology |
+| 3 street addresses | NOT STARTED | `co_site_tbl` and `geocode_sites.py` built and tested, no data loaded |
+| 4 distance to tract centroid | BLOCKED ON 2b, no longer on the join | 19,327,770 rows exist; the 85% that rested on unapproved name matches is now replaceable with approved decisions |
+| 5 twice-the-distance, four-block gap | NOT STARTED | needs 4; `block_geoid` is in the load |
+| 6 ascribe ip-api addresses | NOT STARTED | 1,500 addresses a minute measured; must exclude `mobile_transit` in ('m','t') |
+| 7 tracts into ZIPs | NOT STARTED | Census tract-to-ZCTA file verified, 23.2 MB, carries AREALAND_PART |
+
+The binding constraint has moved. It was the carrier join; it is now step 2b
+and step 3, the site inventory per technology. `att.com` with one located
+site cannot produce a usable distance however good the crosswalk is.
