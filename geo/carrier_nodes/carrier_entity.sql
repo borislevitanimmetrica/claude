@@ -167,8 +167,15 @@ SELECT n.entity_key, n.side, n.name, n.status,
        NULL::bigint  AS zip_capable_ranges,
        NULL::text    AS matched_field
 FROM carrier_entity_name_tbl n
-JOIN (SELECT DISTINCT brand_name, provider_id FROM bdc_carrier_tbl
-      WHERE brand_name IS NOT NULL AND brand_name <> '') b
+-- Only brands with WIRELINE plant. Boris 2026-11-22: wireless is out of
+-- scope for the ITDK-BDC subsystem, so a brand carrying only technologies
+-- 70, 71 or 72 cannot answer a ZIP question and must not become a proposal.
+JOIN (SELECT DISTINCT c.brand_name, c.provider_id FROM bdc_carrier_tbl c
+      WHERE c.brand_name IS NOT NULL AND c.brand_name <> ''
+        AND EXISTS (SELECT 1 FROM provider_brand_tract_tech_tbl f
+                    WHERE f.provider_id = c.provider_id
+                      AND f.brand_name = c.brand_name
+                      AND f.technology IN (10, 40, 50))) b
   ON carrier_name_compact(b.brand_name) = carrier_name_compact(n.name)
 WHERE n.side = 'bdc'
 UNION ALL

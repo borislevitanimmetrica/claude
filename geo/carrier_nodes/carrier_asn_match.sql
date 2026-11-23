@@ -533,10 +533,29 @@ CREATE TABLE asn_brand_candidate_tbl AS
 WITH todo AS (
     SELECT * FROM ipapi_asn_tbl a
     WHERE NOT EXISTS (SELECT 1 FROM asn_bdc_brand_map_tbl m WHERE m.asn = a.asn)
+      -- And not an ASN whose every probed range is already known to be
+      -- mobile CGNAT or transit. Boris 2026-11-22: wireless is out of scope
+      -- for this subsystem, so such an ASN cannot carry a ZIP answer and
+      -- does not belong in the approval queue. Unclassified ranges still
+      -- count as possible, because mobile_transit NULL means not yet decided
+      -- and deliberately is not folded into 'f'.
+      AND (coalesce(a.zip_capable_ranges, 0) > 0
+        OR coalesce(a.unclassified_ranges, 0) > 0)
 ), brand AS (
+    -- ONLY BRANDS WITH WIRELINE PLANT. Boris 2026-11-22: "Wireless is out of
+    -- scope for the ITDK-BDC subsystem." A brand that appears only under
+    -- technologies 70, 71 or 72 can never answer a ZIP-level question, so
+    -- offering it is noise in the approval queue however good the name looks.
+    -- His run offered forty such candidates, among them Buckeye Wireless,
+    -- C Spire Wireless, Ziply Wireless, Unwired Ltd and Webpass. They are now
+    -- excluded here rather than listed afterwards, and counted below.
     SELECT DISTINCT c.brand_name, c.provider_id
     FROM bdc_carrier_tbl c
     WHERE c.brand_name IS NOT NULL AND c.brand_name <> ''
+      AND EXISTS (SELECT 1 FROM provider_brand_tract_tech_tbl f
+                  WHERE f.provider_id = c.provider_id
+                    AND f.brand_name = c.brand_name
+                    AND f.technology IN (10, 40, 50))
 ), ntok AS (
     -- Only the AS operator name generates candidates. The ip-api ISP name
     -- is frequently the UPSTREAM carrier rather than the holder of the ASN:
@@ -582,8 +601,14 @@ WITH todo AS (
     WHERE f.technology IN (10, 40, 50)
     GROUP BY 1, 2, 3
 ), fp_all AS (
+    -- The denominator is the WIRELINE-SERVED universe, not every tract.
+    -- Boris 2026-11-22: wireless is out of scope, so a tract reachable only
+    -- by fixed wireless does not belong in the denominator either. This
+    -- raises the percentages slightly against the all-technology denominator
+    -- used on his 2026-11-22 run, where AT&T Copper read 44.5%.
     SELECT count(DISTINCT tract_geoid)::numeric AS tracts
     FROM provider_brand_tract_tech_tbl
+    WHERE technology IN (10, 40, 50)
 ), fp_best AS (
     -- The widest single wireline technology, which is the only sense in
     -- which a footprint can be called large.
@@ -651,18 +676,52 @@ ORDER BY c.zip_capable_ranges DESC NULLS LAST, c.asn, c.rank_for_asn
 LIMIT 60;
 
 \echo
-\echo Candidates with NO wireline footprint at all. Technologies 10, 40 and
-\echo 50 are the only ones this pipeline can select on, so a brand that
-\echo appears only under fixed wireless has nothing here to match against
-\echo however good its name looks.
+\echo ----------------------------------------------------------------
+\echo WHAT WIRELESS SCOPE REMOVED, so the exclusion is visible rather
+\echo than silent. Boris 2026-11-22: wireless is out of scope for the
+\echo ITDK-BDC subsystem. None of this reaches the approval queue.
+\echo ----------------------------------------------------------------
 \echo
-SELECT c.asn, left(c.as_operator, 30) AS as_operator,
-       c.provider_id, left(c.brand_name, 30) AS bdc_brand,
-       c.tier, c.zip_capable_ranges
-FROM asn_brand_candidate_tbl c
-WHERE c.wireline_technologies = 0
-ORDER BY c.zip_capable_ranges DESC NULLS LAST, c.asn
-LIMIT 40;
+SELECT count(*) FILTER (WHERE wireline = 0)            AS brands_wireless_only,
+       count(*) FILTER (WHERE wireline > 0)            AS brands_with_wireline,
+       count(*)                                        AS brands_in_bdc
+FROM (SELECT c.provider_id, c.brand_name,
+             count(*) FILTER (WHERE f.technology IN (10, 40, 50)) AS wireline
+      FROM (SELECT DISTINCT provider_id, brand_name FROM bdc_carrier_tbl
+            WHERE brand_name IS NOT NULL AND brand_name <> '') c
+      LEFT JOIN provider_brand_tract_tech_tbl f
+        ON f.provider_id = c.provider_id AND f.brand_name = c.brand_name
+      GROUP BY 1, 2) x;
+
+\echo
+\echo The largest wireless-only brands, no longer offered. On the 2026-11-22
+\echo run forty of these reached the queue and could not have been used,
+\echo among them Buckeye Wireless, C Spire Wireless and Ziply Wireless.
+\echo
+SELECT c.provider_id, left(c.brand_name, 34) AS wireless_only_brand,
+       count(DISTINCT f.tract_geoid) AS tracts,
+       string_agg(DISTINCT f.technology::text, ',') AS technologies
+FROM (SELECT DISTINCT provider_id, brand_name FROM bdc_carrier_tbl
+      WHERE brand_name IS NOT NULL AND brand_name <> '') c
+JOIN provider_brand_tract_tech_tbl f
+  ON f.provider_id = c.provider_id AND f.brand_name = c.brand_name
+WHERE NOT EXISTS (SELECT 1 FROM provider_brand_tract_tech_tbl g
+                  WHERE g.provider_id = c.provider_id
+                    AND g.brand_name = c.brand_name
+                    AND g.technology IN (10, 40, 50))
+GROUP BY 1, 2
+ORDER BY count(DISTINCT f.tract_geoid) DESC
+LIMIT 20;
+
+\echo
+\echo ASNs excluded because every probed range is already classified mobile
+\echo CGNAT or transit, so none of them can carry a ZIP answer.
+\echo
+SELECT count(*) AS asns_all_dma,
+       sum(dma_only_ranges) AS dma_only_ranges_behind_them
+FROM ipapi_asn_tbl a
+WHERE coalesce(a.zip_capable_ranges, 0) = 0
+  AND coalesce(a.unclassified_ranges, 0) = 0;
 
 -- ---------------------------------------------------------------------------
 -- THE PARENT-ON-SUBSIDIARY INSTRUMENT.

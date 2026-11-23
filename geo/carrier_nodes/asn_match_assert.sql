@@ -162,10 +162,14 @@ BEGIN
     END IF;
 
     -- The footprint share is now per technology over wireline only.
+    -- 300 FTTP tracts over the 681 tracts that have ANY wireline plant in
+    -- the fixture. The denominator excludes wireless-only tracts because
+    -- Boris ruled wireless out of scope on 2026-11-22; against the old
+    -- all-technology denominator of 1000 the same brand read 30.0.
     SELECT brand_tract_pct INTO x FROM asn_brand_candidate_tbl
     WHERE asn = 99003 AND brand_name = 'Verizon';
-    IF x IS DISTINCT FROM 30.0 THEN
-        failures := failures || format('Verizon brand_tract_pct is %s, expected 30.0 from FTTP alone. Pooled with its wireless rows it would be 100.0, which is the defect.', x);
+    IF x IS DISTINCT FROM 44.1 THEN
+        failures := failures || format('Verizon brand_tract_pct is %s, expected 44.1, being 300 FTTP tracts over 681 wireline-served tracts. Pooled with its wireless rows it would be 100.0, which is the defect.', x);
     END IF;
 
     SELECT widest_technology INTO n FROM asn_brand_candidate_tbl
@@ -174,17 +178,39 @@ BEGIN
         failures := failures || format('Verizon widest wireline technology is %s, expected 50', n);
     END IF;
 
-    -- A wireless-only brand has nothing to select on, however good the name.
-    SELECT count(*) INTO n FROM asn_brand_candidate_tbl
-    WHERE asn = 99006 AND brand_name = 'Skyhook Wireless Co' AND tier = 1;
-    IF n <> 1 THEN
-        failures := failures || format('AS99006 should match Skyhook Wireless Co at tier 1 on the name, found %s', n);
+    -- A WIRELESS-ONLY BRAND IS NOT OFFERED AT ALL. Boris 2026-11-22:
+    -- wireless is out of scope for the ITDK-BDC subsystem. The name match is
+    -- perfect and still useless, so it must not reach the approval queue.
+    -- An earlier version of this file asserted the opposite, that the
+    -- candidate appears with wireline_technologies = 0, which put forty
+    -- unusable rows in front of him.
+    SELECT count(*) INTO n FROM asn_brand_candidate_tbl WHERE asn = 99006;
+    IF n <> 0 THEN
+        failures := failures || format('AS99006 Skyhook matches a wireless-only brand exactly and must get 0 candidates. Found %s.', n);
     END IF;
 
-    SELECT wireline_technologies INTO n FROM asn_brand_candidate_tbl
-    WHERE asn = 99006 AND brand_name = 'Skyhook Wireless Co';
-    IF n IS DISTINCT FROM 0 THEN
-        failures := failures || format('Skyhook has %s wireline technologies, expected 0 so that the name match is visibly unusable', n);
+    IF carrier_name_tier('Skyhook Wireless Co', 'Skyhook Wireless Co') <> 1 THEN
+        failures := failures || 'the Skyhook names no longer agree, so this case stopped testing the wireless exclusion and started testing the name rule';
+    END IF;
+
+    -- Every candidate that IS offered must have wireline plant.
+    SELECT count(*) INTO n FROM asn_brand_candidate_tbl
+    WHERE coalesce(wireline_technologies, 0) = 0;
+    IF n <> 0 THEN
+        failures := failures || format('%s candidates have no wireline footprint and cannot be used', n);
+    END IF;
+
+    -- And no wireless-only brand may become an entity proposal either.
+    IF EXISTS (SELECT 1 FROM information_schema.tables
+               WHERE table_name = 'carrier_entity_proposal_tbl') THEN
+        SELECT count(*) INTO n FROM carrier_entity_proposal_tbl p
+        WHERE NOT EXISTS (SELECT 1 FROM provider_brand_tract_tech_tbl f
+                          WHERE f.provider_id = p.provider_id
+                            AND f.brand_name = p.brand_name
+                            AND f.technology IN (10, 40, 50));
+        IF n <> 0 THEN
+            failures := failures || format('%s entity proposals point at a brand with no wireline plant', n);
+        END IF;
     END IF;
 
     -- CONTROL. Legal suffix only, so CABLE ONE, INC. still lands.
@@ -213,8 +239,8 @@ BEGIN
     -- The footprint denominator is the whole fixture universe.
     SELECT brand_tract_pct INTO x FROM asn_brand_candidate_tbl
     WHERE asn = 99004 AND brand_name = 'Cable One';
-    IF x IS DISTINCT FROM 13.1 THEN
-        failures := failures || format('Cable One brand_tract_pct is %s, expected 13.1 (131 of 1000 tracts)', x);
+    IF x IS DISTINCT FROM 19.2 THEN
+        failures := failures || format('Cable One brand_tract_pct is %s, expected 19.2, being 131 cable tracts over 681 wireline-served tracts', x);
     END IF;
 
     -- And the pooled calculation, which is what shipped, would have called
@@ -228,7 +254,9 @@ BEGIN
     IF x <= 50 THEN
         failures := failures || format('FIXTURE DOES NOT DISCRIMINATE: the pooled share for Verizon is %s, so it would not have tripped the old 50%% flag and this fixture cannot show the difference.', x);
     END IF;
-    RAISE NOTICE 'pooled share for the Verizon brand is %, per-technology wireline share is 30.0', x;
+    RAISE NOTICE 'pooled share for the Verizon brand is %, per-technology wireline share is %',
+        x, (SELECT brand_tract_pct FROM asn_brand_candidate_tbl
+            WHERE asn = 99003 AND brand_name = 'Verizon');
 
     IF cardinality(failures) > 0 THEN
         RAISE EXCEPTION E'ASN MATCHER ASSERTIONS FAILED:\n%',

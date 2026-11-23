@@ -2222,3 +2222,35 @@ unusable, which the old pooled column hid.
 The binding constraint has moved. It was the carrier join; it is now step 2b
 and step 3, the site inventory per technology. `att.com` with one located
 site cannot produce a usable distance however good the crosswalk is.
+
+### Wireless is out of scope, enforced rather than footnoted
+
+Boris 2026-11-22: "Wireless is out of scope for the ITDK-BDC subsystem."
+
+I had been treating it as something to flag. The 2026-11-22 run put forty
+candidates in the approval queue whose brand has no wireline plant at all,
+including `Buckeye Wireless`, `C Spire Wireless`, `Ziply Wireless`,
+`Unwired Ltd` and `Webpass, Inc.`, each a perfect name match and each
+unusable. Listing them afterwards was the wrong remedy. Now:
+
+- Candidate generation draws only from brands with at least one row at
+  technology 10, 40 or 50. A wireless-only brand is never offered.
+- The entity layer resolves the BDC side only to such brands, so no entity
+  proposal can point at wireless-only plant.
+- ASNs whose every probed range is already classified `m` or `t` are dropped
+  from the queue. Unclassified ranges still count as possible, because
+  `mobile_transit` NULL means undecided and is deliberately not folded
+  into `f`.
+- The footprint denominator is now the WIRELINE-SERVED tract universe rather
+  than every tract, so a tract reachable only by fixed wireless is out of the
+  numerator and the denominator alike. This raises the percentages against
+  his 2026-11-22 run, where AT&T Copper read 44.5% on the old denominator.
+- What the exclusion removed is printed, with the largest wireless-only
+  brands and the all-DMA ASN count, so the scope rule is visible.
+
+The fixture asserts it the right way round now. It previously asserted that
+the wireless-only candidate APPEARS with `wireline_technologies = 0`, which
+is what put those forty rows in front of him; it now asserts the candidate
+count is zero while the name rule still scores the pair 1, so the case tests
+the scope rule rather than the string rule. A blanket check also fails the
+file if ANY candidate or entity proposal lacks wireline plant.
