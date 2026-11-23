@@ -296,6 +296,7 @@ JOIN carrier_entity_resolved_tbl i
 JOIN carrier_entity_resolved_tbl b
   ON b.entity_key = e.entity_key AND b.side = 'bdc'
 WHERE NOT EXISTS (SELECT 1 FROM asn_bdc_brand_map_tbl m WHERE m.asn = i.found_asn)
+  AND NOT carrier_pair_is_unrelated(i.name, b.found_bdc_brand)
 GROUP BY 1, 2, 3, 4, 5;
 
 ANALYZE carrier_entity_proposal_tbl;
@@ -343,7 +344,7 @@ SELECT (SELECT sum(z.zip_capable_ranges) FROM
 \echo Where this fires, the ISP name is the better evidence, because the
 \echo operator name followed the ownership and the plant did not.
 \echo
-SELECT p.asn, left(p.ipapi_name, 24) AS entity_says,
+SELECT p.asn, left(p.ipapi_names, 24) AS entity_says,
        left(p.brand_name, 20) AS entity_brand,
        left(d.isp_commonest, 24) AS isp_says,
        left(d.isp_suggests_brand, 20) AS isp_brand,
@@ -357,6 +358,6 @@ LIMIT 30;
 \echo
 \echo Writing the proposals for your approval column.
 \echo
-\copy (SELECT p.asn, p.ipapi_name, p.entity_key, p.display_name, p.provider_id, p.brand_name, p.weakest_status, p.zip_capable_ranges, NULL::text AS approved FROM carrier_entity_proposal_tbl p ORDER BY p.zip_capable_ranges DESC NULLS LAST, p.asn, p.brand_name) TO '/home/boris/geo/carrier_entity_proposals.tsv' WITH (FORMAT csv, DELIMITER E'\t', HEADER true)
+\copy (SELECT p.asn, p.ipapi_names, p.matched_on, p.entity_key, p.display_name, p.provider_id, p.brand_name, p.weakest_status, p.zip_capable_ranges, NULL::text AS approved FROM carrier_entity_proposal_tbl p ORDER BY p.zip_capable_ranges DESC NULLS LAST, p.asn, p.brand_name) TO '/home/boris/geo/carrier_entity_proposals.tsv' WITH (FORMAT csv, DELIMITER E'\t', HEADER true)
 
 \timing off

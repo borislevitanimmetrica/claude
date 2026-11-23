@@ -146,7 +146,7 @@ BEGIN
     SELECT count(*) INTO n FROM asn_isp_disagree_tbl
     WHERE asn = 99003 AND isp_is_a_larger_asn_upstream;
     IF n <> 0 THEN
-        failures := failures || 'AS99003 was marked transit. No ASN carries Frontier as its operator name, which is exactly why it needed finding.';
+        failures := failures || 'AS99003 was marked transit. No ASN carries Frontier as its operator name, which is exactly why it needed finding.'::text;
     END IF;
 
     -- And the transit case MUST be marked, or the Cogent rows return.
@@ -190,7 +190,7 @@ BEGIN
     END IF;
 
     IF carrier_name_tier('Skyhook Wireless Co', 'Skyhook Wireless Co') <> 1 THEN
-        failures := failures || 'the Skyhook names no longer agree, so this case stopped testing the wireless exclusion and started testing the name rule';
+        failures := failures || 'the Skyhook names no longer agree, so this case stopped testing the wireless exclusion and started testing the name rule'::text;
     END IF;
 
     -- Every candidate that IS offered must have wireline plant.
@@ -233,7 +233,7 @@ BEGIN
     -- Unprobed rows never enter.
     SELECT count(*) INTO n FROM ipapi_asn_tbl WHERE asn = 99005;
     IF n <> 0 THEN
-        failures := failures || 'AS99005 has ran_at NULL and must not appear in ipapi_asn_tbl';
+        failures := failures || 'AS99005 has ran_at NULL and must not appear in ipapi_asn_tbl'::text;
     END IF;
 
     -- The footprint denominator is the whole fixture universe.
@@ -286,7 +286,7 @@ BEGIN
     END IF;
 
     IF carrier_name_tier('Comcast Cable Communications, LLC', 'Xfinity') <> 0 THEN
-        failures := failures || 'carrier_name_tier joined Comcast to Xfinity, which no string method can legitimately do';
+        failures := failures || 'carrier_name_tier joined Comcast to Xfinity, which no string method can legitimately do'::text;
     END IF;
 
     -- The entity layer must reach it.
@@ -301,12 +301,43 @@ BEGIN
         failures := failures || format('AS99007 resolved to entity %L, expected comcast', t);
     END IF;
 
+    -- THE UNRELATED LIST MUST NOT CONTAIN COMCAST AND XFINITY. The gate
+    -- rejects that pair to prove no string method joins them, which is why
+    -- the entity layer exists. Seeding the unrelated list from every reject
+    -- case put it there and silently deleted the Comcast match. This
+    -- assertion is the only reason that was caught.
+    SELECT count(*) INTO n FROM carrier_unrelated_tbl
+    WHERE ipapi_key = carrier_name_compact('Comcast Cable Communications, LLC')
+      AND bdc_key   = carrier_name_compact('Xfinity');
+    IF n <> 0 THEN
+        failures := failures || 'Comcast and Xfinity are on the unrelated list. They are the same company; the gate rejects the pair only to prove the string rule cannot join them.'::text;
+    END IF;
+
+    SELECT count(*) INTO n FROM carrier_unrelated_tbl
+    WHERE ipapi_key = carrier_name_compact('Windstream Communications LLC')
+      AND bdc_key   = carrier_name_compact('Georgia Windstream, LLC.');
+    IF n <> 0 THEN
+        failures := failures || 'Georgia Windstream is on the unrelated list. It is a subsidiary; the gate case exists to stop it being reached by one shared word.'::text;
+    END IF;
+
+    -- A pair he DID rule unrelated must be there and must not be matched.
+    SELECT count(*) INTO n FROM carrier_unrelated_tbl
+    WHERE ipapi_key = carrier_name_compact('Database Mart LLC')
+      AND bdc_key   = carrier_name_compact('Wal-Mart Stores, Inc.');
+    IF n <> 1 THEN
+        failures := failures || format('the Database Mart to Wal-Mart ruling is not on the unrelated list, found %s rows', n);
+    END IF;
+
+    IF NOT carrier_pair_is_unrelated('Database Mart LLC', 'Wal-Mart Stores, Inc.') THEN
+        failures := failures || 'carrier_pair_is_unrelated does not recognise a pair that is in the table'::text;
+    END IF;
+
     -- Verizon and Frontier must stay SEPARATE entities, or a Frontier ASN
     -- gains the right to select Verizon plant.
     SELECT count(*) INTO n FROM carrier_entity_name_tbl
     WHERE entity_key = 'verizon' AND side = 'bdc' AND name = 'Frontier';
     IF n <> 0 THEN
-        failures := failures || 'the brand Frontier is attached to the verizon entity. They are one owner and two networks in complementary territory; merging them is the error Boris refuted.';
+        failures := failures || 'the brand Frontier is attached to the verizon entity. They are one owner and two networks in complementary territory; merging them is the error Boris refuted.'::text;
     END IF;
 
     -- And the conflict between the entity proposal and the ISP evidence

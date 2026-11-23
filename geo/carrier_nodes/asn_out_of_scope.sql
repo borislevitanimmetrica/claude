@@ -217,6 +217,9 @@ JOIN ruling_tok r ON r.tok = p.tok
 JOIN asn_token_freq_tbl f ON f.tok = p.tok
 WHERE f.names_carrying_it <= 12
   AND carrier_name_compact(r.ruled_name) <> carrier_name_compact(p.as_operator)
+  -- Pairs Boris has already ruled unrelated never come back.
+  AND NOT carrier_pair_is_unrelated(p.as_operator, r.ruled_name)
+  AND NOT carrier_pair_is_unrelated(r.ruled_name, p.as_operator)
 ORDER BY p.zip_capable_ranges DESC NULLS LAST
 LIMIT 40;
 

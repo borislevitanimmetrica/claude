@@ -358,6 +358,97 @@ END
 $gate$;
 
 -- ---------------------------------------------------------------------------
+-- THE UNRELATED LIST. Boris 2026-11-22: "Delete the records I marked as
+-- unrelated and ensure they are not matched."
+--
+-- PERSISTENT. Created IF NOT EXISTS, never dropped, never truncated. Every
+-- pair he has called unrelated goes in once and is suppressed everywhere
+-- afterwards: candidate generation, the parent-on-subsidiary report, the
+-- entity resolution and the near-miss report.
+--
+-- Why a table and not just a better rule. Most of these pairs already score
+-- 0 because of the stopwords he supplied, so the rule handles them. But a
+-- rule can regress, and the near-miss report does not use tiers at all, so
+-- it can relate a pair the tier rule rejects. A recorded ruling is checked
+-- by identity rather than by inference and cannot regress.
+--
+-- Matching is on the COMPACT KEY of both sides, so a ruling survives the
+-- spelling variations of the same two companies.
+-- ---------------------------------------------------------------------------
+CREATE TABLE IF NOT EXISTS carrier_unrelated_tbl (
+    ipapi_side   text NOT NULL,
+    bdc_side     text NOT NULL,
+    ipapi_key    text NOT NULL,
+    bdc_key      text NOT NULL,
+    note         text,
+    ruled_at     timestamptz NOT NULL DEFAULT now(),
+    PRIMARY KEY (ipapi_key, bdc_key));
+
+COMMENT ON TABLE carrier_unrelated_tbl IS
+'Pairs Boris has ruled unrelated. PERSISTENT: nothing in the pipeline drops or truncates it. Keyed on the compact form of both names so the ruling holds across spellings. Every matching step excludes these pairs by identity, which is why a stopword regression cannot resurrect them.';
+
+-- Seeded from the reject cases in the gate, EXCEPT the ones that reject for
+-- a different reason.
+--
+-- "reject" in the gate means "the string rule must not join these". That is
+-- NOT the same as "these two companies are unrelated", and two of the thirty
+-- cases are the second kind:
+--
+--   Comcast Cable Communications, LLC / Xfinity
+--       the same company. The case exists to prove no string method can join
+--       them, which is the entire reason the entity layer had to be built.
+--   Windstream Communications LLC / Georgia Windstream, LLC.
+--       a subsidiary. The case exists to stop it being reached by one shared
+--       word, not to deny the relationship.
+--
+-- Seeding from all thirty put Comcast and Xfinity on the unrelated list and
+-- silently deleted the most important match in the system. Caught by the
+-- fixture, which asserts the Comcast proposal survives; the assertion is
+-- there because this exact mistake happened.
+INSERT INTO carrier_unrelated_tbl (ipapi_side, bdc_side, ipapi_key, bdc_key, note)
+SELECT r.ipapi_side, r.bdc_side,
+       carrier_name_compact(r.ipapi_side), carrier_name_compact(r.bdc_side),
+       'from the regression gate: ' || r.source
+FROM carrier_name_regression_tbl r
+WHERE r.must = 'reject'
+  AND carrier_name_compact(r.ipapi_side) IS NOT NULL
+  AND carrier_name_compact(r.bdc_side) IS NOT NULL
+  -- the two same-company cases, by compact key so spelling cannot slip past
+  AND NOT (carrier_name_compact(r.ipapi_side), carrier_name_compact(r.bdc_side)) IN (
+        (carrier_name_compact('Comcast Cable Communications, LLC'),
+         carrier_name_compact('Xfinity')),
+        (carrier_name_compact('Windstream Communications LLC'),
+         carrier_name_compact('Georgia Windstream, LLC.')))
+  AND NOT EXISTS (SELECT 1 FROM carrier_unrelated_tbl u
+                  WHERE u.ipapi_key = carrier_name_compact(r.ipapi_side)
+                    AND u.bdc_key   = carrier_name_compact(r.bdc_side));
+
+INSERT INTO carrier_unrelated_tbl (ipapi_side, bdc_side, ipapi_key, bdc_key, note)
+SELECT v.a, v.b, carrier_name_compact(v.a), carrier_name_compact(v.b), v.note
+FROM (VALUES
+ ('Database Mart LLC','Wal-Mart Stores, Inc.','boris 2026-11-22: unrelated, shared word mart'),
+ ('Winn-Dixie Stores, Inc.','Wal-Mart Stores, Inc.','boris 2026-11-22: unrelated, shared words stores inc'),
+ ('Spartan Stores, Inc.','Wal-Mart Stores, Inc.','boris 2026-11-22: unrelated, shared words stores inc'),
+ ('Colonial IU 20','Washington State K-20 Telecommunications Network','boris 2026-11-22: unrelated, shared word 20'),
+ ('State of WI Dept. of Administration','State of Washington','boris 2026-11-22: unrelated, shared words state wi dept'),
+ ('State of WI Dept. of Administration','State of Wisconsin','boris 2026-11-22: these are the same body, but the pairing was reached by generic words and must come from a ruling not a match')
+) AS v(a, b, note)
+WHERE carrier_name_compact(v.a) IS NOT NULL
+  AND carrier_name_compact(v.b) IS NOT NULL
+  AND NOT EXISTS (SELECT 1 FROM carrier_unrelated_tbl u
+                  WHERE u.ipapi_key = carrier_name_compact(v.a)
+                    AND u.bdc_key   = carrier_name_compact(v.b));
+
+CREATE OR REPLACE FUNCTION carrier_pair_is_unrelated(a text, b text)
+RETURNS boolean AS $fn$
+SELECT EXISTS (SELECT 1 FROM carrier_unrelated_tbl u
+               WHERE u.ipapi_key = carrier_name_compact(a)
+                 AND u.bdc_key   = carrier_name_compact(b));
+$fn$ LANGUAGE sql STABLE;
+
+SELECT count(*) AS unrelated_pairs_held FROM carrier_unrelated_tbl;
+
+-- ---------------------------------------------------------------------------
 -- WHICH GATE CASES ARE HYPOTHETICAL.
 --
 -- The gate tests the FUNCTION, not the data. A passing accept case proves
@@ -633,7 +724,10 @@ WITH todo AS (
     LEFT JOIN fp_best f ON f.provider_id = p.provider_id AND f.brand_name = p.brand_name
     CROSS JOIN fp_all a
 ), kept AS (
-    SELECT * FROM scored WHERE tier IN (1, 2)
+    -- Boris's unrelated rulings are applied here by identity, not inference.
+    SELECT * FROM scored
+    WHERE tier IN (1, 2)
+      AND NOT carrier_pair_is_unrelated(as_operator, brand_name)
 ), ranked AS (
     SELECT *, row_number() OVER (PARTITION BY asn
                                  ORDER BY tier, brand_name) AS rank_for_asn
@@ -787,7 +881,9 @@ SELECT s.asn, s.as_operator, s.isp_commonest,
 FROM suspect s
 JOIN hit h ON h.asn = s.asn
 JOIN ipapi_asn_tbl a ON a.asn = s.asn
-WHERE carrier_name_tier(s.isp_commonest, h.brand_name) IN (1, 2);
+WHERE carrier_name_tier(s.isp_commonest, h.brand_name) IN (1, 2)
+  AND NOT carrier_pair_is_unrelated(s.isp_commonest, h.brand_name)
+  AND NOT carrier_pair_is_unrelated(s.as_operator, h.brand_name);
 
 CREATE INDEX asn_isp_disagree_ix ON asn_isp_disagree_tbl (asn);
 ANALYZE asn_isp_disagree_tbl;
