@@ -2438,3 +2438,147 @@ which is a ZIP container, and the paste mangled it beyond recovery.
 Reconstructing the filer names from it would be guessing, so nothing was
 loaded. The universe remains BDC brand names plus Boris's entity rulings
 until the file is on disk and I have read its sheet names and header row.
+
+## 2026-11-23, second run: three more wrong relations, and the cost of the universe fix
+
+### What the run showed
+
+The universe fix worked. Eligibility went from 50.0% to 70.0% of ZIP-capable
+ranges, candidates from 296 to 511, and the brand decisions came back:
+`mapped_to_a_brand` 1,298,750 against 923,424 after the destructive cleanup, a
+difference of 375,326 ranges against the 373,410 the cleanup had deleted.
+
+| measure | before the restriction | after it, broken | after the fix |
+|---|---|---|---|
+| eligible ASNs | n/a | 1,199 | 1,984 |
+| eligible ranges | n/a | 939,544 (50.0%) | 1,321,688 (70.0%) |
+| candidate rows | 1,883 | 296 | 511 |
+| approved ranges | 1,269,984 | 923,424 | 1,298,750 |
+
+The 511 is not the old 1,883 and should not be: 1,601 ASNs now hold a
+decision, so they are no longer offered. I predicted "roughly 1,883" in the
+previous handoff and that was wrong for this reason.
+
+### The cost, which I had flagged as unmeasured and which was real
+
+| call site | time |
+|---|---|
+| `carrier_universe.sql`, eligibility split | 61.6 s |
+| same file, admitted-by report | 61.9 s |
+| same file, tier-rule list | 61.9 s |
+| same file, exclusion list | 61.0 s |
+| `carrier_asn_match.sql` section 2 | 65.7 s, was 4.3 s |
+| `carrier_entity.sql` resolution | 122.0 s |
+
+61.5 s over 19,936 ASNs is 3.08 ms per name. Measured independently on the
+test cluster against a synthetic universe of 2,480 names: 3.77 ms per name,
+which is the same number.
+
+**The memo.** `carrier_universe_memo_tbl` holds one row per distinct operator
+name, filled by CALLING `carrier_name_in_universe_rule` once per name.
+`carrier_name_in_universe` is a lookup over it that falls through to the rule
+on a miss, so there is still ONE definition of membership. Measured on the
+same 2,450 names: 9,229 ms through the rule, 10.2 ms through the memo, a
+factor of 900. A blocking check compares the memo against the rule on every
+row it holds and raises if they ever differ, because two answers to one
+question is the defect this whole area is recovering from.
+
+### The three wrong relations he named, and why each happened
+
+**Wave Rural Connect, LLC against Fuse Rural Connect, LLC.** `wave` was
+already a stopword, on his 2026-11-20 ruling that it does not indicate
+equality, so the DISTINCTIVE word of the first name was gone before the
+comparison and the pair was judged on `rural connect` against `fuse rural
+connect`: tier 2. Fix: `connect` joins the industry stopwords, leaving
+`{rural}` against `{fuse,rural}`, which is one shared word and not offered.
+`rural` is deliberately NOT stopped, because he confirmed AS14155 Rural
+Telephone Service Co against RURAL TELEPHONE COMPANY and stopping it would
+reduce that name to nothing.
+
+**Peoples Telecommunications LLC against Peoples Telephone Cooperative and
+Peoples Communications.** No string rule can separate these. After the
+stopwords all three are `{peoples}`, so token equality scores tier 1, and
+there is no honest way to make the rule say otherwise. This needed a new
+gate category, `must = 'ruled'`: the case asserts that the rule DOES join
+the pair and that the recorded ruling suppresses it anyway. A ruled case
+that the rule fails to join now RAISES, because such a case would be
+silently vacuous.
+
+That ruling also exposed a hole. `carrier_pair_is_unrelated` tested one
+orientation, and Peoples Telecommunications is both an ip-api operator name
+on AS397298 and a BDC brand under provider 131030, so the same pair arrives
+both ways round depending on which ASN is being matched. The check is now
+symmetric.
+
+**State of Alaska against three Alaska carriers.** Stopwords caused this one
+and could not fix it. `state` and `of` are noise on his earlier ruling, so
+`State of Alaska` reduces to the single token `{alaska}`, and ALASKA
+COMMUNICATIONS, Alaska Telephone Company and Fibre Alaska all reduce to
+`{alaska}` too. Each extra stopword made these names match MORE things, not
+fewer. Stopping `alaska` would have destroyed the largest candidate in his
+queue, AS7782 at 842 ranges.
+
+The separating information is in the words the tokeniser discards, so
+`carrier_name_is_state_government` tests the shape of the whole name
+instead: `state of X`, `commonwealth of X`, `X state`, `X state government`
+and the department forms. `carrier_name_tier` returns 0 when either side is
+one, and such a name cannot enter the universe by any path.
+
+Deliberately narrow, with a blocking test of 10 positive and 14 negative
+cases that runs on every execution. It does not catch `City of X`: AS397142
+City of Fort Collins holds Fort Collins Connexion and Carthage Water and
+Electric holds its own plant, both real municipal carriers. It does not
+catch `U.S. Department of State`, which is federal and not a state. It does
+not catch `Washington State K-20 Telecommunications Network` or
+`Pennsylvania State University`, where the name continues past `state`.
+
+### The empty entity proposals file, which is not a defect
+
+`carrier_entity_proposals.tsv` had no records because
+`carrier_entity_proposal_tbl` excludes any ASN that already holds a decision
+(`carrier_entity.sql:231`), and all 178 entity-resolvable ASNs are decided.
+Supporting evidence from the same run: `already_decided` is 1,601, and the
+largest undecided ASNs are exactly the three entities that have NO BDC brand
+on the other side, so they cannot produce a proposal at all.
+
+| entity | ip-api side | BDC side | ranges stranded |
+|---|---|---|---|
+| mediacom | Mediacom Communications Corp, AS30036 | `Mediacom` and `Xtream` are not brands in the data | 3,834 |
+| wow | WideOpenWest Finance LLC, AS12083 | `WOW!` and `WideOpenWest` are not brands | 2,853 |
+| cincinnatibell | Cincinnati Bell Telephone Company LLC, AS6181 | `altafiber` and `Cincinnati Bell` are not brands | 1,856 |
+
+8,543 ranges wait on the BDC-side spelling for those three, which is what
+the Form 499a trade names are for.
+
+### The doubled conflict rows
+
+AS23404, AS21725 and AS46986 each appeared twice with what looked like one
+provider and one brand. They cannot be duplicate rows: the hit set is built
+with `DISTINCT` and `UNION`, so an identical triple cannot survive. The two
+rows therefore hold two DIFFERENT brand strings under provider 130427, and
+`left(brand_name, 22)` was hiding the difference. The brand name is no longer
+truncated in those reports, and a new report names every provider that files
+several spellings sharing one compact key. They are shown rather than merged:
+two spellings can carry different footprints, and keeping one silently would
+throw plant away.
+
+### Form 499a
+
+The file is at `/home/boris/geo/FCC_Form_499a_filers.xlsx`. An xlsx is a ZIP
+of XML parts, and openpyxl is installed on neither machine, so
+`geo/carrier_nodes/xlsx_dump.py` reads it with the standard library alone.
+It describes the sheets, then generates BOTH the TSV and the SQL loader with
+the column names and the column COUNT taken from the file's own header row,
+so no column name is assumed. Every column is text: a type guessed from the
+first rows is how a leading zero on an FRN gets destroyed.
+
+Tested against a real xlsx built by `xlsx_dump_fixture.py`, which includes
+the four things that break a naive parser: a shared string table, a
+multi-run string, a row that omits a column, and a sheet whose part name
+does not match its position.
+
+The universe builder's column discovery now also accepts `%dba%`,
+`%business%` and `%brand%`, because the trade name is the most valuable
+column in that file and is usually headed Doing Business As. Identifier
+columns are still skipped, and both the used and the skipped text columns
+are reported.

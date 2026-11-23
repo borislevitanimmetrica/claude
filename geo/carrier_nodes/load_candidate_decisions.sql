@@ -109,9 +109,9 @@ LIMIT 40;
 \echo HELD BACK, the ip-api ISP name points at a different brand.
 \echo
 SELECT c.asn, left(c.as_operator, 24) AS registry_says,
-       left(c.brand_name, 20) AS candidate_brand,
+       c.brand_name AS candidate_brand,
        left(d.isp_commonest, 24) AS ipapi_isp_says,
-       left(d.isp_suggests_brand, 20) AS isp_brand,
+       d.isp_suggests_brand AS isp_brand,
        c.zip_capable_ranges
 FROM asn_brand_candidate_tbl c
 JOIN candidate_shape_tbl s ON s.asn = c.asn AND s.isp_contradicts

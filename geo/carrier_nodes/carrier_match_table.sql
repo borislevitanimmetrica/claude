@@ -245,7 +245,7 @@ FROM per_asn GROUP BY state ORDER BY sum(zip_capable_ranges) DESC NULLS LAST;
 \echo
 SELECT t.asn, left(t.as_operator, 24) AS as_operator,
        left(coalesce(t.isp_commonest, ''), 22) AS ipapi_isp,
-       t.source, t.provider_id, left(t.brand_name, 22) AS brand_name,
+       t.source, t.provider_id, t.brand_name,
        t.tier, t.zip_capable_ranges
 FROM carrier_match_tbl t
 WHERE t.conflict

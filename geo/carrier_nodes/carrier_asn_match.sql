@@ -111,6 +111,18 @@ SELECT ARRAY[
   'online','media','enterprises','enterprise','partners','associates',
   'cooperative','coop','utilities','utility','wireless','data','access',
   'link','net','web','global',
+  -- connect, from Boris 2026-11-23: "Wave Rural Connect, LLC and Fuse Rural
+  -- Connect, LLC are separate companies." Those two reached each other at
+  -- tier 2 and the reason is worth recording. wave is already a stopword, on
+  -- his earlier ruling that it does not indicate equality, so the
+  -- DISTINCTIVE word of the first name was already gone and the pair was
+  -- being compared on the generic remainder rural connect against fuse rural
+  -- connect. Making connect noise as well leaves {rural} against
+  -- {fuse,rural}, which is a single shared word, tier 3, and not offered.
+  -- rural is deliberately NOT a stopword: he confirmed AS14155 Rural
+  -- Telephone Service Co against RURAL TELEPHONE COMPANY, and stopping
+  -- rural would reduce that name to nothing and lose the match.
+  'connect','connects','connection','connections',
   -- geographic and patriotic filler
   'america','american','national','usa','us','the','of','and','a','an',
   -- modifiers Boris named on 2026-11-20, each having produced a wrong match
@@ -148,6 +160,129 @@ SELECT ARRAY[
   'NV','NH','NJ','NM','NY','NC','ND','OH','OK','OR','PA','RI','SC','SD',
   'TN','TX','UT','VT','VA','WA','WV','WI','WY','PR','VI','GU'];
 $fn$ LANGUAGE sql IMMUTABLE;
+
+-- US state and territory names, in full. Used ONLY by the state government
+-- test below, never as stopwords: a state name is often the only
+-- informative word a real carrier has, as in ALASKA COMMUNICATIONS, and
+-- stopping it would reduce that brand to nothing.
+CREATE OR REPLACE FUNCTION carrier_name_state_names()
+RETURNS text[] AS $fn$
+SELECT ARRAY[
+  'alabama','alaska','arizona','arkansas','california','colorado',
+  'connecticut','delaware','florida','georgia','hawaii','idaho','illinois',
+  'indiana','iowa','kansas','kentucky','louisiana','maine','maryland',
+  'massachusetts','michigan','minnesota','mississippi','missouri','montana',
+  'nebraska','nevada','new hampshire','new jersey','new mexico','new york',
+  'north carolina','north dakota','ohio','oklahoma','oregon',
+  'pennsylvania','rhode island','south carolina','south dakota','tennessee',
+  'texas','utah','vermont','virginia','washington','west virginia',
+  'wisconsin','wyoming','district of columbia','puerto rico','guam',
+  'virgin islands','american samoa','northern mariana islands'];
+$fn$ LANGUAGE sql IMMUTABLE;
+
+-- ---------------------------------------------------------------------------
+-- IS THIS NAME A STATE GOVERNMENT? Boris 2026-11-23: "State of Alaska has no
+-- relation to any of the three Alaska entities you paired with it."
+--
+-- Stopwords cannot fix this and in fact caused it. state and states are
+-- already noise, on his 2026-11-22 ruling, so State of Alaska reduces to the
+-- single token {alaska}, and every carrier named after the state reduces to
+-- the same single token: ALASKA COMMUNICATIONS, Alaska Telephone Company and
+-- Fibre Alaska all become {alaska}. Token equality then scores tier 1. The
+-- more words I stopped, the MORE things these names matched.
+--
+-- The information that separates them is in the words the tokeniser threw
+-- away. State of X is a state; X Communications is a company. So this tests
+-- the shape of the whole name instead of its tokens.
+--
+-- Deliberately narrow. It does NOT catch City of X or County of X, because
+-- municipal utilities are real carriers: AS397142 City of Fort Collins holds
+-- Fort Collins Connexion, which is a genuine municipal ISP, and Carthage
+-- Water and Electric is another. It does not catch U.S. Department of State,
+-- which is a federal department and not a state. It does not catch
+-- Washington State K-20 Telecommunications Network or Pennsylvania State
+-- University, because the name continues past the word state.
+-- ---------------------------------------------------------------------------
+CREATE OR REPLACE FUNCTION carrier_name_is_state_government(raw text)
+RETURNS boolean AS $fn$
+WITH n AS (
+    SELECT btrim(regexp_replace(
+             regexp_replace(lower(coalesce(raw, '')), '[^a-z0-9 ]+', ' ', 'g'),
+             ' +', ' ', 'g')) AS s
+)
+SELECT EXISTS (
+    SELECT 1 FROM n, unnest(carrier_name_state_names()) AS t(st)
+    WHERE n.s = 'state of ' || t.st
+       OR n.s = 'the state of ' || t.st
+       OR n.s = 'commonwealth of ' || t.st
+       OR n.s = 'territory of ' || t.st
+       OR n.s = t.st || ' state'
+       OR n.s = t.st || ' state government'
+       OR n.s = 'state of ' || t.st || ' government'
+       -- and the forms that carry a department after the state, which is
+       -- the State of WI Dept. of Administration shape he named earlier
+       OR n.s LIKE 'state of ' || t.st || ' %'
+       OR n.s LIKE 'commonwealth of ' || t.st || ' %'
+       OR n.s LIKE t.st || ' state government %'
+       OR n.s LIKE t.st || ' state department %'
+       OR n.s LIKE t.st || ' state office %')
+   -- the two-letter abbreviation form, uppercase in the original only, so
+   -- State of Washington and State of WI are both caught while a lowercase
+   -- word that happens to spell a state code is not
+   OR EXISTS (
+    SELECT 1 FROM unnest(carrier_name_state_abbrevs()) AS t(ab)
+    WHERE raw ~ ('^[Tt]he [Ss]tate of ' || t.ab || '([^A-Za-z]|$)')
+       OR raw ~ ('^[Ss]tate of ' || t.ab || '([^A-Za-z]|$)')
+       OR raw ~ ('^[Cc]ommonwealth of ' || t.ab || '([^A-Za-z]|$)'));
+$fn$ LANGUAGE sql IMMUTABLE;
+
+-- IT BLOCKS, AND IT TESTS BOTH DIRECTIONS. A false positive here silently
+-- removes a real carrier from the universe, which is the same damage as the
+-- compact-key defect that deleted 769 decisions, arriving by a new route.
+-- Municipal broadband is the exposure: City of Fort Collins holds Fort
+-- Collins Connexion, and Carthage Water and Electric holds its own plant.
+-- The negative cases below are taken from Boris's own run, not invented.
+DO $gov$
+DECLARE failures text[] := ARRAY[]::text[];
+        name      text;
+BEGIN
+    FOREACH name IN ARRAY ARRAY[
+        'State of Alaska', 'state of alaska', 'STATE OF ALASKA',
+        'The State of New Mexico', 'State of South Carolina',
+        'State of North Dakota, ITD', 'New York State',
+        'South Dakota State Government', 'Commonwealth of Pennsylvania',
+        'State of WI Dept. of Administration']
+    LOOP
+        IF NOT carrier_name_is_state_government(name) THEN
+            failures := failures || format('%L should be recognised as a state government and is not', name);
+        END IF;
+    END LOOP;
+
+    FOREACH name IN ARRAY ARRAY[
+        -- real carriers whose only informative token is a state name
+        'Alaska Communications System', 'ALASKA COMMUNICATIONS',
+        'Alaska Telephone Company', 'Fibre Alaska',
+        'WESTERN NEW MEXICO TELEPHONE COMPANY', 'Windstream New York, Inc.',
+        -- municipal and cooperative holders, which ARE carriers
+        'City of Fort Collins', 'Fort Collins Connexion',
+        'The City of New York', 'Carthage Water and Electric',
+        -- a federal department, which is not a state
+        'U.S. Department of State',
+        -- and names that merely contain the word state
+        'Washington State K-20 Telecommunications Network',
+        'Pennsylvania State University', 'Penn State Telephone Co']
+    LOOP
+        IF carrier_name_is_state_government(name) THEN
+            failures := failures || format('%L is NOT a state government and was classified as one, so it would be dropped from the carrier universe', name);
+        END IF;
+    END LOOP;
+
+    IF cardinality(failures) > 0 THEN
+        RAISE EXCEPTION E'THE STATE GOVERNMENT TEST IS WRONG:\n%', array_to_string(failures, E'\n');
+    END IF;
+    RAISE NOTICE 'state government test: 10 positive and 14 negative cases all correct';
+END
+$gov$;
 
 CREATE OR REPLACE FUNCTION carrier_name_words(raw text)
 RETURNS text[] AS $fn$
@@ -264,6 +399,13 @@ RETURNS integer AS $fn$
 SELECT CASE
   -- EXACT. The compact key is the name with case, punctuation and legal
   -- suffix removed, which is what makes CABLE ONE, INC. agree with Cable One.
+  -- A STATE GOVERNMENT IS NOT A CARRIER, whatever it shares with one.
+  -- Tested before anything else so that no later arm can rescue it. Boris
+  -- 2026-11-23: State of Alaska has no relation to the Alaska carriers it
+  -- was paired with. The pairing came from the single token {alaska}, which
+  -- survives in both names after state and of are discarded as noise.
+  WHEN carrier_name_is_state_government(a)
+    OR carrier_name_is_state_government(b)                          THEN 0
   WHEN t.ca IS NOT NULL AND t.ca = t.cb                             THEN 1
   -- FALLBACK IS EXACT MATCH ONLY. Boris 2026-11-22. If either name is built
   -- entirely from noise words it identifies nothing, so the only way it can
@@ -314,6 +456,37 @@ INSERT INTO carrier_name_regression_tbl VALUES
  ('CABLE ONE, INC.','ONE Burbank','reject','boris: One is a modifier'),
  ('Wave Broadband','Fiber Wave','reject','boris: Wave does not indicate equality'),
  ('Wave Broadband','Wave Wireless','reject','boris: research case by case'),
+ -- Boris 2026-11-23, from asn_brand_candidates.tsv. Every one of these was
+ -- offered to him and is wrong.
+ ('Wave Rural Connect, LLC','Fuse Rural Connect, LLC','reject','boris 2026-11-23: separate companies'),
+ -- These three are must = 'ruled', a third category added 2026-11-23. The
+ -- string rule scores them tier 1 and there is no honest way to make it
+ -- score anything else: Peoples Telecommunications, Peoples Communications
+ -- and Peoples Telephone Cooperative differ only in words that are noise in
+ -- every other carrier name, so after the stopwords all three are {peoples}.
+ -- Boris supplied knowledge the strings do not contain. A 'ruled' case
+ -- therefore asserts the OPPOSITE of a reject case about the rule, that the
+ -- rule DOES join them, and asserts that the recorded ruling suppresses
+ -- them anyway. If one ever scored 0 the case would be silently vacuous.
+ ('Peoples Telecommunications LLC','Peoples Telephone Cooperative','ruled','boris 2026-11-23: not related'),
+ ('Peoples Telecommunications LLC','Peoples Communications','ruled','boris 2026-11-23: not related'),
+ -- and the reverse orientation of the same ruling, because Peoples
+ -- Telecommunications is both an ip-api operator name and a BDC brand, so
+ -- the pair arrives both ways round. The symmetric test below covers this
+ -- too; the cases are here so a regression in either is caught.
+ ('Peoples Communications Inc.','Peoples Telecommunications','ruled','boris 2026-11-23: not related, reverse orientation'),
+ -- State of Alaska against the three Alaska brands his candidate file
+ -- offered. All three brand strings are real: they are the candidates
+ -- AS7782 Alaska Communications System received. I am INFERRING that these
+ -- are the three he meant, because they are the three brands whose only
+ -- informative token is alaska, which is also the only token State of
+ -- Alaska has left after state and of are discarded.
+ ('State of Alaska','ALASKA COMMUNICATIONS','reject','boris 2026-11-23: no relation to any Alaska carrier'),
+ ('State of Alaska','Alaska Telephone Company','reject','boris 2026-11-23: no relation to any Alaska carrier'),
+ ('State of Alaska','Fibre Alaska','reject','boris 2026-11-23: no relation to any Alaska carrier'),
+ -- The control for that ruling. A real carrier named after the state must
+ -- still reach its own brand, so the fix cannot be a stopword on alaska.
+ ('Alaska Communications System','ALASKA COMMUNICATIONS','accept','same company, both reduce to the state name'),
  ('Wave Broadband','Wave 7 Communications','reject','boris: research case by case'),
  ('United States Department of Defense','United Communications','reject','boris: United is a modifier'),
  ('United States Department of Defense','United Fiber','reject','boris: United is a modifier'),
@@ -354,7 +527,11 @@ SELECT must,
                           AND carrier_name_tier(ipapi_side, bdc_side) >= 1
                           AND must = 'accept')                  AS accept_pass,
        count(*) FILTER (WHERE carrier_name_tier(ipapi_side, bdc_side) NOT IN (1, 2)
-                          AND must = 'reject')                   AS reject_pass
+                          AND must = 'reject')                   AS reject_pass,
+       -- a ruled case passes HERE by being joined, and is then required to
+       -- be suppressed by the recorded ruling in the second gate below
+       count(*) FILTER (WHERE carrier_name_tier(ipapi_side, bdc_side) IN (1, 2)
+                          AND must = 'ruled')                    AS ruled_joined_by_the_rule
 FROM carrier_name_regression_tbl
 GROUP BY 1 ORDER BY 1;
 
@@ -368,6 +545,8 @@ SELECT must, ipapi_side, bdc_side,
                  AND carrier_name_tier(ipapi_side, bdc_side) IN (1, 2) THEN 'pass'
             WHEN must = 'reject'
                  AND carrier_name_tier(ipapi_side, bdc_side) NOT IN (1, 2) THEN 'pass'
+            WHEN must = 'ruled'
+                 AND carrier_name_tier(ipapi_side, bdc_side) IN (1, 2) THEN 'pass, needs the ruling'
             ELSE 'FAIL' END AS result,
        source
 FROM carrier_name_regression_tbl
@@ -381,7 +560,11 @@ BEGIN
       INTO bad, detail
     FROM carrier_name_regression_tbl
     WHERE (must = 'accept' AND carrier_name_tier(ipapi_side, bdc_side) NOT IN (1, 2))
-       OR (must = 'reject' AND carrier_name_tier(ipapi_side, bdc_side) IN (1, 2));
+       OR (must = 'reject' AND carrier_name_tier(ipapi_side, bdc_side) IN (1, 2))
+       -- A ruled case that the rule does NOT join is a case that proves
+       -- nothing. Either the pair never needed a ruling, or the rule has
+       -- changed and the case is now vacuous. Both are worth stopping for.
+       OR (must = 'ruled'  AND carrier_name_tier(ipapi_side, bdc_side) NOT IN (1, 2));
     IF bad > 0 THEN
         RAISE EXCEPTION
           'REGRESSION GATE FAILED on % case(s): %. Nothing was built and no file was written.',
@@ -566,11 +749,24 @@ BEGIN
         RAISE NOTICE 'fcc499_filer_tbl absent: the universe is BDC names only. Every carrier that files with the FCC but does not appear in BDC is therefore OUT of the universe and will not be processed.';
         RETURN;
     END IF;
+    -- The patterns are wider than %name% because the trade name is the most
+    -- valuable column in the file and it is often not called a name. On the
+    -- FCC form the legal name and the name the public sees are separate
+    -- fields, and the second is usually headed Doing Business As or DBA.
+    -- Xfinity, Sparklight, altafiber and WOW! are exactly the names the BDC
+    -- side is missing, so dropping that column would waste the file.
+    -- Identifier columns are left out deliberately: an FRN or filer number
+    -- is not a name and would put number strings into the carrier universe.
+    -- Every column used AND every text column skipped is reported below, so
+    -- nothing about this file's shape is assumed or hidden.
     FOR col IN
         SELECT column_name FROM information_schema.columns
         WHERE table_name = 'fcc499_filer_tbl'
           AND data_type IN ('text', 'character varying', 'character')
-          AND column_name LIKE '%name%'
+          AND (column_name LIKE '%name%'
+            OR column_name LIKE '%dba%'
+            OR column_name LIKE '%business%'
+            OR column_name LIKE '%brand%')
         ORDER BY column_name
     LOOP
         EXECUTE format($q$
@@ -584,7 +780,18 @@ BEGIN
         GET DIAGNOSTICS added = ROW_COUNT;
         used := used || format('%s (%s names)', col.column_name, added);
     END LOOP;
+    IF cardinality(used) = 0 THEN
+        RAISE EXCEPTION 'fcc499_filer_tbl exists but none of its text columns looked like a name, so loading it achieved nothing. Run: SELECT column_name FROM information_schema.columns WHERE table_name = ''fcc499_filer_tbl''; and tell me what the name column is called.';
+    END IF;
     RAISE NOTICE 'built from fcc499_filer_tbl columns: %', array_to_string(used, ', ');
+    RAISE NOTICE 'fcc499_filer_tbl text columns NOT used as names: %',
+        coalesce((SELECT string_agg(c.column_name, ', ' ORDER BY c.column_name)
+                  FROM information_schema.columns c
+                  WHERE c.table_name = 'fcc499_filer_tbl'
+                    AND c.data_type IN ('text','character varying','character')
+                    AND NOT (c.column_name LIKE '%name%' OR c.column_name LIKE '%dba%'
+                          OR c.column_name LIKE '%business%' OR c.column_name LIKE '%brand%')),
+                 'none');
 END
 $f499$;
 
@@ -619,6 +826,33 @@ FROM carrier_universe_tbl u, unnest(carrier_name_tokens_strict(u.name)) AS t(tok
 
 CREATE INDEX carrier_universe_token_ix ON carrier_universe_token_tbl (tok);
 ANALYZE carrier_universe_token_tbl;
+
+-- ---------------------------------------------------------------------------
+-- THE MEMO, WHICH IS A PERFORMANCE FIX AND NOT A SECOND RULE.
+--
+-- Measured on Boris's 2026-11-23 run: the full rule costs 3.1 ms per name,
+-- which is 61 s over his 19,936 ASNs, and it was being paid again at every
+-- call site. carrier_universe.sql alone paid it four times, so the report
+-- took four minutes, and section 2 went from 4.3 s to 65.7 s.
+--
+-- The table is filled BY CALLING THE RULE, once per distinct operator name,
+-- so it cannot disagree with the rule. That matters more than the speed: the
+-- defect this whole area is recovering from was two tests of the same thing
+-- written two different ways. A name the memo has never seen falls through
+-- to the rule, so the function still answers for arbitrary strings, which is
+-- what the assertions pass it.
+--
+-- Created empty here, next to the rule, and filled after ipapi_asn_tbl
+-- exists. It is never dropped after the function is defined, so no cached
+-- plan can be left pointing at a dead relation.
+-- ---------------------------------------------------------------------------
+DROP TABLE IF EXISTS carrier_universe_memo_tbl;
+CREATE TABLE carrier_universe_memo_tbl (
+    name     text PRIMARY KEY,
+    eligible boolean NOT NULL);
+
+COMMENT ON TABLE carrier_universe_memo_tbl IS
+'One row per distinct AS operator name with the answer carrier_name_in_universe_rule gives for it. A cache, not a second rule: it is populated by calling that function. Rebuilt by carrier_asn_match.sql on every run. If you change the universe by hand, re-run that file or the cached answers will be stale.';
 
 -- ---------------------------------------------------------------------------
 -- MEMBERSHIP. This has to use THE SAME RULE AS MATCHING, or it throws away
@@ -663,9 +897,17 @@ ANALYZE carrier_universe_token_tbl;
 -- because the token join produces no rows for it. That is the same
 -- fallback-is-exact-match-only rule Boris gave for the matcher.
 -- ---------------------------------------------------------------------------
-CREATE OR REPLACE FUNCTION carrier_name_in_universe(raw text)
+-- The rule itself. carrier_name_in_universe below is a memo over this, so
+-- there is ONE definition of membership and the fast path cannot drift from
+-- it. Call this directly only when the memo is deliberately being bypassed.
+CREATE OR REPLACE FUNCTION carrier_name_in_universe_rule(raw text)
 RETURNS boolean AS $fn$
 SELECT carrier_name_compact(raw) IS NOT NULL
+   -- A state government is not a carrier and cannot enter the universe by
+   -- any path. The token key of State of Alaska is alaska, and so is the
+   -- token key of the brand Fibre Alaska, so without this the token-key path
+   -- admits it even though carrier_name_tier now scores the pair 0.
+   AND NOT carrier_name_is_state_government(raw)
    AND (EXISTS (SELECT 1 FROM carrier_universe_tbl u
                 WHERE u.name_key = carrier_name_compact(raw))
      OR (carrier_name_token_key(raw) IS NOT NULL
@@ -680,6 +922,15 @@ SELECT carrier_name_compact(raw) IS NOT NULL
                 GROUP BY ut.name, ut.tok_count) c
           WHERE c.shared = least(c.tok_count, carrier_name_token_count(raw))
             AND carrier_name_tier(raw, c.name) IN (1, 2)));
+$fn$ LANGUAGE sql STABLE;
+
+-- The memo lookup, which is what everything else calls. A hit is one index
+-- probe. A miss runs the rule, so the answer is identical either way.
+CREATE OR REPLACE FUNCTION carrier_name_in_universe(raw text)
+RETURNS boolean AS $fn$
+SELECT coalesce(
+  (SELECT m.eligible FROM carrier_universe_memo_tbl m WHERE m.name = raw),
+  carrier_name_in_universe_rule(raw));
 $fn$ LANGUAGE sql STABLE;
 
 
@@ -736,7 +987,7 @@ SELECT r.ipapi_side, r.bdc_side,
        carrier_name_compact(r.ipapi_side), carrier_name_compact(r.bdc_side),
        'from the regression gate: ' || r.source
 FROM carrier_name_regression_tbl r
-WHERE r.must = 'reject'
+WHERE r.must IN ('reject', 'ruled')
   AND carrier_name_compact(r.ipapi_side) IS NOT NULL
   AND carrier_name_compact(r.bdc_side) IS NOT NULL
   -- the two same-company cases, by compact key so spelling cannot slip past
@@ -765,14 +1016,50 @@ WHERE carrier_name_compact(v.a) IS NOT NULL
                   WHERE u.ipapi_key = carrier_name_compact(v.a)
                     AND u.bdc_key   = carrier_name_compact(v.b));
 
+-- SYMMETRIC. A ruling that two companies are unrelated is a fact about the
+-- two companies, not about which side of the join they happened to appear
+-- on. The first version tested one orientation only, and that is a hole:
+-- Peoples Telecommunications LLC is an ip-api operator name on AS397298 AND
+-- a BDC brand under provider 131030, so the same pair arrives both ways
+-- round depending on which ASN is being matched, and a ruling recorded in
+-- one direction silently failed in the other. Boris 2026-11-23 ruled that
+-- pair unrelated, which is what exposed it.
 CREATE OR REPLACE FUNCTION carrier_pair_is_unrelated(a text, b text)
 RETURNS boolean AS $fn$
 SELECT EXISTS (SELECT 1 FROM carrier_unrelated_tbl u
-               WHERE u.ipapi_key = carrier_name_compact(a)
-                 AND u.bdc_key   = carrier_name_compact(b));
+               WHERE (u.ipapi_key = carrier_name_compact(a)
+                  AND u.bdc_key   = carrier_name_compact(b))
+                  OR (u.ipapi_key = carrier_name_compact(b)
+                  AND u.bdc_key   = carrier_name_compact(a)));
 $fn$ LANGUAGE sql STABLE;
 
 SELECT count(*) AS unrelated_pairs_held FROM carrier_unrelated_tbl;
+
+-- ---------------------------------------------------------------------------
+-- THE SECOND GATE, for the cases the string rule cannot decide.
+--
+-- A 'ruled' case is one where the rule scores tier 1 or 2 and only Boris's
+-- ruling separates the two companies. The first gate proved the rule joins
+-- them. This proves the ruling suppresses them, in BOTH orientations,
+-- because the same pair arrives either way round depending on which ASN is
+-- being matched. It RAISES: an unenforced ruling is worse than no ruling,
+-- since the output then looks reviewed and is not.
+-- ---------------------------------------------------------------------------
+DO $ruled$
+DECLARE bad integer; detail text;
+BEGIN
+    SELECT count(*), string_agg(r.ipapi_side || ' -> ' || r.bdc_side, '; ')
+      INTO bad, detail
+    FROM carrier_name_regression_tbl r
+    WHERE r.must = 'ruled'
+      AND NOT (carrier_pair_is_unrelated(r.ipapi_side, r.bdc_side)
+           AND carrier_pair_is_unrelated(r.bdc_side, r.ipapi_side));
+    IF bad > 0 THEN
+        RAISE EXCEPTION 'RULING GATE FAILED on % case(s): %. The string rule joins these pairs and the recorded ruling did not suppress them, so they would be offered as matches. Nothing was built.', bad, left(detail, 400);
+    END IF;
+    RAISE NOTICE 'ruling gate passed: all % ruled pairs are suppressed in both orientations', (SELECT count(*) FROM carrier_name_regression_tbl WHERE must = 'ruled');
+END
+$ruled$;
 
 -- ---------------------------------------------------------------------------
 -- WHICH GATE CASES ARE HYPOTHETICAL.
@@ -950,6 +1237,48 @@ SELECT count(*)                                            AS asns,
        count(*) FILTER (WHERE EXISTS (SELECT 1 FROM asn_bdc_brand_map_tbl m
                                       WHERE m.asn = ipapi_asn_tbl.asn)) AS already_decided
 FROM ipapi_asn_tbl;
+
+-- ---------------------------------------------------------------------------
+-- FILL THE MEMO. One call to the rule per DISTINCT operator name, and every
+-- later test of eligibility, in this file and in the four that follow, is an
+-- index probe instead of a 3.1 ms evaluation.
+-- ---------------------------------------------------------------------------
+INSERT INTO carrier_universe_memo_tbl (name, eligible)
+SELECT n.as_operator, carrier_name_in_universe_rule(n.as_operator)
+FROM (SELECT DISTINCT as_operator FROM ipapi_asn_tbl
+      WHERE as_operator IS NOT NULL) n
+ON CONFLICT (name) DO NOTHING;
+
+ANALYZE carrier_universe_memo_tbl;
+
+-- The memo must agree with the rule on every name it holds. This is the
+-- check that makes the cache safe to trust, and it BLOCKS, because a silent
+-- disagreement here is the same class of defect as the universe test that
+-- deleted 769 decisions: two answers to one question.
+DO $memo$
+DECLARE
+    disagreements bigint;
+    sample        text;
+BEGIN
+    SELECT count(*) INTO disagreements
+    FROM carrier_universe_memo_tbl m
+    WHERE m.eligible IS DISTINCT FROM carrier_name_in_universe_rule(m.name);
+
+    IF disagreements > 0 THEN
+        SELECT string_agg(m.name, ', ') INTO sample
+        FROM (SELECT name FROM carrier_universe_memo_tbl m2
+              WHERE m2.eligible IS DISTINCT FROM carrier_name_in_universe_rule(m2.name)
+              LIMIT 5) m;
+        RAISE EXCEPTION 'the eligibility memo disagrees with the rule on % names, such as %. Nothing downstream can be trusted, so this stops here.', disagreements, sample;
+    END IF;
+    RAISE NOTICE 'eligibility memo holds % names and agrees with the rule on all of them', (SELECT count(*) FROM carrier_universe_memo_tbl);
+END
+$memo$;
+
+SELECT count(*)                                  AS names_memoised,
+       count(*) FILTER (WHERE eligible)          AS eligible,
+       count(*) FILTER (WHERE NOT eligible)      AS not_a_carrier
+FROM carrier_universe_memo_tbl;
 
 \echo
 \echo ================================================================
@@ -1156,6 +1485,27 @@ ORDER BY count(DISTINCT f.tract_geoid) DESC
 LIMIT 20;
 
 \echo
+\echo ----------------------------------------------------------------
+\echo WHAT THE STATE GOVERNMENT RULE REMOVED, also visible rather than
+\echo silent. Boris 2026-11-23: State of Alaska has no relation to any
+\echo Alaska carrier. These holders can no longer reach any brand.
+\echo A MUNICIPAL carrier is not caught by this: City of X and County
+\echo of X are untouched, because Fort Collins Connexion and Carthage
+\echo Water and Electric are real plant owned by real city governments.
+\echo ----------------------------------------------------------------
+\echo
+SELECT a.asn, a.as_operator, a.zip_capable_ranges
+FROM ipapi_asn_tbl a
+WHERE carrier_name_is_state_government(a.as_operator)
+ORDER BY a.zip_capable_ranges DESC NULLS LAST, a.asn
+LIMIT 25;
+
+SELECT count(*)                        AS state_government_asns,
+       sum(a.zip_capable_ranges)       AS zip_capable_ranges_behind_them
+FROM ipapi_asn_tbl a
+WHERE carrier_name_is_state_government(a.as_operator);
+
+\echo
 \echo ASNs excluded because every probed range is already classified mobile
 \echo CGNAT or transit, so none of them can carry a ZIP answer.
 \echo
@@ -1247,15 +1597,44 @@ ANALYZE asn_isp_disagree_tbl;
 \echo into territory Verizon had divested rather than overlapping it.
 \echo ----------------------------------------------------------------
 \echo
-SELECT d.asn, left(d.as_operator, 24) AS registry_says,
-       left(d.isp_commonest, 24) AS ipapi_isp_says,
+-- The brand name is NOT truncated here. On Boris's 2026-11-23 run AS23404,
+-- AS21725 and AS46986 each appeared twice with what looked like the same
+-- provider_id and the same brand, which reads as a duplicate row. It cannot
+-- be one: the hit set is built with DISTINCT and UNION, so two identical
+-- triples cannot survive. The two rows therefore hold two DIFFERENT brand
+-- strings under one provider_id, and left(brand, 22) was hiding the
+-- difference. Showing the whole string is the fix; the report below names
+-- every such pair in the BDC data.
+SELECT d.asn, left(d.as_operator, 22) AS registry_says,
+       left(d.isp_commonest, 22) AS ipapi_isp_says,
        d.isp_suggests_provider_id AS suggests_provider,
-       left(d.isp_suggests_brand, 22) AS suggests_brand,
+       d.isp_suggests_brand AS suggests_brand,
        d.isp_tier, d.zip_capable_ranges
 FROM asn_isp_disagree_tbl d
 WHERE NOT d.isp_is_a_larger_asn_upstream
 ORDER BY d.zip_capable_ranges DESC NULLS LAST, d.asn
 LIMIT 40;
+
+\echo
+\echo ----------------------------------------------------------------
+\echo ONE PROVIDER, SEVERAL SPELLINGS OF ONE BRAND. These are the rows
+\echo that look duplicated in the reports above and below. They are not
+\echo duplicates: the provider files more than one brand string whose
+\echo compact key is identical. Shown rather than merged, because two
+\echo spellings can carry DIFFERENT footprints and silently keeping one
+\echo would throw plant away.
+\echo ----------------------------------------------------------------
+\echo
+SELECT c.provider_id,
+       carrier_name_compact(c.brand_name)      AS shared_compact_key,
+       count(DISTINCT c.brand_name)            AS spellings,
+       string_agg(DISTINCT c.brand_name, ' | ' ORDER BY c.brand_name) AS as_filed
+FROM bdc_carrier_tbl c
+WHERE c.brand_name IS NOT NULL AND c.brand_name <> ''
+GROUP BY c.provider_id, carrier_name_compact(c.brand_name)
+HAVING count(DISTINCT c.brand_name) > 1
+ORDER BY count(DISTINCT c.brand_name) DESC, c.provider_id
+LIMIT 30;
 
 \echo
 \echo And the ones where the ISP name is the registry name of a LARGER ASN,

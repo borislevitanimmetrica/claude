@@ -396,6 +396,44 @@ BEGIN
         failures := failures || format('AS99011 should be offered the brand Blue Osprey at tier 2 exactly once, found %s', n);
     END IF;
 
+    -- DEFECT 5. THE STATE GOVERNMENT, AND THE CARRIER IT MUST NOT COST.
+    -- AS99012 State of Montana and the brand Montana Communications share
+    -- their only informative token, so token equality scores them tier 1.
+    -- The government must get nothing; AS99013 Montana Telephone Company,
+    -- which shares the same single token, must keep its candidate. Together
+    -- these two assertions are what stop the fix being a stopword on the
+    -- state name, which would have silently removed both.
+    IF carrier_name_in_universe('State of Montana') THEN
+        failures := failures || 'State of Montana is in the carrier universe. A state government is not a carrier.'::text;
+    END IF;
+
+    SELECT count(*) INTO n FROM asn_brand_candidate_tbl WHERE asn = 99012;
+    IF n <> 0 THEN
+        failures := failures || format('AS99012 State of Montana got %s candidates. Boris 2026-11-23: a state has no relation to the carriers named after it.', n);
+    END IF;
+
+    SELECT count(*) INTO n FROM asn_brand_candidate_tbl
+    WHERE asn = 99013 AND brand_name = 'Montana Communications';
+    IF n <> 1 THEN
+        failures := failures || format('AS99013 Montana Telephone Company lost its match to Montana Communications, found %s rows. The state government rule has cost a real carrier, which is what stopping the state name as a word would have done.', n);
+    END IF;
+
+    -- DISCRIMINATION for that pair. Both names must still reduce to the same
+    -- single token, or the fixture is no longer reproducing the shape.
+    IF carrier_name_token_key('State of Montana') IS DISTINCT FROM
+       carrier_name_token_key('Montana Communications') THEN
+        failures := failures || format('State of Montana has token key %L and Montana Communications has %L. They must agree, or this case no longer tests what it was built for.',
+            carrier_name_token_key('State of Montana'),
+            carrier_name_token_key('Montana Communications'));
+    END IF;
+
+    -- A RULING MUST HOLD IN BOTH ORIENTATIONS. Peoples Telecommunications is
+    -- both an ip-api operator name and a BDC brand, so the pair arrives
+    -- either way round depending on which ASN is being matched.
+    IF NOT carrier_pair_is_unrelated('Wal-Mart Stores, Inc.', 'Database Mart LLC') THEN
+        failures := failures || 'the unrelated check is not symmetric: the Database Mart ruling fails when the two names arrive the other way round'::text;
+    END IF;
+
     -- The widened test must not have widened into admitting the DIA
     -- customer through a shared noise word. Flowers Direct Retail, Inc. is
     -- checked above; this checks the mechanism rather than the one name, by

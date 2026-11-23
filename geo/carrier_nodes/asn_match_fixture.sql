@@ -120,7 +120,10 @@ INSERT INTO bdc_carrier_tbl (provider_id, brand_name, frn) VALUES
  -- AT&T Enterprises, LLC, compacting to attenterprises, and the brand is
  -- AT&T, compacting to att.
  (900009, 'Osprey',                  '0001000009'),
- (900010, 'Blue Osprey',             '0001000010');
+ (900010, 'Blue Osprey',             '0001000010'),
+ -- DEFECT 5. A real carrier whose only informative token is a state name,
+ -- so that the state government rule can be shown NOT to break it.
+ (900011, 'Montana Communications',  '0001000011');
 
 -- Footprints. 1000 tracts in the fixture universe, so shares are readable.
 --
@@ -163,6 +166,8 @@ INSERT INTO provider_brand_tract_tech_tbl (provider_id, brand_name, technology, 
 SELECT 900009, 'Osprey', 10, lpad(g::text, 11, '0') FROM generate_series(600, 617) g;
 INSERT INTO provider_brand_tract_tech_tbl (provider_id, brand_name, technology, tract_geoid)
 SELECT 900010, 'Blue Osprey', 40, lpad(g::text, 11, '0') FROM generate_series(700, 711) g;
+INSERT INTO provider_brand_tract_tech_tbl (provider_id, brand_name, technology, tract_geoid)
+SELECT 900011, 'Montana Communications', 10, lpad(g::text, 11, '0') FROM generate_series(740, 752) g;
 -- Tracts nobody serves, so the denominator is 1000 and not 900.
 INSERT INTO provider_brand_tract_tech_tbl (provider_id, brand_name, technology, tract_geoid)
 SELECT 900004, 'Cable One', 40, lpad(g::text, 11, '0') FROM generate_series(901, 1000) g;
@@ -266,6 +271,23 @@ FROM generate_series(1, 260);
 INSERT INTO ip2city_dbiplite_probe_tbl (isp, org, "as", mobile_transit, ran_at)
 SELECT 'Blue Osprey', 'Blue Osprey', 'AS99011 Blue Osprey Worldnet', 'f', now()
 FROM generate_series(1, 45);
+
+-- DEFECT 5. THE STATE GOVERNMENT. Boris 2026-11-23: "State of Alaska has no
+-- relation to any of the three Alaska entities you paired with it." The
+-- fixture brand Osprey is preceded here by a state-named brand so the shape
+-- is reproduced exactly: a government holder whose only informative token is
+-- the state name, and a real carrier with the same single token. The first
+-- must get no candidate; the second must keep its match, which is why the
+-- fix cannot be a stopword on the state name.
+INSERT INTO ip2city_dbiplite_probe_tbl (isp, org, "as", mobile_transit, ran_at)
+SELECT 'State of Montana', 'State of Montana',
+       'AS99012 State of Montana', 'f', now()
+FROM generate_series(1, 300);
+
+INSERT INTO ip2city_dbiplite_probe_tbl (isp, org, "as", mobile_transit, ran_at)
+SELECT 'Montana Telephone', 'Montana Telephone',
+       'AS99013 Montana Telephone Company', 'f', now()
+FROM generate_series(1, 90);
 
 -- THE TRADE NAME. Must produce no candidate from any string rule, and must
 -- be reachable through the entity layer.
