@@ -467,6 +467,18 @@ BEGIN
             carrier_name_token_key('Montana Communications'));
     END IF;
 
+    -- A PAIRING AND AN UNRELATED RULING CANNOT BOTH HOLD. If a pair is in
+    -- both tables the unrelated ruling wins in carrier_name_tier, so the
+    -- pairing silently does nothing and the proposal list keeps asking about
+    -- a question already answered. This is the invariant that caught the
+    -- seed resurrecting a rejected pairing on the next run.
+    SELECT count(*) INTO n
+    FROM carrier_alias_tbl x
+    WHERE carrier_keys_are_unrelated(x.ipapi_key, x.bdc_key);
+    IF n <> 0 THEN
+        failures := failures || format('%s pairing(s) are in carrier_alias_tbl AND recorded unrelated. The unrelated ruling wins, so those pairings do nothing and would be asked about again on every run.', n);
+    END IF;
+
     -- A RULING MUST HOLD IN BOTH ORIENTATIONS. Peoples Telecommunications is
     -- both an ip-api operator name and a BDC brand, so the pair arrives
     -- either way round depending on which ASN is being matched.

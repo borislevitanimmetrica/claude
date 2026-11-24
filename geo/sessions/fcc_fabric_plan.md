@@ -2791,3 +2791,92 @@ the filer, and normalises non-breaking spaces so a name can match the same
 name written ordinarily. Its counts cross-check against an independent
 analysis of the file: 4,061 data rows, 348 rows padded, which is exactly
 4,061 minus the 3,713 that have a DBA.
+
+## 2026-11-24, measured on Boris's run: the strict rule, and what it costs
+
+### He refuted the legal-name shortcut
+
+> Your proposal to rely on the "legal name" doesn't work because there are
+> many subsidiaries, such as AT&T Broadband, LLC of AT&T Enterprises, Inc.
+
+Correct, and the file shows it. The Form 499a list is a list of FILERS, and a
+filer is a legal entity, so it holds subsidiaries under their own names:
+`AT&T Corp.`, `AT&T Broadband Phone of Virginia, Inc.`, `Charter Fiberlink -
+Missouri, LLC`, `Verizon - Maryland, Inc.`. Finding `AT&T Corp.` in it
+settles nothing about `AT&T Enterprises, LLC`, which is a different legal
+entity and is not in the file at all. **There is no data source that decides
+these pairings.** Each needs one word from him, which is what the proposal
+list is for.
+
+### What the strict rule did, measured
+
+| measure | before, token rule | after, complete match only |
+|---|---|---|
+| candidate rows | 511 | 147 |
+| ASNs with a candidate | 198 | 111 |
+| of those, tier 1 | 492 | 147, all of them |
+| eligible ASNs | 1,984 | 1,199 |
+| eligible ZIP-capable ranges | 1,321,688 (70.0%) | 942,754 (50.0%) |
+| brand decisions whose holder is now outside the universe | n/a | 613 rows, 579 ASNs, 376,492 ranges |
+
+Nothing was deleted: every one of those 613 rows is tier 3 and the cleanup
+guard refuses to touch them. 9 of the top rows are `awaiting_your_ruling`,
+the rest are `shares a word, protected`.
+
+### The queue, with what each pairing is worth
+
+| ip-api name | BDC brand | ASNs | ZIP-capable ranges |
+|---|---|---|---|
+| AT&T Enterprises, LLC | AT&T | 26 | 283,233 |
+| Comcast Cable Communications, LLC | Comcast | 32 | 193,281 |
+| CenturyLink Communications, LLC | CenturyLink / Level 3 / Lumen / Quantum Fiber | 29 | 91,251 |
+| Level 3 Parent, LLC | Level 3 / Quantum Fiber | 8 | 65,457 |
+| Windstream Communications LLC | Windstream | 2 | 64,949 |
+| Google LLC | Google Fiber | 14 | 28,698 |
+| Cogent Communications | Cogent Communication | 4 | 19,622 |
+| Cablevision Systems Corp. | Suddenlink | 2 | 14,232 |
+| Zayo Bandwidth | ZAYO GROUP LLC | 23 | 11,998 |
+
+`carrier_alias_review.sql` writes these to
+`/home/boris/geo/carrier_alias_approval.tsv` with an empty decision column,
+and `load_alias_decisions.sql` reads it back: `y` confirms the pairing, `n`
+deletes it and records it in `carrier_unrelated_tbl`, blank leaves it alone.
+Anything else in that column stops the file rather than being guessed at.
+
+Verified end to end on the fixture: before confirming, AS99010 had 0
+candidates, tier 3, not eligible; after confirming, 1 candidate, tier 2,
+eligible.
+
+### Two defects found while testing that loop
+
+**A rejected pairing came back.** Ruling one `n` deleted it, and the next run
+of `carrier_asn_match.sql` re-seeded it from the gate, so the same question
+would be asked for ever. Fixed in two places: the seed skips a pair recorded
+unrelated, AND a reconciliation step deletes any pairing that is recorded
+unrelated, because a guard on insertion cannot remove a row an earlier run
+already inserted. A new assertion fails if any pairing is in both tables.
+
+**The state government test cost two minutes per report.** It unnested 56
+state names and ran LIKE against each, for every one of his 19,936 ASNs, and
+several reports call it: 128 s each, which is most of the twelve minutes that
+run took. Almost no name has the SHAPE of a state government, so one regular
+expression now rejects the overwhelming majority before a state name is
+looked at. Measured over 20,000 synthetic names: **512 ms**, against 128,000
+ms. The detailed test is unchanged, and its 10 positive and 14 negative cases
+still pass, so the answer is identical.
+
+`carrier_name_tier` also computed the compact key up to six times per
+evaluation, because the unrelated and pairing lookups each recomputed both.
+They now take the keys the tier function has already computed.
+
+### Where the seven steps stand
+
+| step | state |
+|---|---|
+| 1. Ingest the FCC Fabric | DONE. 2,605 brands, 2,108 with wireline plant, tract-by-technology coverage loaded. |
+| 2. Headend and CO locations per carrier and network type | IN PROGRESS, and it is the binding constraint. The carrier identity half is what this week has been: 19,936 ASNs, 1,199 eligible, 147 complete matches, 37 pairings awaiting a ruling. The LOCATION half is barely started: `att.com` resolved 1 located site with a 1,412 km median error. |
+| 3. Street addresses of headends and COs | NOT STARTED. |
+| 4. Distance from headend to tract centroid | NOT STARTED, blocked on 2 and 3. |
+| 5. Nearest headend unless another within twice the distance has uninterrupted coverage | NOT STARTED, blocked on 4. |
+| 6. Ascribe ip-api addresses near a headend to the tract | NOT STARTED. Its prerequisite is the ASN-to-brand map being built now. |
+| 7. Combine tracts into ZIP codes | NOT STARTED. The Census tract-to-ZIP relationship file is verified available, 23.2 MB. |

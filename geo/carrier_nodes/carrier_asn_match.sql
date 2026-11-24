@@ -205,35 +205,45 @@ $fn$ LANGUAGE sql IMMUTABLE;
 -- ---------------------------------------------------------------------------
 CREATE OR REPLACE FUNCTION carrier_name_is_state_government(raw text)
 RETURNS boolean AS $fn$
-WITH n AS (
-    SELECT btrim(regexp_replace(
-             regexp_replace(lower(coalesce(raw, '')), '[^a-z0-9 ]+', ' ', 'g'),
-             ' +', ' ', 'g')) AS s
+-- A CHEAP TEST FIRST, THEN THE SAME DETAILED ONE. Measured on Boris's run
+-- 2026-11-24: the detailed form, which unnested 56 state names and ran LIKE
+-- against each, cost 128 SECONDS per report over his 19,936 ASNs, and
+-- several reports call it. That is most of the twelve minutes that run took.
+-- Almost no name has the SHAPE of a state government, so one regular
+-- expression rejects the overwhelming majority before a single state name is
+-- looked at. The detailed test is unchanged, so the answer is identical.
+WITH shape AS (
+    SELECT s,
+           s ~ '^(the )?(state|commonwealth|territory) of ' AS has_prefix,
+           s ~ ' state( government)?$'                      AS has_suffix,
+           s ~ ' state (government|department|office) '     AS has_middle
+    FROM (SELECT btrim(regexp_replace(
+                   regexp_replace(lower(coalesce(raw, '')), '[^a-z0-9]+', ' ', 'g'),
+                   ' +', ' ', 'g')) AS s) n
 )
-SELECT EXISTS (
-    SELECT 1 FROM n, unnest(carrier_name_state_names()) AS t(st)
-    WHERE n.s = 'state of ' || t.st
-       OR n.s = 'the state of ' || t.st
-       OR n.s = 'commonwealth of ' || t.st
-       OR n.s = 'territory of ' || t.st
-       OR n.s = t.st || ' state'
-       OR n.s = t.st || ' state government'
-       OR n.s = 'state of ' || t.st || ' government'
-       -- and the forms that carry a department after the state, which is
-       -- the State of WI Dept. of Administration shape he named earlier
-       OR n.s LIKE 'state of ' || t.st || ' %'
-       OR n.s LIKE 'commonwealth of ' || t.st || ' %'
-       OR n.s LIKE t.st || ' state government %'
-       OR n.s LIKE t.st || ' state department %'
-       OR n.s LIKE t.st || ' state office %')
-   -- the two-letter abbreviation form, uppercase in the original only, so
-   -- State of Washington and State of WI are both caught while a lowercase
-   -- word that happens to spell a state code is not
-   OR EXISTS (
-    SELECT 1 FROM unnest(carrier_name_state_abbrevs()) AS t(ab)
-    WHERE raw ~ ('^[Tt]he [Ss]tate of ' || t.ab || '([^A-Za-z]|$)')
-       OR raw ~ ('^[Ss]tate of ' || t.ab || '([^A-Za-z]|$)')
-       OR raw ~ ('^[Cc]ommonwealth of ' || t.ab || '([^A-Za-z]|$)'));
+SELECT CASE
+  WHEN NOT (shape.has_prefix OR shape.has_suffix OR shape.has_middle) THEN false
+  ELSE EXISTS (
+        SELECT 1 FROM unnest(carrier_name_state_names()) AS t(st)
+        WHERE shape.s = 'state of ' || t.st
+           OR shape.s = 'the state of ' || t.st
+           OR shape.s = 'commonwealth of ' || t.st
+           OR shape.s = 'territory of ' || t.st
+           OR shape.s = t.st || ' state'
+           OR shape.s = t.st || ' state government'
+           OR shape.s = 'state of ' || t.st || ' government'
+           OR shape.s LIKE 'state of ' || t.st || ' %'
+           OR shape.s LIKE 'commonwealth of ' || t.st || ' %'
+           OR shape.s LIKE t.st || ' state government %'
+           OR shape.s LIKE t.st || ' state department %'
+           OR shape.s LIKE t.st || ' state office %')
+    OR EXISTS (
+        SELECT 1 FROM unnest(carrier_name_state_abbrevs()) AS t(ab)
+        WHERE raw ~ ('^[Tt]he [Ss]tate of ' || t.ab || '([^A-Za-z]|$)')
+           OR raw ~ ('^[Ss]tate of ' || t.ab || '([^A-Za-z]|$)')
+           OR raw ~ ('^[Cc]ommonwealth of ' || t.ab || '([^A-Za-z]|$)'))
+  END
+FROM shape;
 $fn$ LANGUAGE sql IMMUTABLE;
 
 -- IT BLOCKS, AND IT TESTS BOTH DIRECTIONS. A false positive here silently
@@ -688,13 +698,20 @@ WHERE carrier_name_compact(v.a) IS NOT NULL
 -- round depending on which ASN is being matched, and a ruling recorded in
 -- one direction silently failed in the other. Boris 2026-11-23 ruled that
 -- pair unrelated, which is what exposed it.
-CREATE OR REPLACE FUNCTION carrier_pair_is_unrelated(a text, b text)
+-- KEY FORM, which is what carrier_name_tier calls. carrier_name_compact is
+-- not free and the tier function has already computed both keys by the time
+-- it needs these: six compact-key computations per evaluation became two.
+CREATE OR REPLACE FUNCTION carrier_keys_are_unrelated(ka text, kb text)
 RETURNS boolean AS $fn$
 SELECT EXISTS (SELECT 1 FROM carrier_unrelated_tbl u
-               WHERE (u.ipapi_key = carrier_name_compact(a)
-                  AND u.bdc_key   = carrier_name_compact(b))
-                  OR (u.ipapi_key = carrier_name_compact(b)
-                  AND u.bdc_key   = carrier_name_compact(a)));
+               WHERE (u.ipapi_key = ka AND u.bdc_key = kb)
+                  OR (u.ipapi_key = kb AND u.bdc_key = ka));
+$fn$ LANGUAGE sql STABLE;
+
+CREATE OR REPLACE FUNCTION carrier_pair_is_unrelated(a text, b text)
+RETURNS boolean AS $fn$
+SELECT carrier_keys_are_unrelated(carrier_name_compact(a),
+                                  carrier_name_compact(b));
 $fn$ LANGUAGE sql STABLE;
 
 SELECT count(*) AS unrelated_pairs_held FROM carrier_unrelated_tbl;
@@ -778,7 +795,33 @@ WHERE r.must IN ('needs_pairing', 'accept_recorded')
   AND carrier_name_compact(r.ipapi_side) IS NOT NULL
   AND carrier_name_compact(r.bdc_side) IS NOT NULL
   AND carrier_name_compact(r.ipapi_side) <> carrier_name_compact(r.bdc_side)
+  -- AND NOT ALREADY RULED UNRELATED. Without this the seed RESURRECTS a
+  -- pairing he has just rejected: load_alias_decisions.sql deletes the row
+  -- and records the ruling, and the next run of this file puts the row back,
+  -- so the same question is asked again for ever. Found 2026-11-24 by ruling
+  -- the T-Mobile pairing no and watching it reappear in the proposal list.
+  AND NOT carrier_keys_are_unrelated(carrier_name_compact(r.ipapi_side),
+                                     carrier_name_compact(r.bdc_side))
 ON CONFLICT (ipapi_key, bdc_key) DO NOTHING;
+
+-- RECONCILE, rather than merely guard. The guards above stop a rejected
+-- pairing being re-inserted, but a row resurrected by an earlier run is
+-- already there, and a guard on insertion cannot remove it. So the invariant
+-- is enforced here on every run: a pairing he has ruled unrelated is not a
+-- pairing. Without this the row sits in both tables, the unrelated ruling
+-- wins in carrier_name_tier, and the proposal list keeps asking a question
+-- he has already answered.
+DO $reconcile$
+DECLARE removed bigint;
+BEGIN
+    DELETE FROM carrier_alias_tbl x
+    WHERE carrier_keys_are_unrelated(x.ipapi_key, x.bdc_key);
+    GET DIAGNOSTICS removed = ROW_COUNT;
+    IF removed > 0 THEN
+        RAISE NOTICE 'removed % pairing(s) that you have ruled unrelated', removed;
+    END IF;
+END
+$reconcile$;
 
 CREATE INDEX IF NOT EXISTS carrier_alias_ipapi_ix ON carrier_alias_tbl (ipapi_key);
 CREATE INDEX IF NOT EXISTS carrier_alias_bdc_ix   ON carrier_alias_tbl (bdc_key);
@@ -787,14 +830,18 @@ ANALYZE carrier_alias_tbl;
 -- SYMMETRIC, for the same reason the unrelated check is: the same pair
 -- arrives either way round depending on which side is being matched.
 -- CONFIRMED ONLY. A proposed row is my inference and must not match.
-CREATE OR REPLACE FUNCTION carrier_pair_is_recorded(a text, b text)
+CREATE OR REPLACE FUNCTION carrier_keys_are_recorded(ka text, kb text)
 RETURNS boolean AS $fn$
 SELECT EXISTS (SELECT 1 FROM carrier_alias_tbl x
                WHERE x.status = 'confirmed'
-                 AND ((x.ipapi_key = carrier_name_compact(a)
-                   AND x.bdc_key   = carrier_name_compact(b))
-                   OR (x.ipapi_key = carrier_name_compact(b)
-                   AND x.bdc_key   = carrier_name_compact(a))));
+                 AND ((x.ipapi_key = ka AND x.bdc_key = kb)
+                   OR (x.ipapi_key = kb AND x.bdc_key = ka)));
+$fn$ LANGUAGE sql STABLE;
+
+CREATE OR REPLACE FUNCTION carrier_pair_is_recorded(a text, b text)
+RETURNS boolean AS $fn$
+SELECT carrier_keys_are_recorded(carrier_name_compact(a),
+                                 carrier_name_compact(b));
 $fn$ LANGUAGE sql STABLE;
 
 -- CREATED IN ITS MIGRATED SHAPE. One row per ASN PER BRAND, enforced by the
@@ -902,11 +949,14 @@ SELECT CASE
   WHEN t.ca IS NULL OR t.cb IS NULL                                 THEN 0
   -- A ruling that two companies are unrelated beats everything, including a
   -- complete match, because he has looked at that pair himself.
-  WHEN carrier_pair_is_unrelated(a, b)                              THEN 0
+  WHEN carrier_keys_are_unrelated(t.ca, t.cb)                       THEN 0
+  -- The ORDER of these two is deliberate and is not a performance choice.
+  -- A state government is tested BEFORE the complete match, so that two
+  -- identical government names cannot score 1 and become a match.
   WHEN carrier_name_is_state_government(a)
     OR carrier_name_is_state_government(b)                          THEN 0
   WHEN t.ca = t.cb                                                  THEN 1
-  WHEN carrier_pair_is_recorded(a, b)                               THEN 2
+  WHEN carrier_keys_are_recorded(t.ca, t.cb)                        THEN 2
   -- Nothing below this line is a match.
   WHEN cardinality(ARRAY(SELECT unnest(t.ta)
                          INTERSECT SELECT unnest(t.tb))) > 0        THEN 3
@@ -998,7 +1048,11 @@ BEGIN
     WHERE r.must = 'needs_pairing'
       AND NOT EXISTS (SELECT 1 FROM carrier_alias_tbl a
                       WHERE a.ipapi_key = carrier_name_compact(r.ipapi_side)
-                        AND a.bdc_key   = carrier_name_compact(r.bdc_side));
+                        AND a.bdc_key   = carrier_name_compact(r.bdc_side))
+      -- a pair he has RULED unrelated is resolved, not lost, so it does not
+      -- need to be in the proposal list any more
+      AND NOT carrier_keys_are_unrelated(carrier_name_compact(r.ipapi_side),
+                                         carrier_name_compact(r.bdc_side));
     IF bad > 0 THEN
         RAISE EXCEPTION 'PAIRING GATE FAILED on % case(s): %. These pairs no longer match and are not in the proposal list either, so they have been silently dropped. Nothing was built.', bad, left(detail, 400);
     END IF;
