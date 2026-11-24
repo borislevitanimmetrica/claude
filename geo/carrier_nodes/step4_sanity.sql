@@ -1,3 +1,33 @@
+\set ON_ERROR_STOP on
+
+-- ---------------------------------------------------------------------------
+-- THIS FILE IS OUT OF DATE WITH step4_tract_site.sql AND IT BLOCKS.
+--
+-- 2026-11-24: step4_carrier_tract_site_tbl is now keyed by provider_id and
+-- technology, not by itdk_domain. The pairing used to scan
+-- bdc_availability_tbl, 519,469,683 rows, and fan each row out by the number
+-- of domains resolving to the provider, up to 101, which is why it never
+-- finished. It now reads provider_tract_tech_tbl, the step 1 aggregate.
+--
+-- Every query below still joins on itdk_domain. Rather than return wrong
+-- answers against the new grain, this stops. The queries are being rewritten.
+-- ---------------------------------------------------------------------------
+DO $schema$
+BEGIN
+    IF EXISTS (SELECT 1 FROM information_schema.tables
+               WHERE table_name = 'step4_carrier_tract_site_tbl')
+       AND NOT EXISTS (SELECT 1 FROM information_schema.columns
+                       WHERE table_name = 'step4_carrier_tract_site_tbl'
+                         AND column_name = 'provider_id') THEN
+        RAISE EXCEPTION 'step4_carrier_tract_site_tbl predates the 2026-11-24 rewrite. Re-run step4_tract_site.sql first.';
+    END IF;
+    IF EXISTS (SELECT 1 FROM information_schema.columns
+               WHERE table_name = 'step4_carrier_tract_site_tbl'
+                 AND column_name = 'provider_id') THEN
+        RAISE EXCEPTION 'this file still queries step4_carrier_tract_site_tbl by itdk_domain, and the table is now keyed by provider_id and technology. Its answers would be wrong rather than missing, so nothing is reported. The rewrite is the next change.';
+    END IF;
+END
+$schema$;
 -- step4_sanity.sql - why step 4 returned continental distances.
 --
 -- THE SYMPTOM, from Boris's run of 2026-11-18

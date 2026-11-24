@@ -3300,3 +3300,60 @@ running. Step 4 reads `carrier_suffix_group_tbl` to build the site scope, so
 a ruling applied mid-run may or may not be seen depending on where the run
 had reached. No harm this time, since every row was left blank, but the rule
 is: do not rule the grouping while step 4 is running.
+
+## 2026-11-24: why step 4 never finished, and the rewrite
+
+### The cause, and the estimate I owed
+
+`carrier_tract_tbl` scanned `bdc_availability_tbl`, **519,469,683 rows**, and
+then joined it to `carrier_resolved_tbl`, which multiplies every surviving
+row by the number of ITDK domains resolving to that provider: **87 for AT&T,
+101 for Verizon, 56 for CenturyLink, 48 for Spectrum**. Hundreds of millions
+of rows fanned out by up to a hundred and then de-duplicated with DISTINCT.
+That is why it sat without progressing, and the fan-out factor is the
+customer-domain contamination showing up as a performance failure.
+
+**Step 1 had already aggregated those 519 million rows** into
+`provider_tract_tech_tbl`, 785,168 provider-technology-tract rows, recorded
+in this very file on 2026-11-17. Step 4 should never have touched the raw
+table. The rewrite reads the aggregate: 662 times smaller.
+
+The key is now the PROVIDER and the TECHNOLOGY rather than the domain, so
+there is no fan-out at all, and per-technology is the grain the plan asks for
+rather than something to be recovered later.
+
+**Measured estimate, from his own audit run:** the same nearest-site lateral
+pattern did 21,860 rows in 2,564 ms, which is 8,524 rows a second. The
+placeable wireline pairing is 296,091 rows, from the link audit's own
+per-technology split of 83,105 Copper, 57,298 Cable and 155,688 FTTP. So
+expect one to three minutes, against a version that did not finish. This is
+the kind of number I should have given before issuing the command.
+
+### The contamination is cut at the site set
+
+`provider_site_tbl` holds the sites that count as a provider. Where a
+CONFIRMED suffix group exists for that provider, ONLY the suffixes of that
+group contribute. Where none is confirmed, every linked domain contributes,
+exactly as before, and the count of providers in each state is printed so the
+difference is never silent.
+
+Verified in isolation, with three domains linked to one provider and a group
+covering two of them:
+
+| grouping | sites contributing |
+|---|---|
+| proposed | americanadoptions.com, bellsouth.net, sbcglobal.net |
+| confirmed | bellsouth.net, sbcglobal.net |
+
+That is the mechanism that keeps DIA customer premises out of a carrier's
+site list, and it turns on only when he rules.
+
+### Two consequences
+
+`carrier_site_scope_tbl` is deleted, 47 lines. It was the domain-keyed
+version of the same idea and keeping both would be two definitions of one
+rule, which is the defect that deleted 769 decisions.
+
+`step4_sanity.sql` now BLOCKS. All twenty of its joins are on
+`itdk_domain`, and against the new grain they would return wrong answers
+rather than no answers. Rewriting it is the next change.

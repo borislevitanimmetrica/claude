@@ -195,120 +195,180 @@ GROUP BY 1 ORDER BY count(*) DESC LIMIT 20;
 \echo For each carrier and each census tract in which that carrier offers
 \echo service per the BDC, the distance from the tract centroid to that
 \echo carriers nearest serving site. This is step 4 as written.
--- ---------------------------------------------------------------------------
--- WHICH SITES COUNT AS THIS CARRIER'S. BUG FIX 2026-11-24.
---
--- The nearest-site search used to read WHERE s.carrier_domain = ct.itdk_domain,
--- so one DNS SUFFIX was treated as one carrier. A carrier that names its
--- routers under several suffixes was split, and each fragment was measured
--- against a fraction of its own sites. Measured on Boris's corpus: AT&T was
--- measured against att.com, which holds ONE site, giving a 1,250 km median,
--- while sbcglobal.net held 110 of AT&T's sites and gives 62 km.
---
--- This table says which site suffixes belong to the same carrier as a given
--- domain. It uses ONLY groupings Boris has CONFIRMED in
--- carrier_suffix_group_tbl, and the identity row below means an ungrouped or
--- unconfirmed domain still sees its own sites exactly as before. So this fix
--- cannot change an answer until he rules, and it changes nothing silently.
--- ---------------------------------------------------------------------------
-CREATE TABLE IF NOT EXISTS carrier_suffix_group_tbl (
-    suffix      text PRIMARY KEY,
-    carrier_key text NOT NULL,
-    status      text NOT NULL CHECK (status IN ('confirmed', 'proposed')),
-    note        text,
-    ruled_at    timestamptz NOT NULL DEFAULT now());
-
-DROP TABLE IF EXISTS carrier_site_scope_tbl;
-CREATE TABLE carrier_site_scope_tbl AS
-SELECT DISTINCT g1.suffix AS itdk_domain, g2.suffix AS site_suffix
-FROM carrier_suffix_group_tbl g1
-JOIN carrier_suffix_group_tbl g2 ON g2.carrier_key = g1.carrier_key
-WHERE g1.status = 'confirmed' AND g2.status = 'confirmed'
-UNION
-SELECT DISTINCT s.carrier_domain, s.carrier_domain FROM serving_site_tbl s;
-
-CREATE INDEX carrier_site_scope_ix ON carrier_site_scope_tbl (itdk_domain);
-ANALYZE carrier_site_scope_tbl;
-
-COMMENT ON TABLE carrier_site_scope_tbl IS
-'Which site suffixes count as one carrier for the nearest-site search. Built from the CONFIRMED rows of carrier_suffix_group_tbl plus an identity row per suffix, so an unruled domain behaves exactly as it did before the grouping existed.';
-
 \echo
-\echo How many domains now see sites beyond their own suffix. Zero means no
-\echo grouping has been confirmed yet, and step 4 measures as it always did.
+\echo ================================================================
+\echo THE PAIRING. Rewritten 2026-11-24 because the previous version
+\echo did not finish.
 \echo
-SELECT count(*) FILTER (WHERE siblings > 1)  AS domains_with_grouped_sites,
-       count(*)                              AS domains_total
-FROM (SELECT itdk_domain, count(*) AS siblings
-      FROM carrier_site_scope_tbl GROUP BY 1) x;
-
+\echo It scanned bdc_availability_tbl, 519,469,683 rows, and then
+\echo multiplied each surviving row by the number of ITDK domains
+\echo resolving to that provider: 87 for AT&T, 101 for Verizon, 56 for
+\echo CenturyLink. Hundreds of millions of rows fanned out by up to a
+\echo hundred, then de-duplicated. That is why it sat without
+\echo progressing.
 \echo
-\echo The carrier-and-tract pairing is materialised first because it is the
-\echo expensive part: a scan of 519,469,683 availability rows. It is
-\echo restricted to carriers that HAVE sites, which cuts it substantially,
-\echo since a pairing for a carrier with no known site cannot contribute.
+\echo Step 1 already aggregated those 519 million rows into
+\echo provider_tract_tech_tbl, 785,168 provider-technology-tract rows,
+\echo and that is the table this needs: 662 times smaller. The key is
+\echo now the PROVIDER and the TECHNOLOGY, not the domain, so there is
+\echo no fan-out at all, and per-technology is the grain the plan asks
+\echo for rather than something recovered later.
+\echo
+\echo MEASURED ESTIMATE, from his own audit run: the same nearest-site
+\echo pattern did 21,860 rows in 2.565 s, which is 8,520 rows a second.
+\echo The wireline pairing is about 409,000 rows, so expect roughly one
+\echo minute, not the tens of minutes the old version failed to finish.
+\echo ================================================================
 \echo
 
 DROP TABLE IF EXISTS carrier_tract_tbl;
 
 CREATE TABLE carrier_tract_tbl AS
-SELECT DISTINCT r.itdk_domain, a.tract_geoid
-FROM bdc_availability_tbl a
-JOIN bdc_carrier_tbl c ON c.carrier_key = a.carrier_key
-JOIN carrier_resolved_tbl r ON r.bdc_provider_id = c.provider_id
-WHERE EXISTS (SELECT 1 FROM serving_site_tbl s
-              WHERE s.carrier_domain = r.itdk_domain)
-  -- WIRELINE ONLY. Added 2026-11-24, and its absence is the second of two
-  -- bugs behind the distances I published. Without it this table holds every
-  -- technology, including licensed fixed wireless at 70, 71 and 72, where
-  -- Verizon and AT&T have near-national footprints and NO central office
-  -- serves the tract at all. The nearest-site distance for such a tract is
-  -- meaningless and it dominated the median: verizon.net measured 718.2 km
-  -- over all technologies and 6.4 km over wireline tracts with the SAME 157
-  -- sites. Boris had already made me fix this exact defect in the footprint
-  -- percentage on 2026-11-22, in provider_brand_footprint, and I left it
-  -- here, which is what he meant by not checking my work.
-  AND a.technology IN (10, 40, 50);
+SELECT DISTINCT p.provider_id, p.technology, p.tract_geoid
+FROM provider_tract_tech_tbl p
+-- WIRELINE ONLY. Technologies 70, 71 and 72 are licensed and unlicensed
+-- fixed wireless; no central office serves such a tract, so a distance to
+-- one is meaningless. This bug shipped three times before being fixed here,
+-- in provider_brand_footprint, in this table and in carrier_link_audit.
+WHERE p.technology IN (10, 40, 50)
+  -- and only providers that can be placed at all, which is what makes this
+  -- cheap: a provider with no located site contributes nothing downstream
+  AND EXISTS (SELECT 1 FROM carrier_resolved_tbl r
+              WHERE r.bdc_provider_id = p.provider_id
+                AND EXISTS (SELECT 1 FROM serving_site_tbl s
+                            WHERE s.carrier_domain = r.itdk_domain));
 
-CREATE INDEX carrier_tract_domain_idx ON carrier_tract_tbl (itdk_domain);
+CREATE INDEX carrier_tract_provider_idx ON carrier_tract_tbl (provider_id);
 CREATE INDEX carrier_tract_tract_idx ON carrier_tract_tbl (tract_geoid);
+ANALYZE carrier_tract_tbl;
 
 COMMENT ON TABLE carrier_tract_tbl IS
-'One row per ITDK domain and census tract in which the BDC says that carrier offers service, restricted to domains that have at least one known serving site. The link from domain to BDC provider comes from carrier_resolved_tbl, which applies Boris decisions.';
+'One row per BDC provider, wireline technology and census tract in which that provider offers service, restricted to providers that have at least one located serving site. Built from provider_tract_tech_tbl, the step 1 aggregate, NOT from bdc_availability_tbl: the raw table is 519,469,683 rows and joining it to the domain list fanned each row out by up to a hundred, which is why the previous version never finished.';
 
 \echo
-\echo Carrier and tract pairs available to step 4.
+\echo Provider and tract pairs available to step 4, by technology.
 \echo
-SELECT count(*)                       AS carrier_tract_pairs,
-       count(DISTINCT itdk_domain)    AS carriers,
+SELECT technology,
+       count(*)                       AS pairs,
+       count(DISTINCT provider_id)    AS providers,
        count(DISTINCT tract_geoid)    AS tracts
-FROM carrier_tract_tbl;
+FROM carrier_tract_tbl
+GROUP BY 1 ORDER BY 1;
+
+-- ---------------------------------------------------------------------------
+-- WHICH SITES BELONG TO A PROVIDER.
+--
+-- Built once, so the nearest-site search joins to a small table instead of
+-- resolving the domain list per tract.
+--
+-- THE CONTAMINATION, AND WHERE IT IS CUT. carrier_resolved_tbl links a
+-- provider to every domain whose name matched it, and on his data that
+-- includes DIA customers: AT&T has 87 domains among them
+-- americanadoptions.com, Verizon 101 including 255.208, which is not a
+-- domain. A customer hostname contributes a SITE, so the distance would be
+-- measured partly to customer premises.
+--
+-- So when a provider has a CONFIRMED suffix group, only the suffixes of that
+-- group contribute sites. Where no grouping is confirmed the behaviour is
+-- unchanged, every linked domain contributes, and the count of providers in
+-- each case is printed below so the difference is never silent.
+-- ---------------------------------------------------------------------------
+DROP TABLE IF EXISTS provider_site_tbl;
+
+CREATE TABLE provider_site_tbl AS
+WITH confirmed AS (
+    SELECT DISTINCT r.bdc_provider_id AS provider_id, g.carrier_key
+    FROM carrier_resolved_tbl r
+    JOIN carrier_suffix_group_tbl g
+      ON g.suffix = r.itdk_domain AND g.status = 'confirmed'
+    WHERE r.bdc_provider_id IS NOT NULL
+)
+SELECT DISTINCT r.bdc_provider_id AS provider_id, s.site_key, s.lat, s.lon,
+                s.carrier_domain, s.grade
+FROM carrier_resolved_tbl r
+JOIN serving_site_tbl s ON s.carrier_domain = r.itdk_domain
+WHERE r.bdc_provider_id IS NOT NULL
+  AND NOT EXISTS (SELECT 1 FROM confirmed c WHERE c.provider_id = r.bdc_provider_id)
+UNION
+SELECT DISTINCT c.provider_id, s.site_key, s.lat, s.lon,
+                s.carrier_domain, s.grade
+FROM confirmed c
+JOIN carrier_suffix_group_tbl g2
+  ON g2.carrier_key = c.carrier_key AND g2.status = 'confirmed'
+JOIN serving_site_tbl s ON s.carrier_domain = g2.suffix;
+
+CREATE INDEX provider_site_provider_idx ON provider_site_tbl (provider_id);
+ANALYZE provider_site_tbl;
+
+COMMENT ON TABLE provider_site_tbl IS
+'The located sites that count as a BDC provider for the nearest-site search. Where a CONFIRMED suffix group exists for the provider, only that group''s suffixes contribute, which is what keeps DIA customer domains out of a carrier site set. Where no grouping is confirmed, every linked domain contributes, exactly as before.';
+
+\echo
+\echo How many providers draw their sites from a confirmed grouping rather
+\echo than from every domain that name-matched them. The second number is
+\echo the contamination still in place.
+\echo
+SELECT count(*) FILTER (WHERE from_group)     AS providers_from_a_confirmed_group,
+       count(*) FILTER (WHERE NOT from_group) AS providers_from_every_matched_domain
+FROM (
+    SELECT r.bdc_provider_id,
+           EXISTS (SELECT 1 FROM carrier_resolved_tbl r2
+                   JOIN carrier_suffix_group_tbl g
+                     ON g.suffix = r2.itdk_domain AND g.status = 'confirmed'
+                   WHERE r2.bdc_provider_id = r.bdc_provider_id) AS from_group
+    FROM carrier_resolved_tbl r
+    WHERE r.bdc_provider_id IS NOT NULL
+    GROUP BY 1, 2) x;
+
+\echo
+\echo Sites per provider, the largest first. A provider with one site cannot
+\echo produce a usable distance however good the rest of the pipeline is.
+\echo
+SELECT p.provider_id,
+       left(coalesce((SELECT string_agg(DISTINCT b.brand_name, ' / ')
+                      FROM bdc_carrier_tbl b
+                      WHERE b.provider_id = p.provider_id), ''), 34) AS brand,
+       count(*)                           AS sites,
+       count(DISTINCT p.carrier_domain)   AS suffixes
+FROM provider_site_tbl p
+GROUP BY p.provider_id
+ORDER BY count(*) DESC
+LIMIT 25;
+
+\echo
+\echo ================================================================
+\echo STEP 4 PROPER. For each provider, wireline technology and served
+\echo tract, the distance to the nearest located site of that provider
+\echo to its second nearest. The second is what step 5 needs for the
+\echo twice-the-distance test.
+\echo ================================================================
+\echo
 
 DROP TABLE IF EXISTS step4_carrier_tract_site_tbl;
 
 CREATE TABLE step4_carrier_tract_site_tbl AS
-SELECT ct.itdk_domain,
+SELECT ct.provider_id,
+       ct.technology,
        ct.tract_geoid,
        t.state_usps,
        n.site_key,
        n.grade,
-       n.city,
+       n.carrier_domain,
        n.km AS nearest_km,
        n2.site_key AS second_site_key,
        n2.km       AS second_km
 FROM carrier_tract_tbl ct
 JOIN census_tract_tbl t ON t.tract_geoid = ct.tract_geoid
 LEFT JOIN LATERAL (
-    SELECT s.site_key, s.grade, s.city,
+    SELECT s.site_key, s.grade, s.carrier_domain,
            6371 * sqrt(
              pow(radians(s.lat - t.lat), 2) +
              pow(radians(
                ((s.lon - t.lon + 540) -
                 floor((s.lon - t.lon + 540) / 360) * 360) - 180
              ) * cos(radians(t.lat)), 2)) AS km
-    FROM serving_site_tbl s
-    WHERE s.carrier_domain IN (SELECT sc.site_suffix FROM carrier_site_scope_tbl sc
-                               WHERE sc.itdk_domain = ct.itdk_domain)
+    FROM provider_site_tbl s
+    WHERE s.provider_id = ct.provider_id
     ORDER BY pow(s.lat - t.lat, 2) +
              pow((s.lon - t.lon) * cos(radians(t.lat)), 2)
     LIMIT 1) n ON true
@@ -320,15 +380,15 @@ LEFT JOIN LATERAL (
                ((s.lon - t.lon + 540) -
                 floor((s.lon - t.lon + 540) / 360) * 360) - 180
              ) * cos(radians(t.lat)), 2)) AS km
-    FROM serving_site_tbl s
-    WHERE s.carrier_domain IN (SELECT sc.site_suffix FROM carrier_site_scope_tbl sc
-                               WHERE sc.itdk_domain = ct.itdk_domain)
+    FROM provider_site_tbl s
+    WHERE s.provider_id = ct.provider_id
       AND s.site_key <> n.site_key
     ORDER BY pow(s.lat - t.lat, 2) +
              pow((s.lon - t.lon) * cos(radians(t.lat)), 2)
-    LIMIT 1) n2 ON true;
+    LIMIT 1) n2 ON true
+WHERE t.lat IS NOT NULL AND t.lon IS NOT NULL;
 
-CREATE INDEX step4_domain_idx ON step4_carrier_tract_site_tbl (itdk_domain);
+CREATE INDEX step4_provider_idx ON step4_carrier_tract_site_tbl (provider_id);
 CREATE INDEX step4_tract_idx ON step4_carrier_tract_site_tbl (tract_geoid);
 
 COMMENT ON TABLE step4_carrier_tract_site_tbl IS
