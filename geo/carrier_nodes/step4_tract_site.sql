@@ -198,7 +198,18 @@ FROM bdc_availability_tbl a
 JOIN bdc_carrier_tbl c ON c.carrier_key = a.carrier_key
 JOIN carrier_resolved_tbl r ON r.bdc_provider_id = c.provider_id
 WHERE EXISTS (SELECT 1 FROM serving_site_tbl s
-              WHERE s.carrier_domain = r.itdk_domain);
+              WHERE s.carrier_domain = r.itdk_domain)
+  -- WIRELINE ONLY. Added 2026-11-24, and its absence is the second of two
+  -- bugs behind the distances I published. Without it this table holds every
+  -- technology, including licensed fixed wireless at 70, 71 and 72, where
+  -- Verizon and AT&T have near-national footprints and NO central office
+  -- serves the tract at all. The nearest-site distance for such a tract is
+  -- meaningless and it dominated the median: verizon.net measured 718.2 km
+  -- over all technologies and 6.4 km over wireline tracts with the SAME 157
+  -- sites. Boris had already made me fix this exact defect in the footprint
+  -- percentage on 2026-11-22, in provider_brand_footprint, and I left it
+  -- here, which is what he meant by not checking my work.
+  AND a.technology IN (10, 40, 50);
 
 CREATE INDEX carrier_tract_domain_idx ON carrier_tract_tbl (itdk_domain);
 CREATE INDEX carrier_tract_tract_idx ON carrier_tract_tbl (tract_geoid);

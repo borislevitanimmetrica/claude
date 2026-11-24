@@ -2965,3 +2965,114 @@ audit reports per BDC technology on the tract side with one undifferentiated
 site set, and says so. Separating them needs hostname tokens such as fios,
 dsl and cbr, or per-network domains such as verizon-gni.net against
 verizon.net, which is step 2's unmet half and is still untested.
+
+## 2026-11-24, measured on Boris's data: two bugs behind one number, and the real constraint
+
+`site_inventory_audit.sql` on his corpus. Both distances I published were
+wrong, for TWO DIFFERENT reasons, and the audit separates them.
+
+### Bug one, the suffix split. Confirmed, and it was AT&T's whole problem.
+
+| suffix | sites | median km, wireline tracts, 496 sampled |
+|---|---|---|
+| att.com | 1 | 1,250.3 |
+| bellsouth.net | 2 | 677.9 |
+| sbcglobal.net | 110 | **62.2** |
+| AT&T grouped | 113 | 86.8 pooled |
+
+`att.com` has one site and step 4 measured AT&T against it alone. Grouping
+the three AT&T suffixes takes the median from 1,250 km to 62 km.
+
+### Bug two, and it is not the suffix split. Verizon.
+
+| measurement | sites | median km |
+|---|---|---|
+| published, all technologies | 157 | 718.2 |
+| audit, wireline tracts only, SAME suffix | 157 | **6.4** |
+| audit, grouped over three suffixes | 254 | 5.5 |
+
+Same site set, same suffix, a hundredfold difference. `carrier_tract_tbl`
+joined `bdc_availability_tbl` with **no technology filter**, so it held
+licensed fixed wireless tracts at 70, 71 and 72, where Verizon has a
+near-national footprint and no central office serves the tract at all. Those
+tracts dominated the median.
+
+Boris had already made me fix this identical defect in the footprint
+percentage on 2026-11-22, where pooling all technologies made AT&T look 97%
+national. I fixed it there and left it here. That is exactly what he meant by
+not checking my work. `step4_tract_site.sql` now filters to 10, 40 and 50,
+verified against `fcc_bdc/schema_v2.sql`, which indexes
+`bdc_availability_tbl (carrier_key, technology)`.
+
+### Bug three, visible in the audit and already on the list unfixed
+
+| carrier | grouped sites | tracts sampled | median km |
+|---|---|---|---|
+| comcast | 916 | **17** | 216.8 |
+| charter | 572 | **17** | 209.5 |
+
+Comcast serves tens of thousands of tracts. 17 means `carrier_resolved_tbl`
+links comcast.net and spectrum.com to BDC providers with almost no footprint,
+which is the undiagnosed item recorded on 2026-11-17: "comcast.net has 788
+sites and 19 tract-technology pairs, while domains whose reported name reads
+Spectrum carry 60,089." Those two medians measure nothing about Comcast or
+Charter and must not be read as if they did. `carrier_link_audit.sql` is
+written and settles it.
+
+### Where the method actually stands, per carrier
+
+| carrier | sites | median km | within 10 miles |
+|---|---|---|---|
+| verizon | 254 | 5.5 | 84.0% |
+| cox | 90 | 8.9 | 69.3% |
+| zayo | 185 | 13.3 | 58.4% |
+| cogent | 94 | 15.8 | 50.9% |
+| lumen | 159 | 52.5 | 29.2% |
+| frontier | 98 | 61.9 | 27.4% |
+| att | 113 | 86.8 | 23.8% |
+| windstream | 33 | 141.8 | 7.2% |
+| comcast, charter | — | not measurable until bug three is fixed | |
+
+Boris's expectation is several miles. Verizon and Cox meet it. The others do
+not, and the reason is now a counted one rather than a guess:
+
+**6,256 located sites in the entire corpus, across 2,583 suffixes, and ZERO
+at facility grade.** Every site is operator_named or site_subcity. AT&T has
+113 located sites; it has on the order of 4,700 wire centres. 33 sites for
+Windstream is not a Windstream inventory.
+
+So grouping suffixes was a real fix and it is not the constraint. The
+constraint is the site inventory, which is step 3, exactly as the plan said,
+and the audit now says so with numbers instead of one mislabelled median.
+
+### The lever that already exists, half built
+
+`clli_resolve.py` resolves six-character CLLI codes to rate-centre
+coordinates through localcallingguide, a public LERG-derived service, and its
+own header records the measured gap: CAIDA supplies NO coordinates for any of
+the 4,508 CLLI hints across 89 domains, leaving 2,409 hostnames and 644 codes
+unlocated, concentrated in exactly the carriers that matter: charter.com 480,
+frontiernet.net 475, verizon-gni.net 361, verizon.net 351, sbcglobal.net 166.
+
+A CLLI code IS a wire centre, which is what Boris described for xDSL. Those
+644 codes are the cheapest available multiplier on a 6,256-site inventory,
+and the resolution path is already verified against the live service. Note
+the limitation honestly: it yields the RATE CENTRE coordinate, not the
+building, so it is accurate to the exchange and not to the street. Step 3 as
+written asks for street addresses, which this does not give.
+
+### Two smaller things the audit exposed
+
+`in-addr.arpa` appears as a carrier_domain with 10 sites. Those are reverse
+PTR names whose last two labels are the arpa suffix, so the suffix extraction
+produced a non-domain. Harmless to the medians, wrong as a carrier.
+
+34 suffixes with sites are not in my proposed grouping and several are
+carriers: lumen.tech 67 and ctl.one 21 and savvis.net 10 are Lumen,
+unitifiber.com 26 with uniti.net 17 are Uniti, lightower.net 19 with
+firstlight.net 18 are FirstLight, rcn.com 8 with rcn.net 6 are Astound,
+sparklight.net 16 is Cable One, knology.net 9 is WOW, ziplyfiber.com 10 is
+Ziply, gobrightspeed.net 13 is Brightspeed, fuse.net 22 is altafiber,
+acsalaska.net 6 is Alaska Communications. Others are transit or hosting
+(he.net, gtt.net, twelve99, above.net, tierpoint, flexential) or research
+networks (cenic, oar, wiscnet, ucsd.edu) and are out of scope.
