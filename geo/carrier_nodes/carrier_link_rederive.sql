@@ -100,20 +100,30 @@ WITH link AS (
                     nullif(btrim(r.carrier_label), ''))          AS itdk_side_name
     FROM carrier_resolved_tbl r
     WHERE r.bdc_provider_id IS NOT NULL
+), brand AS (
+    -- DISTINCT brands per provider. bdc_carrier_tbl has one row per
+    -- carrier_key, so a provider repeats its brand once per filing and the
+    -- tier would otherwise be computed once per repeat.
+    SELECT DISTINCT provider_id, brand_name
+    FROM bdc_carrier_tbl
+    WHERE brand_name IS NOT NULL AND brand_name <> ''
 ), scored AS (
-    SELECT l.*,
-           (SELECT max(carrier_name_tier(l.itdk_side_name, b.brand_name))
-            FROM bdc_carrier_tbl b
-            WHERE b.provider_id = l.bdc_provider_id
-              AND b.brand_name IS NOT NULL AND b.brand_name <> '')  AS best_tier,
-           (SELECT b.brand_name
-            FROM bdc_carrier_tbl b
-            WHERE b.provider_id = l.bdc_provider_id
-              AND b.brand_name IS NOT NULL AND b.brand_name <> ''
-            ORDER BY carrier_name_tier(l.itdk_side_name, b.brand_name) DESC,
-                     b.brand_name
-            LIMIT 1)                                               AS best_brand
+    -- ONE tier evaluation per link and brand, not two. The first version
+    -- computed it in max() and again in the ORDER BY of a second subquery,
+    -- and carrier_name_tier is STABLE with three table lookups inside it, so
+    -- the duplication cost real time: 169.8 s on Boris's data against my
+    -- estimate of seconds. A lateral returns the tier AND the brand that
+    -- earned it from a single pass.
+    SELECT l.*, best.best_tier, best.best_brand
     FROM link l
+    LEFT JOIN LATERAL (
+        SELECT carrier_name_tier(l.itdk_side_name, b.brand_name) AS best_tier,
+               b.brand_name                                      AS best_brand
+        FROM brand b
+        WHERE b.provider_id = l.bdc_provider_id
+        ORDER BY carrier_name_tier(l.itdk_side_name, b.brand_name) DESC,
+                 b.brand_name
+        LIMIT 1) best ON true
 )
 SELECT s.itdk_domain, s.bdc_provider_id, s.by_decision, s.nodes,
        s.itdk_side_name, s.best_brand,
@@ -263,6 +273,66 @@ BEGIN
     RAISE NOTICE 'all % of your rulings are carried across', after_n;
 END
 $rulings$;
+
+-- ---------------------------------------------------------------------------
+-- 5. THE DROPS THAT ARE QUESTIONS, NOT ERRORS.
+--
+-- A link dropped at tier 3 shares an informative word with the brand, which
+-- on his data is usually a real carrier under a longer legal name:
+-- Frontier Communications Corp against the brand Frontier, LUMOS Networks
+-- against lumos, Armstrong against Armstrong Telecommunications Inc. Those
+-- are pairings waiting for one word, not mistakes.
+--
+-- A link dropped at tier 0 shares nothing, and those were always wrong:
+-- comcast.net to USA COMMUNICATIONS, Ohio State University to Agile
+-- Networks, US Internet Corp to WOW.
+--
+-- So the tier 3 drops are added to carrier_alias_tbl as PROPOSED pairings,
+-- which is the same queue he already answers for the ASN side. Confirming
+-- one there now restores the ITDK link AND the ASN match from one ruling.
+-- Nothing is confirmed here; a proposed pairing matches nothing.
+-- ---------------------------------------------------------------------------
+INSERT INTO carrier_alias_tbl (ipapi_side, bdc_side, ipapi_key, bdc_key, status, note)
+SELECT DISTINCT ON (carrier_name_compact(v.itdk_side_name),
+                    carrier_name_compact(v.best_brand))
+       v.itdk_side_name, v.best_brand,
+       carrier_name_compact(v.itdk_side_name),
+       carrier_name_compact(v.best_brand),
+       'proposed',
+       'from the ITDK link, provider ' || v.bdc_provider_id
+FROM carrier_link_verdict_tbl v
+WHERE v.verdict = 'dropped: shares a word only'
+  AND v.itdk_side_name IS NOT NULL
+  AND v.best_brand IS NOT NULL
+  AND carrier_name_compact(v.itdk_side_name) IS NOT NULL
+  AND carrier_name_compact(v.best_brand) IS NOT NULL
+  AND carrier_name_compact(v.itdk_side_name) <> carrier_name_compact(v.best_brand)
+  AND NOT carrier_keys_are_unrelated(carrier_name_compact(v.itdk_side_name),
+                                     carrier_name_compact(v.best_brand))
+ON CONFLICT (ipapi_key, bdc_key) DO NOTHING;
+
+ANALYZE carrier_alias_tbl;
+
+\echo
+\echo Pairings now waiting on you, worth the most wireline tracts first.
+\echo Confirming one restores the ITDK link and the ASN match together.
+\echo
+WITH fp AS (
+    SELECT provider_id, count(DISTINCT tract_geoid) AS tracts
+    FROM provider_tract_tech_tbl
+    WHERE technology IN (10, 40, 50)
+    GROUP BY 1
+)
+SELECT x.ipapi_side, x.bdc_side,
+       (SELECT max(f.tracts) FROM carrier_link_verdict_tbl v
+        JOIN fp f ON f.provider_id = v.bdc_provider_id
+        WHERE carrier_name_compact(v.itdk_side_name) = x.ipapi_key) AS wireline_tracts
+FROM carrier_alias_tbl x
+WHERE x.status = 'proposed'
+ORDER BY 3 DESC NULLS LAST, 1
+LIMIT 30;
+
+SELECT status, count(*) AS pairings FROM carrier_alias_tbl GROUP BY 1 ORDER BY 1;
 
 \echo
 \echo ================================================================

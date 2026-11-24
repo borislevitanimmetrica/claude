@@ -3428,3 +3428,77 @@ That pairing is already item 1 of the alias queue at 283,233 ZIP-capable
 ranges. **One ruling fixes both the ASN map and the ITDK link.** The two
 queues have converged on the same question, which is the first time anything
 in this subsystem has got simpler.
+
+## 2026-11-24: the re-derivation measured, and two errors of mine
+
+### "Run, seconds" was bad writing AND a wrong number
+
+I meant "runtime: seconds" as a heading. It read as nonsense, and the number
+was wrong by fifty times: the file took **169.8 s**, not seconds.
+
+The cause is in my own query. It called `carrier_name_tier` twice for every
+link and brand, once inside `max()` and again in the `ORDER BY` of a second
+subquery to recover which brand earned the score, and that function is now
+STABLE with three table lookups inside it. Rewritten as one LATERAL that
+returns the tier and the brand together, over DISTINCT brands per provider
+rather than one row per filing. Not re-measured on his data yet, so the new
+figure is unknown rather than estimated.
+
+### What the rule says about the existing links, on his data
+
+| verdict | links | domains | providers |
+|---|---|---|---|
+| kept: your ruling | 4,920 | 10 | 6 |
+| dropped: no connection | 3,376 | 1,093 | 306 |
+| dropped: shares a word only | 2,490 | 722 | 358 |
+| kept: pairing you confirmed | 630 | 84 | 3 |
+| kept: complete name match | 509 | 415 | 164 |
+
+14,029 rows become 8,163, and all 4,920 of his rulings are carried across,
+asserted rather than reported.
+
+| state | providers | wireline tract-technology pairs |
+|---|---|---|
+| keeps a link | 172 | 230,927 |
+| loses every link | 557 | 69,606 |
+
+So the cut removes 557 providers and keeps **76.8%** of the wireline
+footprint that could be placed before it.
+
+`USA COMMUNICATIONS` loses all 2,259 of its links. AT&T loses 741 of 759.
+
+### The drops split cleanly in two, which is the useful part
+
+**Questions, not errors.** Dropped at tier 3, sharing an informative word,
+and almost all real carriers under a longer legal name:
+
+| brand | wireline tracts | the ITDK name that failed |
+|---|---|---|
+| Frontier | 11,802 | Frontier Communications Corp |
+| Lightpath / Optimum | 10,728 | Cablevision Lightpath LLC |
+| Metronet Holdings | 3,301 | Metronet |
+| Mediacom | 2,594 | Mediacom Communications |
+| FirstLight Fiber | 1,940 | FirstLight Networks |
+| lumos | 1,192 | LUMOS Networks |
+| Armstrong | 632 | Armstrong |
+| Cogent Communication | 499 | Cogent Communications |
+
+**Always wrong.** Dropped at tier 0, sharing nothing: comcast.net to USA
+COMMUNICATIONS, `Ohio State University` to Agile Networks, `US Internet
+Corp` to WOW, `Buckeye Cablevision` to BCI Mississippi, `Surf Air Wireless`
+to Surf Internet, `Great Lakes Comnet` to Great Plains Broadband.
+
+The tier 3 drops are now inserted into `carrier_alias_tbl` as PROPOSED
+pairings and ranked by the wireline tracts behind them, so his existing queue
+covers both subsystems. Confirming Frontier restores the ITDK link worth
+11,802 tracts and the ASN match in one ruling.
+
+### An anomaly I cannot explain and am not going to guess at
+
+`by_decision` is true on 4,920 rows spanning only 10 domains and 6
+providers, and provider 131413 alone carries 2,862 links of which 2,775 are
+kept as rulings. He ruled on 87 records. I do not know how the flag came to
+be set on 4,920 rows, and the honest options are a fan-out in whatever built
+the table or a broader rule than one decision per ruling. It matters, because
+those rows are exempt from every test. The query to settle it is in the next
+message rather than a conclusion here.
