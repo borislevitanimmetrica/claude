@@ -1,0 +1,15 @@
+{
+  "version": "v1",
+  "hooks": [
+    {
+      "name": "Validate psql scripts on save",
+      "trigger": "PostFileSave",
+      "description": "Runs geo/sessions/check_sql.sh after any .sql file is written, so an unbalanced apostrophe in a psql echo argument or an unknown backslash meta-command is caught before the file is committed and issued to Boris. The checker already existed; this removes my memory from the loop.",
+      "matcher": "\\.sql$",
+      "action": {
+        "type": "command",
+        "command": "cd /projects/sandbox/claude && sh geo/sessions/check_sql.sh 2>&1 | tail -20"
+      }
+    }
+  ]
+}

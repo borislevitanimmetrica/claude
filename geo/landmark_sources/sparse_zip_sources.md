@@ -79,16 +79,39 @@ needs the Geofabrik PBF path: `us-latest.osm.pbf` is 11.39 GB.
 
 | source | has ZIP | has website | verdict |
 |---|---|---|---|
-| **NCES CCD** (K-12 schools) | yes, `zip_location` | **no** — 52 fields, zero web/url/site fields | rejected |
+| ~~**NCES CCD** (K-12 schools)~~ | yes | ~~no~~ | **WRONG, see correction below** |
 | **IMLS PLS** (public libraries) | yes, `ZIP`/`ZIP4` | **no** — the only web-ish field among 192 is `WEBVISIT`, a visit *count* | rejected |
 | **USAC E-Rate** (schools + libraries) | not in the funding dataset | no | rejected |
 | **NPS** | yes | yes, but all `nps.gov` | rejected: ~470 parks collapse to one host |
 | **NRHP** | yes | mostly none | rejected |
 
-So there is **no national registry of K-12 school or public library websites**.
-Both exist as authoritative address lists with no URL. The practical route to
-schools and libraries is therefore OSM, not a federal file. Matching CCD or
-IMLS *to* OSM by name and ZIP would add addresses we already have, not hosts.
+### Correction, 2026-11-02: CCD does have a website column
+
+The row above was wrong, and the conclusion drawn from it was wrong. The
+2023-24 CCD directory file `ccd_sch_029_2324_w_1a_073124.csv` **has a `WEBSITE`
+column**. Restricted to open schools and parsed through `normalise_url`:
+
+| metric | value |
+|---|---|
+| usable rows, website plus physical ZIP | 67,417 |
+| distinct ZIPs, from `LZIP` not `MZIP` | 16,768 |
+| distinct hosts | 30,365 |
+
+Use `LZIP`, the physical ZIP. `MZIP` is the mailing ZIP and is often a district
+office or a PO box.
+
+So the sentence that followed, "there is no national registry of K-12 school
+websites", is false. There is one, it is open, and it is the single largest
+landmark source available. `state_file_survey.md` has the full finding and the
+21-jurisdiction state-file loader that supplements it.
+
+The **IMLS** rejection in the row below stands and was re-checked: no URL field
+exists in either file. The same is now confirmed for **NCES PSS**, the private
+school universe: 359 columns, 22,510 rows, no web field, and the private-school
+locator detail pages carry none either.
+
+For schools, then, the route is the federal file after all. For libraries it
+remains OSM.
 
 ## RIPE Atlas — the hardware-probe service
 
