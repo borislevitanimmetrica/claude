@@ -284,9 +284,14 @@ SELECT 'State of Montana', 'State of Montana',
        'AS99012 State of Montana', 'f', now()
 FROM generate_series(1, 300);
 
+-- The control carrier. Its name agrees COMPLETELY with the brand once the
+-- legal suffix is stripped, which is the only kind of match the rule allows
+-- now, and its only informative word is still the state name. If the state
+-- government rule were implemented as a stopword on montana, this ASN would
+-- lose its match too, and the assertion on it is what catches that.
 INSERT INTO ip2city_dbiplite_probe_tbl (isp, org, "as", mobile_transit, ran_at)
-SELECT 'Montana Telephone', 'Montana Telephone',
-       'AS99013 Montana Telephone Company', 'f', now()
+SELECT 'Montana Communications', 'Montana Communications',
+       'AS99013 Montana Communications Inc.', 'f', now()
 FROM generate_series(1, 90);
 
 -- THE TRADE NAME. Must produce no candidate from any string rule, and must

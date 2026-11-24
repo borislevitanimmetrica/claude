@@ -131,6 +131,33 @@ ORDER BY m.asn, m.bdc_brand_name;
 -- ---------------------------------------------------------------------------
 -- 2. The cleanup. Backed up to a file first, then deleted, then verified.
 -- ---------------------------------------------------------------------------
+-- ---------------------------------------------------------------------------
+-- THE CLEANUP WILL NOT RUN WITHOUT THE FORM 499a LIST. IT BLOCKS.
+--
+-- The cleanup deletes brand decisions for holders that are not in the carrier
+-- universe. Since 2026-11-23 the universe admits a name only on a COMPLETE
+-- match or a pairing Boris has confirmed, which is what he asked for, and
+-- that makes the universe only as complete as the name lists behind it.
+--
+-- BDC brand names alone are not enough. AT&T Enterprises, LLC is the holder
+-- of AS7018 and 263,102 ZIP-capable ranges, and it is not a BDC brand; it is
+-- a Form 499a FILER, which is a different list and the reason he supplied the
+-- file. Running the cleanup without that list would delete AS7018 again,
+-- along with the 768 others it took on 2026-11-22.
+--
+-- So this refuses to delete anything until the list is loaded. The rulings
+-- above this point are unaffected: they are explicit and are already written.
+-- ---------------------------------------------------------------------------
+DO $need499$
+BEGIN
+    IF NOT EXISTS (SELECT 1 FROM information_schema.tables
+                   WHERE table_name = 'fcc499_filer_tbl') THEN
+        RAISE EXCEPTION 'fcc499_filer_tbl is not loaded, so the carrier universe holds BDC brand names only and does not know the legal names of carriers such as AT&T Enterprises, LLC. The cleanup would delete AS7018 and its 263,102 ranges exactly as it did on 2026-11-22. NOTHING WAS DELETED. Load the filer list first: python3 /home/boris/geo/src/claude/geo/carrier_nodes/xlsx_dump.py --table fcc499_filer_tbl --out /home/boris/geo/fcc499_filers.tsv --sql /home/boris/geo/load_fcc499.sql /home/boris/geo/FCC_Form_499a_filers.xlsx';
+    END IF;
+    RAISE NOTICE 'Form 499a filer list is present, so the universe knows legal names as well as brand names';
+END
+$need499$;
+
 DROP TABLE IF EXISTS carrier_map_doomed_tbl;
 CREATE TABLE carrier_map_doomed_tbl AS
 SELECT m.asn, a.as_operator, a.isp_commonest, m.decision,

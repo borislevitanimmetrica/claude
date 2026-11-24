@@ -2582,3 +2582,127 @@ The universe builder's column discovery now also accepts `%dba%`,
 column in that file and is usually headed Doing Business As. Identifier
 columns are still skipped, and both the used and the skipped text columns
 are reported.
+
+## 2026-11-23, third round: one rule replaces the stopword pile
+
+### What he said
+
+> Rural Telephone Service Co -> RURAL TELEPHONE COMPANY: Do not leave "Rural"
+> as the sole comparison word. There are many REI companies with "Rural" in
+> their names. Insist on a complete match after the AS number is stripped.
+> Peoples Telecommunications -> ...: insist on full name match except
+> ", Inc.", "LLC" etc. State of Alaska: insist on a full match.
+> You are forgetting the purpose of what we're doing and guessing despite the
+> standing orders.
+> Insist on complete matches when the exact pairing is not in your table.
+
+He was right, and the second sentence of the last line is the design. There
+are now TWO ways to be a match and no others.
+
+### The rule
+
+| tier | meaning |
+|---|---|
+| 1 | COMPLETE MATCH. The whole name agrees once the AS number, case, punctuation and legal suffix are stripped, which is `carrier_name_compact`. |
+| 2 | RECORDED PAIRING, confirmed by him, in `carrier_alias_tbl`. |
+| 3 | PARTIAL, a shared informative word. NOT a match. Computed and shown so a pairing worth recording can be found. |
+| 0 | nothing, a pair he ruled unrelated, or a state government. |
+
+**What was deleted.** Token-set equality after the stopwords, and
+containment with at most one extra word. Between them they produced EVERY
+wrong relation he has reported, because the stopwords strip the words that
+carry the difference and the rule then compares the remainder:
+
+| pair | what the old rule compared |
+|---|---|
+| Rural Telephone Service Co / RURAL TELEPHONE COMPANY | both `{rural}` |
+| Peoples Telecommunications / Peoples Communications | both `{peoples}` |
+| State of Alaska / Fibre Alaska | both `{alaska}` |
+| Wave Rural Connect / Fuse Rural Connect | `{rural}` in both |
+| Database Mart LLC / Wal-Mart Stores, Inc. | shared `{mart}` |
+
+Five reports of one defect. Each time I answered with another stopword,
+which made the surviving names shorter and matched MORE things. The new rule
+cannot produce any of them and uses no stopword at all to decide a match.
+The stopwords survive only to find partial pairs for review.
+
+### What it cost, and where that went
+
+Nine pairs that used to match now do not, and they are in
+`carrier_alias_tbl` with status `proposed`, which does NOT match. They need
+one word each:
+
+| ip-api name | BDC brand |
+|---|---|
+| AT&T Enterprises, LLC | AT&T |
+| CenturyLink Communications, LLC | CenturyLink |
+| Cogent Communications | Cogent Communication |
+| Frontier Communications Solutions | Frontier |
+| Google LLC | Google Fiber |
+| T-Mobile USA, Inc. | T-Mobile |
+| Windstream Communications LLC | Windstream |
+| Zayo Bandwidth | ZAYO GROUP LLC |
+| Alaska Communications System | ALASKA COMMUNICATIONS |
+
+`status = 'proposed'` exists because these are MY inferences about corporate
+identity, not his rulings: the gate's source column says "same company",
+which was me. Treating my inference as his ruling is how 1-800-Flowers came
+to hold Comcast plant. Only `confirmed` rows match, and the only confirmed
+rows come from the entity seed where both sides already carry his status.
+
+The gate now has four categories, so the difference between a string match
+and a recorded one is asserted rather than blurred: `accept_complete` (6
+cases), `accept_recorded` (2, Comcast to Xfinity and Verizon Business to
+Verizon), `reject` (36) and `needs_pairing` (9). A second gate raises if a
+`needs_pairing` case is not in the proposal list, because such a pair would
+be neither matched nor asked about.
+
+### A path I wrote and then removed
+
+My first universe rule had a third path: "the holder already has a brand
+decision in the map". That would have used my own bad writes as evidence
+that a holder is a carrier, since the map contains rows my code wrote
+without him, and the table cannot tell his approvals from mine. Removed.
+
+What protects the 769 decisions instead: `carrier_rulings.sql` now REFUSES
+to run the cleanup until `fcc499_filer_tbl` is loaded. AT&T Enterprises, LLC
+is a Form 499a legal name rather than a BDC brand, so once the file is in,
+the holder of AS7018 is a carrier by a COMPLETE match against his own data.
+Until then nothing is deleted. **Unverified:** that his filer list actually
+contains that legal name. It is the reason the file matters, and the
+exclusion report will show it either way.
+
+### Consequences I had to notice rather than discover later
+
+The ISP-correction report broke when I first made this change: ip-api says
+`Frontier Communications` on ranges whose registry name is now
+`Verizon Business`, the brand is filed as `Frontier`, and that is a partial
+pair rather than a complete one. The fixture caught it. That report is a
+REVIEW QUEUE, not a match, and every row it produces is held back until he
+rules, so it now accepts tier 3 as well and labels the tier. The rule he
+gave governs matching; a partial pair is exactly what he needs to see in
+order to confirm a pairing.
+
+The eligibility memo and the token table are gone with the paths that
+needed them. Three index probes replace 3.08 ms per name.
+
+### The file order changed
+
+The match rule now READS his tables, so it is defined below them: regression
+cases, entity seed, unrelated rulings, alias pairings, decision map, then
+`carrier_name_tier`, then the gates that test it. `carrier_name_tier` is
+STABLE rather than IMMUTABLE for the same reason.
+
+### Two bugs in xlsx_dump.py, both mine
+
+He ran it against the path he gave me and got a nine-line
+`FileNotFoundError` from zipfile. A tool that takes a path has to check the
+path: it now reports what is wrong in one line, lists the spreadsheet-like
+files that ARE in the directory, and detects a zero-byte transfer, a `.xls`
+by its magic bytes and an HTML export.
+
+Worse, I told him to paste a command containing `--sheet 'SHEETNAME'`. He
+pastes commands verbatim; that is a standing order I already had on record
+and broke. `--sheet` is now optional: when one sheet holds data that is the
+sheet, and when several do the error names them. The command needs no
+placeholder.

@@ -285,8 +285,13 @@ BEGIN
         failures := failures || format('AS99007 Comcast should get 0 string candidates, found %s. If this ever passes, the trade-name problem was never real.', n);
     END IF;
 
-    IF carrier_name_tier('Comcast Cable Communications, LLC', 'Xfinity') <> 0 THEN
-        failures := failures || 'carrier_name_tier joined Comcast to Xfinity, which no string method can legitimately do'::text;
+    -- No STRING method may join these. The pairing is what joins them, and
+    -- it is asserted separately below. Before 2026-11-23 this tested the
+    -- tier, which is now 2 by his confirmed pairing, so the assertion has
+    -- moved to the complete-match test, which is the string part.
+    IF carrier_name_compact('Comcast Cable Communications, LLC')
+       = carrier_name_compact('Xfinity') THEN
+        failures := failures || 'the complete-match test joined Comcast to Xfinity. No string method can legitimately do that; only the recorded pairing can.'::text;
     END IF;
 
     -- The entity layer must reach it.
@@ -357,43 +362,78 @@ BEGIN
         failures := failures || 'neither Comcast name is in the universe, so the restriction has cut out a real carrier'::text;
     END IF;
 
-    -- DEFECT 4. THE UNIVERSE TEST MUST NOT BE STRICTER THAN THE MATCHER.
-    -- A name the matcher scores tier 1 or 2 against a universe name has to
-    -- be IN the universe, or the restriction deletes correct decisions. On
-    -- Boris's 2026-11-22 run the compact-key-only test deleted 769 brand
-    -- decisions covering 736 ASNs and 373,410 ZIP-capable ranges, AS7018
-    -- AT&T among them at 263,102 ranges.
-    IF NOT carrier_name_in_universe('Osprey Enterprises, LLC') THEN
-        failures := failures || 'Osprey Enterprises, LLC is outside the carrier universe although it scores tier 1 against the brand Osprey. This is the AT&T Enterprises against AT&T case that deleted 769 decisions.'::text;
-    END IF;
-
-    IF NOT carrier_name_in_universe('Blue Osprey Worldnet') THEN
-        failures := failures || 'Blue Osprey Worldnet is outside the carrier universe although it scores tier 2 against the brand Blue Osprey. This is the AT&T WorldNet against AT&T case, which neither the compact key nor the token key reaches.'::text;
-    END IF;
-
-    -- DISCRIMINATION. The fixture is only a test of the fix if the OLD rule
-    -- fails on it. Both names above must disagree with every universe
-    -- compact key, so a universe test built on compact keys alone would have
-    -- excluded them. If this ever passes, the fixture has stopped
-    -- reproducing the defect and the assertions above prove nothing.
-    SELECT count(*) INTO n FROM carrier_universe_tbl u
-    WHERE u.name_key IN (carrier_name_compact('Osprey Enterprises, LLC'),
-                         carrier_name_compact('Blue Osprey Worldnet'));
+    -- DEFECT 4, AS THE RULE NOW STANDS. Boris 2026-11-23: "Insist on
+    -- complete matches when the exact pairing is not in your table."
+    --
+    -- Osprey Enterprises, LLC against the brand Osprey was a tier 1 match
+    -- until today, by token equality after the stopwords. It is the shape of
+    -- AT&T Enterprises, LLC against AT&T. Under the rule he gave, it is NOT
+    -- a match: the names do not agree completely and the pairing is not
+    -- confirmed. These assertions are the inversion of the ones they
+    -- replace, and the inversion is the point.
+    SELECT count(*) INTO n FROM asn_brand_candidate_tbl
+    WHERE asn = 99010 AND brand_name = 'Osprey';
     IF n <> 0 THEN
-        failures := failures || format('the universe holds a compact key equal to one of the two defect-4 operator names (%s rows), so the fixture no longer reproduces the defect it was built for', n);
-    END IF;
-
-    -- And the match itself must be offered, not merely permitted.
-    SELECT count(*) INTO n FROM asn_brand_candidate_tbl
-    WHERE asn = 99010 AND brand_name = 'Osprey' AND tier = 1;
-    IF n <> 1 THEN
-        failures := failures || format('AS99010 should be offered the brand Osprey at tier 1 exactly once, found %s', n);
+        failures := failures || format('AS99010 Osprey Enterprises, LLC was offered the brand Osprey %s times. The names do not match completely and no pairing is confirmed, so it must not be offered.', n);
     END IF;
 
     SELECT count(*) INTO n FROM asn_brand_candidate_tbl
-    WHERE asn = 99011 AND brand_name = 'Blue Osprey' AND tier = 2;
+    WHERE asn = 99011 AND brand_name = 'Blue Osprey';
+    IF n <> 0 THEN
+        failures := failures || format('AS99011 Blue Osprey Worldnet was offered the brand Blue Osprey %s times. Containment is no longer a match.', n);
+    END IF;
+
+    -- But they must not vanish either. A pair the old rule joined has to be
+    -- in the proposal list, or the work is lost rather than deferred.
+    IF carrier_name_tier('Osprey Enterprises, LLC', 'Osprey') <> 3 THEN
+        failures := failures || format('Osprey Enterprises, LLC against Osprey scores %s. It should be 3, a shared word that is reported and not matched.', carrier_name_tier('Osprey Enterprises, LLC', 'Osprey'));
+    END IF;
+
+    -- A CONFIRMED PAIRING MUST MATCH. This is the only route left for a
+    -- trade name, so if it breaks, Comcast loses its 192,637 ranges.
+    IF carrier_name_tier('Comcast Cable Communications, LLC', 'Xfinity') <> 2 THEN
+        failures := failures || format('Comcast Cable Communications, LLC against Xfinity scores %s, expected 2 from the confirmed pairing. Without this no trade name can be matched at all.', carrier_name_tier('Comcast Cable Communications, LLC', 'Xfinity'));
+    END IF;
+
+    IF NOT carrier_name_in_universe('Comcast Cable Communications, LLC') THEN
+        failures := failures || 'Comcast Cable Communications, LLC is outside the carrier universe. It is admitted by a pairing he confirmed, not by its own name.'::text;
+    END IF;
+
+    -- A PROPOSED PAIRING MUST NOT MATCH. My inference is not his ruling.
+    SELECT count(*) INTO n FROM carrier_alias_tbl
+    WHERE status = 'proposed' AND ipapi_key = carrier_name_compact('AT&T Enterprises, LLC');
     IF n <> 1 THEN
-        failures := failures || format('AS99011 should be offered the brand Blue Osprey at tier 2 exactly once, found %s', n);
+        failures := failures || format('the AT&T Enterprises pairing is not in the proposal list, found %s rows. It no longer matches, so if it is not proposed it is lost.', n);
+    END IF;
+
+    IF carrier_name_tier('AT&T Enterprises, LLC', 'AT&T') IN (1, 2) THEN
+        failures := failures || 'AT&T Enterprises, LLC matched AT&T on a PROPOSED pairing. Only confirmed pairings may match, or my inference becomes his ruling.'::text;
+    END IF;
+
+    -- THE FIVE PAIRS HE REPORTED AS WRONG. One rule has to kill all five, or
+    -- it is still a collection of patches.
+    IF carrier_name_tier('Rural Telephone Service Co', 'RURAL TELEPHONE COMPANY') IN (1, 2) THEN
+        failures := failures || 'Rural Telephone Service Co still matches RURAL TELEPHONE COMPANY. Boris 2026-11-23: do not leave Rural as the sole comparison word.'::text;
+    END IF;
+    IF carrier_name_tier('Peoples Telecommunications LLC', 'Peoples Communications') IN (1, 2) THEN
+        failures := failures || 'Peoples Telecommunications still matches Peoples Communications.'::text;
+    END IF;
+    IF carrier_name_tier('Peoples Telecommunications LLC', 'Peoples Telephone Cooperative') IN (1, 2) THEN
+        failures := failures || 'Peoples Telecommunications still matches Peoples Telephone Cooperative.'::text;
+    END IF;
+    IF carrier_name_tier('State of Alaska', 'Fibre Alaska') IN (1, 2) THEN
+        failures := failures || 'State of Alaska still matches Fibre Alaska.'::text;
+    END IF;
+    IF carrier_name_tier('Wave Rural Connect, LLC', 'Fuse Rural Connect, LLC') IN (1, 2) THEN
+        failures := failures || 'Wave Rural Connect still matches Fuse Rural Connect.'::text;
+    END IF;
+
+    -- and the complete matches he has always wanted kept must survive.
+    IF carrier_name_tier('CABLE ONE, INC.', 'Cable One') <> 1 THEN
+        failures := failures || 'CABLE ONE, INC. no longer completely matches Cable One. The legal suffix must still be stripped.'::text;
+    END IF;
+    IF carrier_name_tier('Cox Communications Inc.', 'Cox Communications') <> 1 THEN
+        failures := failures || 'Cox Communications Inc. no longer completely matches Cox Communications.'::text;
     END IF;
 
     -- DEFECT 5. THE STATE GOVERNMENT, AND THE CARRIER IT MUST NOT COST.
@@ -413,9 +453,9 @@ BEGIN
     END IF;
 
     SELECT count(*) INTO n FROM asn_brand_candidate_tbl
-    WHERE asn = 99013 AND brand_name = 'Montana Communications';
+    WHERE asn = 99013 AND brand_name = 'Montana Communications' AND tier = 1;
     IF n <> 1 THEN
-        failures := failures || format('AS99013 Montana Telephone Company lost its match to Montana Communications, found %s rows. The state government rule has cost a real carrier, which is what stopping the state name as a word would have done.', n);
+        failures := failures || format('AS99013 Montana Communications Inc. lost its complete match to the brand Montana Communications, found %s rows. The state government rule has cost a real carrier, which is what stopping the state name as a word would have done.', n);
     END IF;
 
     -- DISCRIMINATION for that pair. Both names must still reduce to the same

@@ -394,38 +394,15 @@ $fn$ LANGUAGE sql IMMUTABLE;
 
 -- 1 exact, 2 strong containment, 3 a single shared word and therefore NOT
 -- offered, 0 nothing.
-CREATE OR REPLACE FUNCTION carrier_name_tier(a text, b text)
-RETURNS integer AS $fn$
-SELECT CASE
-  -- EXACT. The compact key is the name with case, punctuation and legal
-  -- suffix removed, which is what makes CABLE ONE, INC. agree with Cable One.
-  -- A STATE GOVERNMENT IS NOT A CARRIER, whatever it shares with one.
-  -- Tested before anything else so that no later arm can rescue it. Boris
-  -- 2026-11-23: State of Alaska has no relation to the Alaska carriers it
-  -- was paired with. The pairing came from the single token {alaska}, which
-  -- survives in both names after state and of are discarded as noise.
-  WHEN carrier_name_is_state_government(a)
-    OR carrier_name_is_state_government(b)                          THEN 0
-  WHEN t.ca IS NOT NULL AND t.ca = t.cb                             THEN 1
-  -- FALLBACK IS EXACT MATCH ONLY. Boris 2026-11-22. If either name is built
-  -- entirely from noise words it identifies nothing, so the only way it can
-  -- reach anything is the exact agreement tested on the line above. No
-  -- containment, no shared word. This is why Wave Broadband cannot reach
-  -- Wave Wireless and CABLE ONE cannot reach One Communications.
-  WHEN t.generic                                                    THEN 0
-  WHEN t.ta <@ t.tb AND t.tb <@ t.ta                                THEN 1
-  WHEN (t.ta <@ t.tb OR t.tb <@ t.ta)
-   AND least(cardinality(t.ta), cardinality(t.tb)) >= 2
-   AND greatest(cardinality(t.ta), cardinality(t.tb))
-       - least(cardinality(t.ta), cardinality(t.tb)) <= 1           THEN 2
-  WHEN cardinality(ARRAY(SELECT unnest(t.ta)
-                         INTERSECT SELECT unnest(t.tb))) > 0        THEN 3
-  ELSE 0 END
-FROM (SELECT carrier_name_tokens(a)  AS ta, carrier_name_tokens(b)  AS tb,
-             carrier_name_compact(a) AS ca, carrier_name_compact(b) AS cb,
-             (carrier_name_generic_only(a) OR carrier_name_generic_only(b))
-                                     AS generic) t;
-$fn$ LANGUAGE sql IMMUTABLE;
+
+-- =========================================================================
+-- ORDER OF THIS FILE, 2026-11-23. Boris: "Insist on complete matches when
+-- the exact pairing is not in your table." The match rule now READS his
+-- tables, so every table it reads is built above it: the regression cases,
+-- the entity seed, the unrelated rulings and the alias pairings come first,
+-- then carrier_name_tier, then the gates that test it.
+-- =========================================================================
+
 
 -- ---------------------------------------------------------------------------
 -- THE REGRESSION GATE. Every pair Boris called wrong, plus the pairs that
@@ -468,13 +445,13 @@ INSERT INTO carrier_name_regression_tbl VALUES
  -- therefore asserts the OPPOSITE of a reject case about the rule, that the
  -- rule DOES join them, and asserts that the recorded ruling suppresses
  -- them anyway. If one ever scored 0 the case would be silently vacuous.
- ('Peoples Telecommunications LLC','Peoples Telephone Cooperative','ruled','boris 2026-11-23: not related'),
- ('Peoples Telecommunications LLC','Peoples Communications','ruled','boris 2026-11-23: not related'),
+ ('Peoples Telecommunications LLC','Peoples Telephone Cooperative','reject','boris 2026-11-23: not related'),
+ ('Peoples Telecommunications LLC','Peoples Communications','reject','boris 2026-11-23: not related'),
  -- and the reverse orientation of the same ruling, because Peoples
  -- Telecommunications is both an ip-api operator name and a BDC brand, so
  -- the pair arrives both ways round. The symmetric test below covers this
  -- too; the cases are here so a regression in either is caught.
- ('Peoples Communications Inc.','Peoples Telecommunications','ruled','boris 2026-11-23: not related, reverse orientation'),
+ ('Peoples Communications Inc.','Peoples Telecommunications','reject','boris 2026-11-23: not related, reverse orientation'),
  -- State of Alaska against the three Alaska brands his candidate file
  -- offered. All three brand strings are real: they are the candidates
  -- AS7782 Alaska Communications System received. I am INFERRING that these
@@ -486,7 +463,7 @@ INSERT INTO carrier_name_regression_tbl VALUES
  ('State of Alaska','Fibre Alaska','reject','boris 2026-11-23: no relation to any Alaska carrier'),
  -- The control for that ruling. A real carrier named after the state must
  -- still reach its own brand, so the fix cannot be a stopword on alaska.
- ('Alaska Communications System','ALASKA COMMUNICATIONS','accept','same company, both reduce to the state name'),
+ ('Alaska Communications System','ALASKA COMMUNICATIONS','needs_pairing','same company, both reduce to the state name'),
  ('Wave Broadband','Wave 7 Communications','reject','boris: research case by case'),
  ('United States Department of Defense','United Communications','reject','boris: United is a modifier'),
  ('United States Department of Defense','United Fiber','reject','boris: United is a modifier'),
@@ -494,85 +471,27 @@ INSERT INTO carrier_name_regression_tbl VALUES
  ('NTT America','NTT Fiber (North Texas Telephone)','reject','boris implied: unrelated'),
  ('University of California, San Diego','San Diego Broadband','reject','boris: not a carrier'),
  ('T-Mobile USA, Inc.','Limitless Mobile','reject','single shared word mobile'),
- ('Comcast Cable Communications, LLC','Xfinity','reject','no string method can join these'),
+ ('Comcast Cable Communications, LLC','Xfinity','accept_recorded','no string method can join these'),
  ('Comcast Cable Communications, LLC','USA COMMUNICATIONS','reject','the original bug'),
  ('Comcast Cable Communications, LLC','Spectrum','reject','competitor'),
  ('Windstream Communications LLC','Georgia Windstream, LLC.','reject','subsidiary reached by one word'),
  -- These must keep working.
- ('Cox Communications Inc.','Cox Communications','accept','same company'),
- ('Frontier Communications Solutions','Frontier','accept','same company'),
- ('AT&T Enterprises, LLC','AT&T','accept','same company'),
- ('123.Net, Inc.','123.NET Inc','accept','same company'),
- ('Windstream Communications LLC','Windstream','accept','same company'),
- ('Verizon Business','Verizon','accept','same company'),
- ('CenturyLink Communications, LLC','CenturyLink','accept','same company'),
- ('Zayo Bandwidth','ZAYO GROUP LLC','accept','same company'),
- ('Cogent Communications','Cogent Communication','accept','same company'),
- ('Google LLC','Google Fiber','accept','same company'),
- ('USA COMMUNICATIONS','USA COMMUNICATIONS','accept','identical'),
- ('CABLE ONE, INC.','Cable One','accept','same company, suffix dropped'),
- ('T-Mobile USA, Inc.','T-Mobile','accept','same company'),
- ('TDS TELECOM','TDS Telecom','accept','identical'),
- ('Breezeline','Breezeline','accept','identical');
+ ('Cox Communications Inc.','Cox Communications','accept_complete','same company'),
+ ('Frontier Communications Solutions','Frontier','needs_pairing','same company'),
+ ('AT&T Enterprises, LLC','AT&T','needs_pairing','same company'),
+ ('123.Net, Inc.','123.NET Inc','accept_complete','same company'),
+ ('Windstream Communications LLC','Windstream','needs_pairing','same company'),
+ ('Verizon Business','Verizon','accept_recorded','same company'),
+ ('CenturyLink Communications, LLC','CenturyLink','needs_pairing','same company'),
+ ('Zayo Bandwidth','ZAYO GROUP LLC','needs_pairing','same company'),
+ ('Cogent Communications','Cogent Communication','needs_pairing','same company'),
+ ('Google LLC','Google Fiber','needs_pairing','same company'),
+ ('USA COMMUNICATIONS','USA COMMUNICATIONS','accept_complete','identical'),
+ ('CABLE ONE, INC.','Cable One','accept_complete','same company, suffix dropped'),
+ ('T-Mobile USA, Inc.','T-Mobile','needs_pairing','same company'),
+ ('TDS TELECOM','TDS Telecom','accept_complete','identical'),
+ ('Breezeline','Breezeline','accept_complete','identical');
 
-\echo
-\echo ================================================================
-\echo THE REGRESSION GATE. tier 1 and 2 are offered to Boris; tier 3 and
-\echo 0 are not. An accept case must reach 1 or 2; a reject case must not.
-\echo ================================================================
-\echo
-SELECT must,
-       count(*)                                                 AS cases,
-       count(*) FILTER (WHERE carrier_name_tier(ipapi_side, bdc_side) <= 2
-                          AND carrier_name_tier(ipapi_side, bdc_side) >= 1
-                          AND must = 'accept')                  AS accept_pass,
-       count(*) FILTER (WHERE carrier_name_tier(ipapi_side, bdc_side) NOT IN (1, 2)
-                          AND must = 'reject')                   AS reject_pass,
-       -- a ruled case passes HERE by being joined, and is then required to
-       -- be suppressed by the recorded ruling in the second gate below
-       count(*) FILTER (WHERE carrier_name_tier(ipapi_side, bdc_side) IN (1, 2)
-                          AND must = 'ruled')                    AS ruled_joined_by_the_rule
-FROM carrier_name_regression_tbl
-GROUP BY 1 ORDER BY 1;
-
-\echo
-\echo Every case with the tier it reaches. 3 means a single shared word,
-\echo which is counted and discarded rather than offered.
-\echo
-SELECT must, ipapi_side, bdc_side,
-       carrier_name_tier(ipapi_side, bdc_side) AS tier,
-       CASE WHEN must = 'accept'
-                 AND carrier_name_tier(ipapi_side, bdc_side) IN (1, 2) THEN 'pass'
-            WHEN must = 'reject'
-                 AND carrier_name_tier(ipapi_side, bdc_side) NOT IN (1, 2) THEN 'pass'
-            WHEN must = 'ruled'
-                 AND carrier_name_tier(ipapi_side, bdc_side) IN (1, 2) THEN 'pass, needs the ruling'
-            ELSE 'FAIL' END AS result,
-       source
-FROM carrier_name_regression_tbl
-ORDER BY result, must, ipapi_side, bdc_side;
-
-DO $gate$
-DECLARE bad integer;
-        detail text;
-BEGIN
-    SELECT count(*), string_agg(ipapi_side || ' -> ' || bdc_side, '; ')
-      INTO bad, detail
-    FROM carrier_name_regression_tbl
-    WHERE (must = 'accept' AND carrier_name_tier(ipapi_side, bdc_side) NOT IN (1, 2))
-       OR (must = 'reject' AND carrier_name_tier(ipapi_side, bdc_side) IN (1, 2))
-       -- A ruled case that the rule does NOT join is a case that proves
-       -- nothing. Either the pair never needed a ruling, or the rule has
-       -- changed and the case is now vacuous. Both are worth stopping for.
-       OR (must = 'ruled'  AND carrier_name_tier(ipapi_side, bdc_side) NOT IN (1, 2));
-    IF bad > 0 THEN
-        RAISE EXCEPTION
-          'REGRESSION GATE FAILED on % case(s): %. Nothing was built and no file was written.',
-          bad, left(detail, 400);
-    END IF;
-    RAISE NOTICE 'regression gate passed: all % cases', (SELECT count(*) FROM carrier_name_regression_tbl);
-END
-$gate$;
 
 -- ---------------------------------------------------------------------------
 -- THE ENTITY SEED. Boris's rulings about which names belong to which network.
@@ -678,6 +597,414 @@ INSERT INTO carrier_entity_name_tbl (entity_key, side, name, status) VALUES
 
 ANALYZE carrier_entity_tbl;
 ANALYZE carrier_entity_name_tbl;
+
+-- ---------------------------------------------------------------------------
+-- THE UNRELATED LIST. Boris 2026-11-22: "Delete the records I marked as
+-- unrelated and ensure they are not matched."
+--
+-- PERSISTENT. Created IF NOT EXISTS, never dropped, never truncated. Every
+-- pair he has called unrelated goes in once and is suppressed everywhere
+-- afterwards: candidate generation, the parent-on-subsidiary report, the
+-- entity resolution and the near-miss report.
+--
+-- Why a table and not just a better rule. Most of these pairs already score
+-- 0 because of the stopwords he supplied, so the rule handles them. But a
+-- rule can regress, and the near-miss report does not use tiers at all, so
+-- it can relate a pair the tier rule rejects. A recorded ruling is checked
+-- by identity rather than by inference and cannot regress.
+--
+-- Matching is on the COMPACT KEY of both sides, so a ruling survives the
+-- spelling variations of the same two companies.
+-- ---------------------------------------------------------------------------
+CREATE TABLE IF NOT EXISTS carrier_unrelated_tbl (
+    ipapi_side   text NOT NULL,
+    bdc_side     text NOT NULL,
+    ipapi_key    text NOT NULL,
+    bdc_key      text NOT NULL,
+    note         text,
+    ruled_at     timestamptz NOT NULL DEFAULT now(),
+    PRIMARY KEY (ipapi_key, bdc_key));
+
+COMMENT ON TABLE carrier_unrelated_tbl IS
+'Pairs Boris has ruled unrelated. PERSISTENT: nothing in the pipeline drops or truncates it. Keyed on the compact form of both names so the ruling holds across spellings. Every matching step excludes these pairs by identity, which is why a stopword regression cannot resurrect them.';
+
+-- Seeded from the reject cases in the gate, EXCEPT the ones that reject for
+-- a different reason.
+--
+-- "reject" in the gate means "the string rule must not join these". That is
+-- NOT the same as "these two companies are unrelated", and two of the thirty
+-- cases are the second kind:
+--
+--   Comcast Cable Communications, LLC / Xfinity
+--       the same company. The case exists to prove no string method can join
+--       them, which is the entire reason the entity layer had to be built.
+--   Windstream Communications LLC / Georgia Windstream, LLC.
+--       a subsidiary. The case exists to stop it being reached by one shared
+--       word, not to deny the relationship.
+--
+-- Seeding from all thirty put Comcast and Xfinity on the unrelated list and
+-- silently deleted the most important match in the system. Caught by the
+-- fixture, which asserts the Comcast proposal survives; the assertion is
+-- there because this exact mistake happened.
+INSERT INTO carrier_unrelated_tbl (ipapi_side, bdc_side, ipapi_key, bdc_key, note)
+SELECT r.ipapi_side, r.bdc_side,
+       carrier_name_compact(r.ipapi_side), carrier_name_compact(r.bdc_side),
+       'from the regression gate: ' || r.source
+FROM carrier_name_regression_tbl r
+WHERE r.must = 'reject'
+  AND carrier_name_compact(r.ipapi_side) IS NOT NULL
+  AND carrier_name_compact(r.bdc_side) IS NOT NULL
+  -- the two same-company cases, by compact key so spelling cannot slip past
+  AND NOT (carrier_name_compact(r.ipapi_side), carrier_name_compact(r.bdc_side)) IN (
+        (carrier_name_compact('Comcast Cable Communications, LLC'),
+         carrier_name_compact('Xfinity')),
+        (carrier_name_compact('Windstream Communications LLC'),
+         carrier_name_compact('Georgia Windstream, LLC.')))
+  AND NOT EXISTS (SELECT 1 FROM carrier_unrelated_tbl u
+                  WHERE u.ipapi_key = carrier_name_compact(r.ipapi_side)
+                    AND u.bdc_key   = carrier_name_compact(r.bdc_side));
+
+INSERT INTO carrier_unrelated_tbl (ipapi_side, bdc_side, ipapi_key, bdc_key, note)
+SELECT v.a, v.b, carrier_name_compact(v.a), carrier_name_compact(v.b), v.note
+FROM (VALUES
+ ('Database Mart LLC','Wal-Mart Stores, Inc.','boris 2026-11-22: unrelated, shared word mart'),
+ ('Winn-Dixie Stores, Inc.','Wal-Mart Stores, Inc.','boris 2026-11-22: unrelated, shared words stores inc'),
+ ('Spartan Stores, Inc.','Wal-Mart Stores, Inc.','boris 2026-11-22: unrelated, shared words stores inc'),
+ ('Colonial IU 20','Washington State K-20 Telecommunications Network','boris 2026-11-22: unrelated, shared word 20'),
+ ('State of WI Dept. of Administration','State of Washington','boris 2026-11-22: unrelated, shared words state wi dept'),
+ ('State of WI Dept. of Administration','State of Wisconsin','boris 2026-11-22: these are the same body, but the pairing was reached by generic words and must come from a ruling not a match')
+) AS v(a, b, note)
+WHERE carrier_name_compact(v.a) IS NOT NULL
+  AND carrier_name_compact(v.b) IS NOT NULL
+  AND NOT EXISTS (SELECT 1 FROM carrier_unrelated_tbl u
+                  WHERE u.ipapi_key = carrier_name_compact(v.a)
+                    AND u.bdc_key   = carrier_name_compact(v.b));
+
+-- SYMMETRIC. A ruling that two companies are unrelated is a fact about the
+-- two companies, not about which side of the join they happened to appear
+-- on. The first version tested one orientation only, and that is a hole:
+-- Peoples Telecommunications LLC is an ip-api operator name on AS397298 AND
+-- a BDC brand under provider 131030, so the same pair arrives both ways
+-- round depending on which ASN is being matched, and a ruling recorded in
+-- one direction silently failed in the other. Boris 2026-11-23 ruled that
+-- pair unrelated, which is what exposed it.
+CREATE OR REPLACE FUNCTION carrier_pair_is_unrelated(a text, b text)
+RETURNS boolean AS $fn$
+SELECT EXISTS (SELECT 1 FROM carrier_unrelated_tbl u
+               WHERE (u.ipapi_key = carrier_name_compact(a)
+                  AND u.bdc_key   = carrier_name_compact(b))
+                  OR (u.ipapi_key = carrier_name_compact(b)
+                  AND u.bdc_key   = carrier_name_compact(a)));
+$fn$ LANGUAGE sql STABLE;
+
+SELECT count(*) AS unrelated_pairs_held FROM carrier_unrelated_tbl;
+
+-- ---------------------------------------------------------------------------
+-- THE TABLE OF EXACT PAIRINGS. Boris 2026-11-23: "Insist on complete matches
+-- when the exact pairing is not in your table."
+--
+-- This is that table. A row says: this ip-api name and this BDC name are the
+-- same network, on his authority. It is the ONLY way two names that are not
+-- character-for-character the same can be matched, now that token equality
+-- and containment are gone.
+--
+-- PERSISTENT, like the unrelated list, and keyed on the compact form of both
+-- names so a ruling survives a change of spelling or punctuation.
+--
+-- status matters and is not decoration:
+--   confirmed  he said so. carrier_name_tier returns 2 and the pair matches.
+--   proposed   I inferred it. It does NOT match. It is listed for his word.
+-- The distinction exists because most of the accept cases in the gate carry
+-- MY reasoning about corporate identity, not his: the source column says
+-- "same company", which was me. Treating my inference as his ruling is how
+-- 1-800-Flowers came to hold Comcast plant.
+-- ---------------------------------------------------------------------------
+CREATE TABLE IF NOT EXISTS carrier_alias_tbl (
+    ipapi_side text NOT NULL,
+    bdc_side   text NOT NULL,
+    ipapi_key  text NOT NULL,
+    bdc_key    text NOT NULL,
+    status     text NOT NULL CHECK (status IN ('confirmed', 'proposed')),
+    note       text,
+    ruled_at   timestamptz NOT NULL DEFAULT now(),
+    PRIMARY KEY (ipapi_key, bdc_key));
+
+COMMENT ON TABLE carrier_alias_tbl IS
+'Pairs of names that are the same network although the names differ. The only route to a match other than a complete name match, per Boris 2026-11-23. status confirmed means he ruled it and it matches; status proposed means I inferred it and it does NOT match until he says so. PERSISTENT: nothing in the pipeline drops or truncates it.';
+
+-- SOURCE ONE, and the only one that produces confirmed rows: the entity
+-- seed, where both sides already carry his status. Every ip-api name he
+-- confirmed for an entity is paired with every BDC brand he confirmed for
+-- the same entity, which is what the entity layer means.
+-- DISTINCT ON, because two of his entity names can share a compact key:
+-- Charter Communications Inc and Charter Communications, Inc differ only in
+-- punctuation, so the cross product offers the same pair of keys twice. The
+-- confirmed row wins, so a pair he confirmed under one spelling is never
+-- downgraded by a proposed row carrying another spelling of the same name.
+INSERT INTO carrier_alias_tbl (ipapi_side, bdc_side, ipapi_key, bdc_key, status, note)
+SELECT DISTINCT ON (p.ipapi_key, p.bdc_key)
+       p.ipapi_side, p.bdc_side, p.ipapi_key, p.bdc_key, p.status, p.note
+FROM (
+    SELECT i.name AS ipapi_side, b.name AS bdc_side,
+           carrier_name_compact(i.name) AS ipapi_key,
+           carrier_name_compact(b.name) AS bdc_key,
+           CASE WHEN i.status = 'confirmed' AND b.status = 'confirmed'
+                THEN 'confirmed' ELSE 'proposed' END AS status,
+           'entity ' || e.entity_key || ': ' || e.display_name AS note
+    FROM carrier_entity_tbl e
+    JOIN carrier_entity_name_tbl i ON i.entity_key = e.entity_key AND i.side = 'ipapi'
+    JOIN carrier_entity_name_tbl b ON b.entity_key = e.entity_key AND b.side = 'bdc'
+    WHERE carrier_name_compact(i.name) IS NOT NULL
+      AND carrier_name_compact(b.name) IS NOT NULL
+      AND carrier_name_compact(i.name) <> carrier_name_compact(b.name)
+      AND NOT carrier_pair_is_unrelated(i.name, b.name)
+) p
+ORDER BY p.ipapi_key, p.bdc_key, (p.status = 'confirmed') DESC, p.ipapi_side
+ON CONFLICT (ipapi_key, bdc_key) DO NOTHING;
+
+-- SOURCE TWO: the accept cases in the gate that are NOT complete matches.
+-- These are the pairs the deleted arms used to join. They are inserted as
+-- PROPOSED, so they no longer match, and they are listed below for his
+-- ruling. Nine pairs, including AT&T Enterprises, LLC to AT&T, which covers
+-- AS7018 and its 263,102 ZIP-capable ranges.
+INSERT INTO carrier_alias_tbl (ipapi_side, bdc_side, ipapi_key, bdc_key, status, note)
+SELECT DISTINCT ON (carrier_name_compact(r.ipapi_side), carrier_name_compact(r.bdc_side))
+       r.ipapi_side, r.bdc_side,
+       carrier_name_compact(r.ipapi_side), carrier_name_compact(r.bdc_side),
+       'proposed',
+       'was accepted by the deleted token rule, source: ' || r.source
+FROM carrier_name_regression_tbl r
+WHERE r.must IN ('needs_pairing', 'accept_recorded')
+  AND carrier_name_compact(r.ipapi_side) IS NOT NULL
+  AND carrier_name_compact(r.bdc_side) IS NOT NULL
+  AND carrier_name_compact(r.ipapi_side) <> carrier_name_compact(r.bdc_side)
+ON CONFLICT (ipapi_key, bdc_key) DO NOTHING;
+
+CREATE INDEX IF NOT EXISTS carrier_alias_ipapi_ix ON carrier_alias_tbl (ipapi_key);
+CREATE INDEX IF NOT EXISTS carrier_alias_bdc_ix   ON carrier_alias_tbl (bdc_key);
+ANALYZE carrier_alias_tbl;
+
+-- SYMMETRIC, for the same reason the unrelated check is: the same pair
+-- arrives either way round depending on which side is being matched.
+-- CONFIRMED ONLY. A proposed row is my inference and must not match.
+CREATE OR REPLACE FUNCTION carrier_pair_is_recorded(a text, b text)
+RETURNS boolean AS $fn$
+SELECT EXISTS (SELECT 1 FROM carrier_alias_tbl x
+               WHERE x.status = 'confirmed'
+                 AND ((x.ipapi_key = carrier_name_compact(a)
+                   AND x.bdc_key   = carrier_name_compact(b))
+                   OR (x.ipapi_key = carrier_name_compact(b)
+                   AND x.bdc_key   = carrier_name_compact(a))));
+$fn$ LANGUAGE sql STABLE;
+
+-- CREATED IN ITS MIGRATED SHAPE. One row per ASN PER BRAND, enforced by the
+-- composite unique index below rather than by a primary key on asn, because
+-- a carrier can own several brands. This file used to create it with
+-- asn as the primary key, which meant a database built from scratch had to
+-- run asn_map_multibrand_migration.sql before carrier_rulings.sql would do
+-- anything; found 2026-11-23 on the test cluster, where carrier_rulings.sql
+-- blocked on exactly that. The migration is still needed for Boris's
+-- existing database and is a no-op against a table created here.
+CREATE TABLE IF NOT EXISTS asn_bdc_brand_map_tbl (
+    asn             bigint NOT NULL,
+    decision        text NOT NULL
+                    CHECK (decision IN ('brand', 'not_a_carrier', 'out_of_scope', 'unknown')),
+    bdc_brand_name  text,
+    bdc_provider_id integer,
+    note            text,
+    approved_at     timestamptz NOT NULL DEFAULT now());
+
+-- Only on a table this file just created. Against Boris's database both
+-- already exist, put there by asn_map_multibrand_migration.sql, and these
+-- statements do nothing.
+CREATE UNIQUE INDEX IF NOT EXISTS asn_bdc_brand_map_uq
+    ON asn_bdc_brand_map_tbl (asn, coalesce(bdc_brand_name, ''),
+                              coalesce(bdc_provider_id, 0));
+CREATE INDEX IF NOT EXISTS asn_bdc_brand_map_asn_ix
+    ON asn_bdc_brand_map_tbl (asn);
+
+COMMENT ON TABLE asn_bdc_brand_map_tbl IS
+'Boris-approved mapping from an AS number to a BDC brand. The ASN is the key because it is the only hard identifier on the ip-api side: one decision per operator rather than one per spelling of its name. PERSISTENT. carrier_asn_match.sql never drops or truncates it and proposes candidates only for ASNs absent from it, which is what makes new carriers integrate automatically as the remaining half of the decomposed ranges is probed. decision out_of_scope records Boris 2026-11-20: a non-carrier is localised by ip-api to its own premises, so it needs no headend inference at all.';
+
+SELECT count(*) AS decisions_held,
+       count(*) FILTER (WHERE decision = 'brand')        AS to_a_brand,
+       count(*) FILTER (WHERE decision = 'not_a_carrier') AS not_a_carrier,
+       count(*) FILTER (WHERE decision = 'out_of_scope')  AS out_of_scope
+FROM asn_bdc_brand_map_tbl;
+
+\echo
+\echo The table of exact pairings. Only confirmed rows can produce a match.
+\echo
+SELECT status, count(*) AS pairs FROM carrier_alias_tbl GROUP BY status ORDER BY 1;
+
+\echo
+\echo PROPOSED PAIRINGS, WHICH DO NOT MATCH UNTIL YOU SAY SO. Each one is a
+\echo pair the deleted token rule used to join by itself. One word on each.
+\echo
+SELECT a.ipapi_side, a.bdc_side, a.note
+FROM carrier_alias_tbl a
+WHERE a.status = 'proposed'
+ORDER BY a.ipapi_side, a.bdc_side;
+
+-- ---------------------------------------------------------------------------
+-- THE SECOND GATE, for the cases the string rule cannot decide.
+--
+-- A 'ruled' case is one where the rule scores tier 1 or 2 and only Boris's
+-- ruling separates the two companies. The first gate proved the rule joins
+-- them. This proves the ruling suppresses them, in BOTH orientations,
+-- because the same pair arrives either way round depending on which ASN is
+-- being matched. It RAISES: an unenforced ruling is worse than no ruling,
+-- ---------------------------------------------------------------------------
+-- THE MATCH RULE. TWO WAYS TO BE A MATCH AND NO OTHERS.
+--
+-- Boris 2026-11-23: "Insist on complete matches when the exact pairing is not
+-- in your table." And on the three pairs that prompted it: "Do not leave
+-- Rural as the sole comparison word. There are many REI companies with Rural
+-- in their names. Insist on a complete match after the AS number is
+-- stripped." / "insist on full name match except Inc, LLC etc." / "State of
+-- Alaska: insist on a full match."
+--
+--   1  COMPLETE MATCH. The whole name agrees once the AS number, the case,
+--      the punctuation and the legal suffix are stripped. That is exactly
+--      carrier_name_compact, so CABLE ONE, INC. still reaches Cable One and
+--      Cox Communications Inc. still reaches Cox Communications.
+--   2  RECORDED PAIRING. The exact pair is in his table and he confirmed it.
+--      That is how a trade name reaches a legal name, Comcast Cable
+--      Communications, LLC to Xfinity, which no string rule can do.
+--   3  PARTIAL. The names share an informative word. NOT A MATCH. It is
+--      computed and shown so that a pairing worth recording can be found,
+--      and it is never written as a decision.
+--   0  nothing, or a pair he ruled unrelated, or a state government.
+--
+-- WHAT THIS DELETES, AND WHY. The old rule had two further ways to be a
+-- match: token-set equality after the stopwords, and containment with at
+-- most one extra word. Between them they produced EVERY wrong relation he
+-- has reported, because the stopwords strip the words that carry the
+-- difference and the rule then compares what is left:
+--
+--   Rural Telephone Service Co / RURAL TELEPHONE COMPANY   both {rural}
+--   Peoples Telecommunications / Peoples Communications    both {peoples}
+--   State of Alaska / Fibre Alaska                         both {alaska}
+--   Wave Rural Connect / Fuse Rural Connect                {rural} in both
+--   Database Mart LLC / Wal-Mart Stores, Inc.              shared {mart}
+--
+-- Each time, I answered with another stopword, which made the surviving
+-- names shorter and matched MORE things. Five reports of the same defect.
+-- The rule above cannot produce any of them and needs no stopword at all to
+-- decide a match. The stopwords now only find PARTIAL pairs for review.
+--
+-- STABLE rather than IMMUTABLE, because arms 0 and 2 read his tables. That
+-- is the reason this function is defined below them rather than above.
+-- ---------------------------------------------------------------------------
+CREATE OR REPLACE FUNCTION carrier_name_tier(a text, b text)
+RETURNS integer AS $fn$
+SELECT CASE
+  WHEN t.ca IS NULL OR t.cb IS NULL                                 THEN 0
+  -- A ruling that two companies are unrelated beats everything, including a
+  -- complete match, because he has looked at that pair himself.
+  WHEN carrier_pair_is_unrelated(a, b)                              THEN 0
+  WHEN carrier_name_is_state_government(a)
+    OR carrier_name_is_state_government(b)                          THEN 0
+  WHEN t.ca = t.cb                                                  THEN 1
+  WHEN carrier_pair_is_recorded(a, b)                               THEN 2
+  -- Nothing below this line is a match.
+  WHEN cardinality(ARRAY(SELECT unnest(t.ta)
+                         INTERSECT SELECT unnest(t.tb))) > 0        THEN 3
+  ELSE 0 END
+FROM (SELECT carrier_name_tokens_strict(a) AS ta,
+             carrier_name_tokens_strict(b) AS tb,
+             carrier_name_compact(a)       AS ca,
+             carrier_name_compact(b)       AS cb) t;
+$fn$ LANGUAGE sql STABLE;
+\echo
+\echo ================================================================
+\echo THE REGRESSION GATE. tier 1 and 2 are offered to Boris; tier 3 and
+\echo 0 are not. An accept case must reach 1 or 2; a reject case must not.
+\echo ================================================================
+\echo
+SELECT must, count(*) AS cases,
+       count(*) FILTER (WHERE carrier_name_tier(ipapi_side, bdc_side) = 1) AS complete_match,
+       count(*) FILTER (WHERE carrier_name_tier(ipapi_side, bdc_side) = 2) AS your_pairing,
+       count(*) FILTER (WHERE carrier_name_tier(ipapi_side, bdc_side) = 3) AS partial_not_a_match,
+       count(*) FILTER (WHERE carrier_name_tier(ipapi_side, bdc_side) = 0) AS nothing
+FROM carrier_name_regression_tbl
+GROUP BY 1 ORDER BY 1;
+
+\echo
+\echo Every case. tier 1 is a complete name match, 2 is a pairing you have
+\echo confirmed, 3 is a shared word and NOT a match, 0 is nothing.
+\echo
+SELECT must, ipapi_side, bdc_side,
+       carrier_name_tier(ipapi_side, bdc_side) AS tier,
+       CASE WHEN must = 'accept_complete'
+                 AND carrier_name_tier(ipapi_side, bdc_side) = 1 THEN 'pass'
+            WHEN must = 'accept_recorded'
+                 AND carrier_name_tier(ipapi_side, bdc_side) = 2 THEN 'pass, by your pairing'
+            WHEN must = 'reject'
+                 AND carrier_name_tier(ipapi_side, bdc_side) NOT IN (1, 2) THEN 'pass'
+            WHEN must = 'needs_pairing'
+                 AND carrier_name_tier(ipapi_side, bdc_side) NOT IN (1, 2) THEN 'pass, awaiting your word'
+            ELSE 'FAIL' END AS result,
+       source
+FROM carrier_name_regression_tbl
+ORDER BY result, must, ipapi_side, bdc_side;
+
+-- ---------------------------------------------------------------------------
+-- THE GATE. Four categories, because there are now two ways to match and the
+-- difference between them has to be asserted rather than blurred.
+--
+--   accept_complete  the names agree completely once the legal suffix goes.
+--                    Must be tier 1. No table is involved.
+--   accept_recorded  the names do NOT agree as strings and he has confirmed
+--                    the pairing. Must be tier 2, and the complete-match
+--                    test must FAIL, which is what used to be asserted by
+--                    the Comcast to Xfinity reject case.
+--   reject           must not match at all.
+--   needs_pairing    the deleted token rule used to join these. They must
+--                    NOT match now, and must appear in carrier_alias_tbl as
+--                    proposed, waiting for one word from him.
+-- ---------------------------------------------------------------------------
+DO $gate$
+DECLARE bad integer; detail text;
+BEGIN
+    SELECT count(*), string_agg(format('%s -> %s [%s, tier %s]',
+                                  ipapi_side, bdc_side, must,
+                                  carrier_name_tier(ipapi_side, bdc_side)), '; ')
+      INTO bad, detail
+    FROM carrier_name_regression_tbl
+    WHERE NOT (
+        (must = 'accept_complete' AND carrier_name_tier(ipapi_side, bdc_side) = 1)
+     OR (must = 'accept_recorded' AND carrier_name_tier(ipapi_side, bdc_side) = 2
+         AND carrier_name_compact(ipapi_side) IS DISTINCT FROM carrier_name_compact(bdc_side))
+     OR (must = 'reject'          AND carrier_name_tier(ipapi_side, bdc_side) NOT IN (1, 2))
+     OR (must = 'needs_pairing'   AND carrier_name_tier(ipapi_side, bdc_side) NOT IN (1, 2)));
+    IF bad > 0 THEN
+        RAISE EXCEPTION
+          'REGRESSION GATE FAILED on % case(s): %. Nothing was built and no file was written.',
+          bad, left(detail, 500);
+    END IF;
+    RAISE NOTICE 'regression gate passed: all % cases', (SELECT count(*) FROM carrier_name_regression_tbl);
+END
+$gate$;
+
+-- Every needs_pairing case must actually be in the proposal list, or it is
+-- lost: it no longer matches and nobody is being asked about it.
+DO $pairing$
+DECLARE bad integer; detail text;
+BEGIN
+    SELECT count(*), string_agg(r.ipapi_side || ' -> ' || r.bdc_side, '; ')
+      INTO bad, detail
+    FROM carrier_name_regression_tbl r
+    WHERE r.must = 'needs_pairing'
+      AND NOT EXISTS (SELECT 1 FROM carrier_alias_tbl a
+                      WHERE a.ipapi_key = carrier_name_compact(r.ipapi_side)
+                        AND a.bdc_key   = carrier_name_compact(r.bdc_side));
+    IF bad > 0 THEN
+        RAISE EXCEPTION 'PAIRING GATE FAILED on % case(s): %. These pairs no longer match and are not in the proposal list either, so they have been silently dropped. Nothing was built.', bad, left(detail, 400);
+    END IF;
+    RAISE NOTICE 'pairing gate passed: all % pairs awaiting a ruling are in the proposal list', (SELECT count(*) FROM carrier_name_regression_tbl WHERE must = 'needs_pairing');
+END
+$pairing$;
 
 -- ---------------------------------------------------------------------------
 -- THE CARRIER UNIVERSE. Boris 2026-11-22: "You have a table with carrier
@@ -815,251 +1142,46 @@ CREATE INDEX carrier_universe_key_ix ON carrier_universe_tbl (name_key);
 CREATE INDEX carrier_universe_token_key_ix ON carrier_universe_tbl (token_key);
 ANALYZE carrier_universe_tbl;
 
--- One row per informative token per universe name, so the membership test
--- can find the universe names that share a token with a candidate name
--- through an index instead of scanning every universe name.
-DROP TABLE IF EXISTS carrier_universe_token_tbl;
-CREATE TABLE carrier_universe_token_tbl AS
-SELECT DISTINCT u.name, t.tok,
-       carrier_name_token_count(u.name) AS tok_count
-FROM carrier_universe_tbl u, unnest(carrier_name_tokens_strict(u.name)) AS t(tok);
-
-CREATE INDEX carrier_universe_token_ix ON carrier_universe_token_tbl (tok);
-ANALYZE carrier_universe_token_tbl;
-
 -- ---------------------------------------------------------------------------
--- THE MEMO, WHICH IS A PERFORMANCE FIX AND NOT A SECOND RULE.
+-- MEMBERSHIP, BY THE SAME TWO PATHS AS A MATCH. Boris 2026-11-23: "Insist on
+-- complete matches when the exact pairing is not in your table."
 --
--- Measured on Boris's 2026-11-23 run: the full rule costs 3.1 ms per name,
--- which is 61 s over his 19,936 ASNs, and it was being paid again at every
--- call site. carrier_universe.sql alone paid it four times, so the report
--- took four minutes, and section 2 went from 4.3 s to 65.7 s.
+--   1. the whole name agrees with a carrier name once the legal suffix goes;
+--   2. the exact pairing is in carrier_alias_tbl, confirmed, and the other
+--      side of it is a carrier name;
+-- and that is all. I wrote a third path first, "the holder already has a
+-- brand decision in the map", and then removed it: the map contains rows
+-- MY code wrote without him, which is how 1-800-Flowers came to hold
+-- Comcast plant, so that path would have used my own mistakes as evidence
+-- that a holder is a carrier. The table cannot tell his approvals from my
+-- writes, so it cannot be an authority on this question.
 --
--- The table is filled BY CALLING THE RULE, once per distinct operator name,
--- so it cannot disagree with the rule. That matters more than the speed: the
--- defect this whole area is recovering from was two tests of the same thing
--- written two different ways. A name the memo has never seen falls through
--- to the rule, so the function still answers for arbitrary strings, which is
--- what the assertions pass it.
+-- WHAT PROTECTS THE 769 DECISIONS INSTEAD. carrier_rulings.sql now REFUSES
+-- to run its cleanup until fcc499_filer_tbl is loaded. AT&T Enterprises, LLC
+-- is a Form 499a legal name, so once that file is in, the holder of AS7018
+-- is a carrier by a COMPLETE match against his own data rather than by my
+-- inference from a token. Until then nothing is deleted.
 --
--- Created empty here, next to the rule, and filled after ipapi_asn_tbl
--- exists. It is never dropped after the function is defined, so no cached
--- plan can be left pointing at a dead relation.
+-- The token-key path and the tier path are GONE, with the token table and
+-- the memo that existed to make them affordable. They cost 3.08 ms per name,
+-- 61.5 s per call site over his 19,936 ASNs, and they existed to admit names
+-- that the complete-match rule says are not the same name. Three index
+-- probes replace them.
 -- ---------------------------------------------------------------------------
-DROP TABLE IF EXISTS carrier_universe_memo_tbl;
-CREATE TABLE carrier_universe_memo_tbl (
-    name     text PRIMARY KEY,
-    eligible boolean NOT NULL);
-
-COMMENT ON TABLE carrier_universe_memo_tbl IS
-'One row per distinct AS operator name with the answer carrier_name_in_universe_rule gives for it. A cache, not a second rule: it is populated by calling that function. Rebuilt by carrier_asn_match.sql on every run. If you change the universe by hand, re-run that file or the cached answers will be stale.';
-
--- ---------------------------------------------------------------------------
--- MEMBERSHIP. This has to use THE SAME RULE AS MATCHING, or it throws away
--- correct work.
---
--- The first version tested compact-key equality alone, and that is far
--- stricter than carrier_name_tier. Measured on Boris's database 2026-11-22,
--- every one of these pairs scores tier 1 and so would be matched, yet the
--- compact keys disagree and the holder was therefore ruled not a carrier:
---
---   AT&T Enterprises, LLC      against AT&T
---   Google LLC                 against Google Fiber
---   Cogent Communications, LLC against Cogent Communication
---   Zayo Bandwidth             against ZAYO GROUP LLC
---   LUMOS Networks, Inc.       against lumos
---   Cablevision Lightpath LLC  against Lightpath
---   Metronet                   against Metronet Holdings
---
--- The consequence was not theoretical. His run deleted 769 brand decisions
--- covering 736 ASNs and 373,410 ZIP-capable ranges, AS7018 AT&T among them
--- at 263,102 ranges, because the holder of each had been judged not to be a
--- carrier by a test the matcher itself would have passed.
---
--- So membership now holds when ANY of the three paths that make two names
--- the same name holds:
---   1. the compact keys agree, which is the old test and still the cheapest;
---   2. the token keys agree, which is tier 1 by token equality and catches
---      AT&T Enterprises, LLC;
---   3. the name scores tier 1 or 2 against some universe name, which is
---      exactly the condition the matcher uses, and catches the containment
---      cases such as AT&T WorldNet against AT&T.
---
--- Path 3 subsumes 1 and 2; they are kept because they are index lookups and
--- answer most names without touching the token join.
---
--- The prefilter on path 3 is exact rather than approximate. Tier 1 and 2
--- both require that one name's token set is contained in the other's, so the
--- count of shared tokens must equal the smaller of the two token counts.
--- Prefiltering on that cannot drop a pair the tier rule would accept.
---
--- A name with no informative token reaches the universe only through path 1,
--- because the token join produces no rows for it. That is the same
--- fallback-is-exact-match-only rule Boris gave for the matcher.
--- ---------------------------------------------------------------------------
--- The rule itself. carrier_name_in_universe below is a memo over this, so
--- there is ONE definition of membership and the fast path cannot drift from
--- it. Call this directly only when the memo is deliberately being bypassed.
-CREATE OR REPLACE FUNCTION carrier_name_in_universe_rule(raw text)
+CREATE OR REPLACE FUNCTION carrier_name_in_universe(raw text)
 RETURNS boolean AS $fn$
 SELECT carrier_name_compact(raw) IS NOT NULL
-   -- A state government is not a carrier and cannot enter the universe by
-   -- any path. The token key of State of Alaska is alaska, and so is the
-   -- token key of the brand Fibre Alaska, so without this the token-key path
-   -- admits it even though carrier_name_tier now scores the pair 0.
    AND NOT carrier_name_is_state_government(raw)
    AND (EXISTS (SELECT 1 FROM carrier_universe_tbl u
                 WHERE u.name_key = carrier_name_compact(raw))
-     OR (carrier_name_token_key(raw) IS NOT NULL
-         AND EXISTS (SELECT 1 FROM carrier_universe_tbl u
-                     WHERE u.token_key = carrier_name_token_key(raw)))
-     OR EXISTS (
-          SELECT 1
-          FROM (SELECT ut.name, ut.tok_count,
-                       count(DISTINCT ut.tok) AS shared
-                FROM unnest(carrier_name_tokens_strict(raw)) AS t(tok)
-                JOIN carrier_universe_token_tbl ut ON ut.tok = t.tok
-                GROUP BY ut.name, ut.tok_count) c
-          WHERE c.shared = least(c.tok_count, carrier_name_token_count(raw))
-            AND carrier_name_tier(raw, c.name) IN (1, 2)));
+     OR EXISTS (SELECT 1 FROM carrier_alias_tbl x
+                JOIN carrier_universe_tbl u
+                  ON u.name_key IN (x.ipapi_key, x.bdc_key)
+                WHERE x.status = 'confirmed'
+                  AND carrier_name_compact(raw) IN (x.ipapi_key, x.bdc_key)
+                  AND u.name_key <> carrier_name_compact(raw)));
 $fn$ LANGUAGE sql STABLE;
 
--- The memo lookup, which is what everything else calls. A hit is one index
--- probe. A miss runs the rule, so the answer is identical either way.
-CREATE OR REPLACE FUNCTION carrier_name_in_universe(raw text)
-RETURNS boolean AS $fn$
-SELECT coalesce(
-  (SELECT m.eligible FROM carrier_universe_memo_tbl m WHERE m.name = raw),
-  carrier_name_in_universe_rule(raw));
-$fn$ LANGUAGE sql STABLE;
-
-
--- ---------------------------------------------------------------------------
--- THE UNRELATED LIST. Boris 2026-11-22: "Delete the records I marked as
--- unrelated and ensure they are not matched."
---
--- PERSISTENT. Created IF NOT EXISTS, never dropped, never truncated. Every
--- pair he has called unrelated goes in once and is suppressed everywhere
--- afterwards: candidate generation, the parent-on-subsidiary report, the
--- entity resolution and the near-miss report.
---
--- Why a table and not just a better rule. Most of these pairs already score
--- 0 because of the stopwords he supplied, so the rule handles them. But a
--- rule can regress, and the near-miss report does not use tiers at all, so
--- it can relate a pair the tier rule rejects. A recorded ruling is checked
--- by identity rather than by inference and cannot regress.
---
--- Matching is on the COMPACT KEY of both sides, so a ruling survives the
--- spelling variations of the same two companies.
--- ---------------------------------------------------------------------------
-CREATE TABLE IF NOT EXISTS carrier_unrelated_tbl (
-    ipapi_side   text NOT NULL,
-    bdc_side     text NOT NULL,
-    ipapi_key    text NOT NULL,
-    bdc_key      text NOT NULL,
-    note         text,
-    ruled_at     timestamptz NOT NULL DEFAULT now(),
-    PRIMARY KEY (ipapi_key, bdc_key));
-
-COMMENT ON TABLE carrier_unrelated_tbl IS
-'Pairs Boris has ruled unrelated. PERSISTENT: nothing in the pipeline drops or truncates it. Keyed on the compact form of both names so the ruling holds across spellings. Every matching step excludes these pairs by identity, which is why a stopword regression cannot resurrect them.';
-
--- Seeded from the reject cases in the gate, EXCEPT the ones that reject for
--- a different reason.
---
--- "reject" in the gate means "the string rule must not join these". That is
--- NOT the same as "these two companies are unrelated", and two of the thirty
--- cases are the second kind:
---
---   Comcast Cable Communications, LLC / Xfinity
---       the same company. The case exists to prove no string method can join
---       them, which is the entire reason the entity layer had to be built.
---   Windstream Communications LLC / Georgia Windstream, LLC.
---       a subsidiary. The case exists to stop it being reached by one shared
---       word, not to deny the relationship.
---
--- Seeding from all thirty put Comcast and Xfinity on the unrelated list and
--- silently deleted the most important match in the system. Caught by the
--- fixture, which asserts the Comcast proposal survives; the assertion is
--- there because this exact mistake happened.
-INSERT INTO carrier_unrelated_tbl (ipapi_side, bdc_side, ipapi_key, bdc_key, note)
-SELECT r.ipapi_side, r.bdc_side,
-       carrier_name_compact(r.ipapi_side), carrier_name_compact(r.bdc_side),
-       'from the regression gate: ' || r.source
-FROM carrier_name_regression_tbl r
-WHERE r.must IN ('reject', 'ruled')
-  AND carrier_name_compact(r.ipapi_side) IS NOT NULL
-  AND carrier_name_compact(r.bdc_side) IS NOT NULL
-  -- the two same-company cases, by compact key so spelling cannot slip past
-  AND NOT (carrier_name_compact(r.ipapi_side), carrier_name_compact(r.bdc_side)) IN (
-        (carrier_name_compact('Comcast Cable Communications, LLC'),
-         carrier_name_compact('Xfinity')),
-        (carrier_name_compact('Windstream Communications LLC'),
-         carrier_name_compact('Georgia Windstream, LLC.')))
-  AND NOT EXISTS (SELECT 1 FROM carrier_unrelated_tbl u
-                  WHERE u.ipapi_key = carrier_name_compact(r.ipapi_side)
-                    AND u.bdc_key   = carrier_name_compact(r.bdc_side));
-
-INSERT INTO carrier_unrelated_tbl (ipapi_side, bdc_side, ipapi_key, bdc_key, note)
-SELECT v.a, v.b, carrier_name_compact(v.a), carrier_name_compact(v.b), v.note
-FROM (VALUES
- ('Database Mart LLC','Wal-Mart Stores, Inc.','boris 2026-11-22: unrelated, shared word mart'),
- ('Winn-Dixie Stores, Inc.','Wal-Mart Stores, Inc.','boris 2026-11-22: unrelated, shared words stores inc'),
- ('Spartan Stores, Inc.','Wal-Mart Stores, Inc.','boris 2026-11-22: unrelated, shared words stores inc'),
- ('Colonial IU 20','Washington State K-20 Telecommunications Network','boris 2026-11-22: unrelated, shared word 20'),
- ('State of WI Dept. of Administration','State of Washington','boris 2026-11-22: unrelated, shared words state wi dept'),
- ('State of WI Dept. of Administration','State of Wisconsin','boris 2026-11-22: these are the same body, but the pairing was reached by generic words and must come from a ruling not a match')
-) AS v(a, b, note)
-WHERE carrier_name_compact(v.a) IS NOT NULL
-  AND carrier_name_compact(v.b) IS NOT NULL
-  AND NOT EXISTS (SELECT 1 FROM carrier_unrelated_tbl u
-                  WHERE u.ipapi_key = carrier_name_compact(v.a)
-                    AND u.bdc_key   = carrier_name_compact(v.b));
-
--- SYMMETRIC. A ruling that two companies are unrelated is a fact about the
--- two companies, not about which side of the join they happened to appear
--- on. The first version tested one orientation only, and that is a hole:
--- Peoples Telecommunications LLC is an ip-api operator name on AS397298 AND
--- a BDC brand under provider 131030, so the same pair arrives both ways
--- round depending on which ASN is being matched, and a ruling recorded in
--- one direction silently failed in the other. Boris 2026-11-23 ruled that
--- pair unrelated, which is what exposed it.
-CREATE OR REPLACE FUNCTION carrier_pair_is_unrelated(a text, b text)
-RETURNS boolean AS $fn$
-SELECT EXISTS (SELECT 1 FROM carrier_unrelated_tbl u
-               WHERE (u.ipapi_key = carrier_name_compact(a)
-                  AND u.bdc_key   = carrier_name_compact(b))
-                  OR (u.ipapi_key = carrier_name_compact(b)
-                  AND u.bdc_key   = carrier_name_compact(a)));
-$fn$ LANGUAGE sql STABLE;
-
-SELECT count(*) AS unrelated_pairs_held FROM carrier_unrelated_tbl;
-
--- ---------------------------------------------------------------------------
--- THE SECOND GATE, for the cases the string rule cannot decide.
---
--- A 'ruled' case is one where the rule scores tier 1 or 2 and only Boris's
--- ruling separates the two companies. The first gate proved the rule joins
--- them. This proves the ruling suppresses them, in BOTH orientations,
--- because the same pair arrives either way round depending on which ASN is
--- being matched. It RAISES: an unenforced ruling is worse than no ruling,
--- since the output then looks reviewed and is not.
--- ---------------------------------------------------------------------------
-DO $ruled$
-DECLARE bad integer; detail text;
-BEGIN
-    SELECT count(*), string_agg(r.ipapi_side || ' -> ' || r.bdc_side, '; ')
-      INTO bad, detail
-    FROM carrier_name_regression_tbl r
-    WHERE r.must = 'ruled'
-      AND NOT (carrier_pair_is_unrelated(r.ipapi_side, r.bdc_side)
-           AND carrier_pair_is_unrelated(r.bdc_side, r.ipapi_side));
-    IF bad > 0 THEN
-        RAISE EXCEPTION 'RULING GATE FAILED on % case(s): %. The string rule joins these pairs and the recorded ruling did not suppress them, so they would be offered as matches. Nothing was built.', bad, left(detail, 400);
-    END IF;
-    RAISE NOTICE 'ruling gate passed: all % ruled pairs are suppressed in both orientations', (SELECT count(*) FROM carrier_name_regression_tbl WHERE must = 'ruled');
-END
-$ruled$;
 
 -- ---------------------------------------------------------------------------
 -- WHICH GATE CASES ARE HYPOTHETICAL.
@@ -1102,40 +1224,6 @@ FROM carrier_name_regression_tbl;
 -- ---------------------------------------------------------------------------
 -- The persistent decision map, keyed on the ASN.
 -- ---------------------------------------------------------------------------
--- CREATED IN ITS MIGRATED SHAPE. One row per ASN PER BRAND, enforced by the
--- composite unique index below rather than by a primary key on asn, because
--- a carrier can own several brands. This file used to create it with
--- asn as the primary key, which meant a database built from scratch had to
--- run asn_map_multibrand_migration.sql before carrier_rulings.sql would do
--- anything; found 2026-11-23 on the test cluster, where carrier_rulings.sql
--- blocked on exactly that. The migration is still needed for Boris's
--- existing database and is a no-op against a table created here.
-CREATE TABLE IF NOT EXISTS asn_bdc_brand_map_tbl (
-    asn             bigint NOT NULL,
-    decision        text NOT NULL
-                    CHECK (decision IN ('brand', 'not_a_carrier', 'out_of_scope', 'unknown')),
-    bdc_brand_name  text,
-    bdc_provider_id integer,
-    note            text,
-    approved_at     timestamptz NOT NULL DEFAULT now());
-
--- Only on a table this file just created. Against Boris's database both
--- already exist, put there by asn_map_multibrand_migration.sql, and these
--- statements do nothing.
-CREATE UNIQUE INDEX IF NOT EXISTS asn_bdc_brand_map_uq
-    ON asn_bdc_brand_map_tbl (asn, coalesce(bdc_brand_name, ''),
-                              coalesce(bdc_provider_id, 0));
-CREATE INDEX IF NOT EXISTS asn_bdc_brand_map_asn_ix
-    ON asn_bdc_brand_map_tbl (asn);
-
-COMMENT ON TABLE asn_bdc_brand_map_tbl IS
-'Boris-approved mapping from an AS number to a BDC brand. The ASN is the key because it is the only hard identifier on the ip-api side: one decision per operator rather than one per spelling of its name. PERSISTENT. carrier_asn_match.sql never drops or truncates it and proposes candidates only for ASNs absent from it, which is what makes new carriers integrate automatically as the remaining half of the decomposed ranges is probed. decision out_of_scope records Boris 2026-11-20: a non-carrier is localised by ip-api to its own premises, so it needs no headend inference at all.';
-
-SELECT count(*) AS decisions_held,
-       count(*) FILTER (WHERE decision = 'brand')        AS to_a_brand,
-       count(*) FILTER (WHERE decision = 'not_a_carrier') AS not_a_carrier,
-       count(*) FILTER (WHERE decision = 'out_of_scope')  AS out_of_scope
-FROM asn_bdc_brand_map_tbl;
 
 \echo
 \echo ================================================================
@@ -1238,47 +1326,6 @@ SELECT count(*)                                            AS asns,
                                       WHERE m.asn = ipapi_asn_tbl.asn)) AS already_decided
 FROM ipapi_asn_tbl;
 
--- ---------------------------------------------------------------------------
--- FILL THE MEMO. One call to the rule per DISTINCT operator name, and every
--- later test of eligibility, in this file and in the four that follow, is an
--- index probe instead of a 3.1 ms evaluation.
--- ---------------------------------------------------------------------------
-INSERT INTO carrier_universe_memo_tbl (name, eligible)
-SELECT n.as_operator, carrier_name_in_universe_rule(n.as_operator)
-FROM (SELECT DISTINCT as_operator FROM ipapi_asn_tbl
-      WHERE as_operator IS NOT NULL) n
-ON CONFLICT (name) DO NOTHING;
-
-ANALYZE carrier_universe_memo_tbl;
-
--- The memo must agree with the rule on every name it holds. This is the
--- check that makes the cache safe to trust, and it BLOCKS, because a silent
--- disagreement here is the same class of defect as the universe test that
--- deleted 769 decisions: two answers to one question.
-DO $memo$
-DECLARE
-    disagreements bigint;
-    sample        text;
-BEGIN
-    SELECT count(*) INTO disagreements
-    FROM carrier_universe_memo_tbl m
-    WHERE m.eligible IS DISTINCT FROM carrier_name_in_universe_rule(m.name);
-
-    IF disagreements > 0 THEN
-        SELECT string_agg(m.name, ', ') INTO sample
-        FROM (SELECT name FROM carrier_universe_memo_tbl m2
-              WHERE m2.eligible IS DISTINCT FROM carrier_name_in_universe_rule(m2.name)
-              LIMIT 5) m;
-        RAISE EXCEPTION 'the eligibility memo disagrees with the rule on % names, such as %. Nothing downstream can be trusted, so this stops here.', disagreements, sample;
-    END IF;
-    RAISE NOTICE 'eligibility memo holds % names and agrees with the rule on all of them', (SELECT count(*) FROM carrier_universe_memo_tbl);
-END
-$memo$;
-
-SELECT count(*)                                  AS names_memoised,
-       count(*) FILTER (WHERE eligible)          AS eligible,
-       count(*) FILTER (WHERE NOT eligible)      AS not_a_carrier
-FROM carrier_universe_memo_tbl;
 
 \echo
 \echo ================================================================
@@ -1579,9 +1626,21 @@ SELECT s.asn, s.as_operator, s.isp_commonest,
 FROM suspect s
 JOIN hit h ON h.asn = s.asn
 JOIN ipapi_asn_tbl a ON a.asn = s.asn
-WHERE carrier_name_tier(s.isp_commonest, h.brand_name) IN (1, 2)
+-- 1, 2 AND 3. This is a REVIEW QUEUE, not a match: every row it produces is
+-- held back by load_candidate_decisions.sql and reaches the decision map
+-- only with his word on it. Boris 2026-11-23 required complete matches for
+-- MATCHING, and a partial pair is exactly what he needs to see in order to
+-- confirm or reject a pairing. Dropping tier 3 here cost the one case the
+-- report exists for: ip-api reports Frontier Communications on the ranges of
+-- ASNs whose registry name is now Verizon Business, and the brand is filed
+-- as Frontier, which is a partial pair and not a complete one.
+WHERE carrier_name_tier(s.isp_commonest, h.brand_name) IN (1, 2, 3)
   AND NOT carrier_pair_is_unrelated(s.isp_commonest, h.brand_name)
-  AND NOT carrier_pair_is_unrelated(s.as_operator, h.brand_name);
+  AND NOT carrier_pair_is_unrelated(s.as_operator, h.brand_name)
+  -- a partial pair needs at least one informative word in common, which
+  -- tier 3 already means, and must not be two generic names meeting on a
+  -- word that says nothing
+  AND NOT carrier_name_generic_only(h.brand_name);
 
 CREATE INDEX asn_isp_disagree_ix ON asn_isp_disagree_tbl (asn);
 ANALYZE asn_isp_disagree_tbl;

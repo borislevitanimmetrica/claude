@@ -164,7 +164,58 @@ def clean(value, counter):
     return cleaned
 
 
+def check_readable(path):
+    """Say what is wrong in one line instead of raising a traceback.
+
+    Boris 2026-11-23 ran this against a path that did not exist and got a
+    nine line FileNotFoundError out of zipfile. A tool that takes a path has
+    to check the path. It also lists the workbooks that ARE in the directory,
+    which is reported fact rather than a guess about where the file went."""
+    import os
+
+    if not os.path.exists(path):
+        directory = os.path.dirname(os.path.abspath(path)) or "."
+        message = ["this file does not exist: " + path]
+        if os.path.isdir(directory):
+            found = sorted(entry for entry in os.listdir(directory)
+                           if entry.lower().endswith((".xlsx", ".xls", ".xlsm",
+                                                      ".csv", ".zip")))
+            if found:
+                message.append("the spreadsheet-like files in " + directory
+                               + " are: " + ", ".join(found))
+            else:
+                message.append("there are no .xlsx, .xls, .csv or .zip files in "
+                               + directory)
+        else:
+            message.append("and its directory does not exist either: " + directory)
+        message.append("nothing was read and nothing was written")
+        raise SystemExit("\n".join(message))
+
+    if os.path.isdir(path):
+        raise SystemExit(path + " is a directory, not a workbook."
+                         " Nothing was read.")
+
+    if os.path.getsize(path) == 0:
+        raise SystemExit(path + " is zero bytes long, so the transfer did not"
+                         " complete. Nothing was read.")
+
+    if not zipfile.is_zipfile(path):
+        with open(path, "rb") as handle:
+            head = handle.read(8)
+        hint = ""
+        if head[:5] == b"\xd0\xcf\x11\xe0\xa1":
+            hint = (" The first bytes are the old Excel 97 format, so this is"
+                    " a .xls and not a .xlsx. Open it and save as .xlsx, or"
+                    " export it as CSV.")
+        elif head[:1] in (b"<", b"\xef"):
+            hint = " The first bytes look like text, so this may be an HTML or XML export."
+        raise SystemExit(
+            path + " is not a zip container, and every .xlsx is one."
+            + hint + " First bytes: " + repr(head) + ". Nothing was read.")
+
+
 def describe(path, preview_rows):
+    check_readable(path)
     with zipfile.ZipFile(path) as archive:
         shared = read_shared_strings(archive)
         sheets = read_sheet_index(archive)
@@ -257,7 +308,58 @@ def looks_like_header(row):
     return sum(1 for value in row if value.strip()) >= 2
 
 
-def write_loader(path, sheet_name, table, tsv_path, sql_path, header_row):
+def choose_sheet(path, requested):
+    """Which sheet to read. If the caller named one, that one, and the error
+    names the real alternatives if it is absent. If not, the only sheet that
+    HAS data, and a refusal naming the choices when there is more than one.
+
+    This exists so the command needs no placeholder. I told Boris to paste a
+    command containing --sheet 'SHEETNAME' and he pastes commands verbatim,
+    which is a standing order I had already been given and broke. A tool that
+    cannot work out its own default is a tool that forces a placeholder."""
+    check_readable(path)
+    with zipfile.ZipFile(path) as archive:
+        shared = read_shared_strings(archive)
+        sheets = read_sheet_index(archive)
+        if not sheets:
+            raise SystemExit("this workbook has no sheets at all. Nothing was read.")
+
+        if requested:
+            for name, part in sheets:
+                if name == requested:
+                    return name, part
+            raise SystemExit(
+                "no sheet named " + repr(requested) + ". The sheets in this"
+                " file are: " + ", ".join(repr(name) for name, _ in sheets)
+                + ". Nothing was written.")
+
+        with_data = []
+        for name, part in sheets:
+            rows = 0
+            for row in iter_rows(archive, part, shared):
+                if any(value.strip() for value in row):
+                    rows += 1
+                if rows > 1:
+                    break
+            if rows > 1:
+                with_data.append((name, part))
+
+        if len(with_data) == 1:
+            sys.stderr.write("one sheet holds data, using it: "
+                             + repr(with_data[0][0]) + "\n")
+            return with_data[0]
+        if not with_data:
+            raise SystemExit(
+                "no sheet in this workbook holds more than one non-empty row,"
+                " so there is nothing to load. Nothing was written.")
+        raise SystemExit(
+            "this workbook has " + str(len(with_data)) + " sheets holding data: "
+            + ", ".join(repr(name) for name, _ in with_data)
+            + ". Re-run with --sheet followed by the one you want, copying the"
+            " name exactly as printed above. Nothing was written.")
+
+
+def write_loader(path, part, sheet_name, table, tsv_path, sql_path, header_row):
     """Write the TSV and a SQL file that loads it, with the column names and
     the column COUNT taken from the header row of the sheet. Every column is
     text: a filer list is names and identifiers, and a numeric type guessed
@@ -265,16 +367,6 @@ def write_loader(path, sheet_name, table, tsv_path, sql_path, header_row):
     with zipfile.ZipFile(path) as archive:
         shared = read_shared_strings(archive)
         sheets = read_sheet_index(archive)
-        part = None
-        for name, candidate in sheets:
-            if name == sheet_name:
-                part = candidate
-                break
-        if part is None:
-            available = ", ".join(repr(name) for name, _ in sheets)
-            raise SystemExit("no sheet named " + repr(sheet_name)
-                             + ". The sheets in this file are: " + available
-                             + ". Nothing was written.")
 
         header = None
         header_at = 0
@@ -381,10 +473,13 @@ def main():
     args = parser.parse_args()
 
     if args.table:
-        if not (args.sheet and args.out and args.sql):
-            raise SystemExit("--table needs --sheet, --out and --sql."
+        if not (args.out and args.sql):
+            raise SystemExit("--table needs --out and --sql."
                              " Nothing was written.")
-        write_loader(args.workbook, args.sheet, args.table, args.out,
+        # --sheet is OPTIONAL: when the workbook holds data on one sheet only,
+        # that is the sheet, and the command needs no placeholder.
+        name, part = choose_sheet(args.workbook, args.sheet)
+        write_loader(args.workbook, part, name, args.table, args.out,
                      args.sql, args.header_row)
         return
 
