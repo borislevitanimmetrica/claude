@@ -3357,3 +3357,74 @@ rule, which is the defect that deleted 769 decisions.
 `step4_sanity.sql` now BLOCKS. All twenty of its joins are on
 `itdk_domain`, and against the new grain they would return wrong answers
 rather than no answers. Rewriting it is the next change.
+
+## 2026-11-24: step 4 runs, and the link is the next thing wrong
+
+### Step 4 finished
+
+296,091 provider-tract-technology pairs built in 1 s, step 4 proper 293,209
+rows in 50.6 s, against an estimate of one to three minutes.
+
+| distance to the carrier's own nearest site | pairs | share |
+|---|---|---|
+| within 2 km | 7,557 | 2.6% |
+| 2 to 10 km | 48,446 | 16.5% |
+| 10 to 25 km | 48,897 | 16.7% |
+| 25 to 50 km | 33,147 | 11.3% |
+| **more than 50 km** | **155,162** | **52.9%** |
+
+Boris expects several miles. 19.1% of pairs are within 10 km.
+
+Step 5's input: 38.1% of pairs have a second site within 1.2 times the
+nearest, so the coverage test will decide a great many of them; 31.9% are
+over 2.0 where the nearest wins outright; 3.2% have only one site.
+
+### Why most of it is far, and it is the link
+
+From the same run, sites per provider:
+
+| provider | brand | sites | suffixes |
+|---|---|---|---|
+| 130485 | USA COMMUNICATIONS | 2,699 | **537** |
+| 131425 | Verizon | 324 | 71 |
+| 130982 | Allstream / ENA | 248 | 14 |
+| 130077 | AT&T | 168 | 56 |
+| 130235 | Spectrum | 37 | 33 |
+
+A small carrier holding 537 DNS suffixes is not a carrier with 537 names.
+`carrier_resolved_tbl` was built by name matching before the current rule
+existed, and it still contains the pair the regression gate rejects as case
+19, source "the original bug".
+
+### carrier_link_rederive.sql
+
+Re-tests every machine-matched link with `carrier_name_tier`: tier 1 or 2
+keeps it, tier 0 or 3 drops it. Every `by_decision` row is carried across
+untouched, and that is asserted rather than reported, because losing one of
+his rulings would be the worst outcome this file could have.
+
+It writes `carrier_resolved_v2_tbl` and does **not** swap it in. The swap is
+two renames, printed at the end, and reversible by renaming back. Step 4 must
+be re-run after any swap, which is one minute.
+
+Verified on a fixture built to the measured shape:
+
+| link | ITDK-side name | verdict |
+|---|---|---|
+| comcast.net to USA COMMUNICATIONS | Comcast Cable Communications, LLC | dropped, no connection |
+| spectrum.com to USA COMMUNICATIONS | Charter Communications Inc | dropped, no connection |
+| americanadoptions.com to AT&T | AT&T Enterprises, LLC | dropped, shares a word only |
+| sbcglobal.net to AT&T | AT&T Enterprises, LLC | dropped, shares a word only |
+| cox.net to Cox Communications | Cox Communications | kept, complete name match |
+| a row he ruled | anything | kept, your ruling |
+
+**The fourth row is the honest cost and it is worth stating plainly.**
+`sbcglobal.net` is AT&T's own naming and holds 110 of AT&T's sites, and it is
+dropped too, because the ip-api name on it is `AT&T Enterprises, LLC` and
+that is not a complete match to the brand `AT&T`. AT&T becomes unplaceable
+until the pairing is confirmed.
+
+That pairing is already item 1 of the alias queue at 283,233 ZIP-capable
+ranges. **One ruling fixes both the ASN map and the ITDK link.** The two
+queues have converged on the same question, which is the first time anything
+in this subsystem has got simpler.
