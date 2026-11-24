@@ -3076,3 +3076,88 @@ Ziply, gobrightspeed.net 13 is Brightspeed, fuse.net 22 is altafiber,
 acsalaska.net 6 is Alaska Communications. Others are transit or hosting
 (he.net, gtt.net, twelve99, above.net, tierpoint, flexential) or research
 networks (cenic, oar, wiscnet, ucsd.edu) and are out of scope.
+
+## 2026-11-24: Boris on CLLI, and the bugs fixed
+
+### "Why do you need CLLI at all?"
+
+I do not, and I over-weighted it. His objection is correct on both counts:
+many carriers do not use CLLI in hostnames, and the location of a node is a
+latitude and longitude, not a code.
+
+The only reason it arose: CAIDA's Hoiho decodes a hostname to a geohint, and
+for place-name and IATA hints a coordinate comes with it, while for a CLLI
+hint CAIDA supplies NOTHING. So those routers have no coordinate at all
+until the code is decoded. That is a gap-filler for one kind of hostname,
+affecting 89 domains out of the 2,583 that have sites, and it yields the
+RATE CENTRE coordinate rather than the building. It is not a route to a
+central-office inventory and I should not have presented it as the lever.
+
+**What the problem actually needs** is a facility dataset carrying
+coordinates. The repository already measured the obvious candidate and the
+measurement was never followed up, from
+`geo/landmarks/isp_node_feasibility.md`:
+
+| OSM tag | objects, WORLDWIDE |
+|---|---|
+| `telecom=central_office` | 61 |
+| `telecom=exchange` | 25,681 |
+| `telecom=connection_point` | 26,200 |
+| `telecom=distribution_point` | 1,170 |
+
+61 central offices worldwide is nothing. 25,681 exchanges worldwide is the
+only count with any size, and **the US share of it has never been measured**,
+although `us-latest.osm.pbf` has been on his disk since 29 October. That
+single count decides whether OSM can carry step 3 at all, and it is one
+command. It is also open action 5 in that same feasibility document, written
+on 2026-11-12 and never closed. That is the thing to measure next, not CLLI.
+
+### "I don't understand what you mean by group"
+
+A router's coordinate comes from its hostname, and a carrier names routers
+under several DNS suffixes. AT&T's are `sbcglobal.net`, `bellsouth.net` and
+`att.com`. The site list was keyed by that suffix, so AT&T existed three
+times, holding 110, 2 and 1 sites, and the distance from an AT&T tract to
+the nearest AT&T site was measured against ONE of those lists. Grouping
+means merging the lists before measuring, so AT&T is measured against all
+113 of its sites. No coordinate changes; only which sites count as belonging
+to the same company.
+
+### Bugs fixed
+
+**1. One suffix treated as one carrier.** `step4_tract_site.sql` searched
+`WHERE s.carrier_domain = ct.itdk_domain`. It now searches the carrier's
+whole site set through `carrier_site_scope_tbl`, built from the CONFIRMED
+rows of `carrier_suffix_group_tbl` plus an identity row per suffix, so an
+unruled domain behaves exactly as before and nothing changes until he rules.
+
+**2. No technology filter on the tract set.** `carrier_tract_tbl` held
+licensed fixed wireless tracts at 70, 71 and 72, where no central office
+serves the tract. That is what made verizon.net read 718.2 km when the same
+157 sites give 6.4 km over wireline tracts. Filtered to 10, 40 and 50.
+
+**3. The last two labels of a hostname are not always a domain.** His audit
+showed `in-addr.arpa` as a carrier with 10 sites: reverse PTR names whose
+last two labels are the arpa suffix. Hostnames with fewer than two labels
+produced a key starting with a dot. Both are excluded at the source now.
+
+**4. 24 more suffixes grouped**, all from his own run, each one a suffix that
+HAS sites and was outside the grouping: lumen.tech, ctl.one and savvis.net to
+Lumen; unitifiber.com and uniti.net to Uniti; lightower.net and
+firstlight.net to FirstLight; rcn.com and rcn.net to Astound; sparklight.net
+to Cable One; knology.net and wideopenwest.com to WOW; and ziplyfiber.com,
+gobrightspeed.net, fuse.net, acsalaska.net, googlefiber.net, lightpath.net,
+tds.net, 123.net, netins.net, ena.net, ussignalcom.net, atlanticmetro.net and
+usinternet.com to their own carriers. Transit, hosting and research networks
+are deliberately left out: he.net, gtt.net, twelve99, above.net, tierpoint,
+flexential, unitasglobal, cenic, oar, wiscnet, ucsd.edu.
+
+**Not a bug: no site at facility grade.** `node_location.sql` assigns
+`facility` only from the ITDK `ix` method, which locates a router inside an
+internet exchange. Access routers are not in exchanges, so a serving site
+can never carry that grade. The audit now says so where the grades are
+printed, to stop the zero being read as a failure.
+
+**Still outstanding, and his to run:** Comcast and Charter sampling 17 tracts
+each. `carrier_link_audit.sql` was written on 2026-11-17 and has never been
+run; until it is, the two largest cable footprints cannot be measured.

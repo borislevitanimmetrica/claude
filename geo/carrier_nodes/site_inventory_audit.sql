@@ -164,7 +164,36 @@ FROM (VALUES
  ('windstream.net',   'windstream', 'Windstream'),
  ('cox.net',          'cox',        'Cox'),
  ('zayo.com',         'zayo',       'Zayo'),
- ('cogentco.com',     'cogent',     'Cogent')
+ ('cogentco.com',     'cogent',     'Cogent'),
+ -- added 2026-11-24 from his own run: suffixes that HAVE sites and were
+ -- outside the grouping. Transit, hosting and research networks are left
+ -- out deliberately, being out of scope: he.net, gtt.net, twelve99,
+ -- above.net, tierpoint, flexential, unitasglobal, cenic, oar, wiscnet.
+ ('lumen.tech',       'lumen',      'Lumen corporate'),
+ ('ctl.one',          'lumen',      'CenturyLink'),
+ ('savvis.net',       'lumen',      'former Savvis, now Lumen'),
+ ('unitifiber.com',   'uniti',      'Uniti Fiber'),
+ ('uniti.net',        'uniti',      'Uniti'),
+ ('lightower.net',    'firstlight', 'Lightower, merged into FirstLight'),
+ ('firstlight.net',   'firstlight', 'FirstLight'),
+ ('rcn.com',          'astound',    'RCN, now Astound'),
+ ('rcn.net',          'astound',    'RCN, now Astound'),
+ ('sparklight.net',   'cableone',   'Cable One trading as Sparklight'),
+ ('knology.net',      'wow',        'former Knology, now WOW'),
+ ('wideopenwest.com', 'wow',        'WOW'),
+ ('ziplyfiber.com',   'ziply',      'Ziply Fiber'),
+ ('gobrightspeed.net','brightspeed','Brightspeed'),
+ ('fuse.net',         'altafiber',  'Cincinnati Bell trading as altafiber'),
+ ('acsalaska.net',    'alaskacomm', 'Alaska Communications'),
+ ('googlefiber.net',  'googlefiber','Google Fiber'),
+ ('lightpath.net',    'lightpath',  'Cablevision Lightpath'),
+ ('tds.net',          'tds',        'TDS Telecom'),
+ ('123.net',          '123net',     '123.Net'),
+ ('netins.net',       'netins',     'Netins'),
+ ('ena.net',          'ena',        'Education Networks of America'),
+ ('ussignalcom.net',  'ussignal',   'US Signal'),
+ ('atlanticmetro.net','atlanticmetro','Atlantic Metro'),
+ ('usinternet.com',   'usinternet', 'US Internet')
 ) AS v(suffix, carrier_key, note)
 WHERE NOT EXISTS (SELECT 1 FROM carrier_suffix_group_tbl g
                   WHERE g.suffix = v.suffix);
@@ -329,5 +358,25 @@ WHERE NOT EXISTS (SELECT 1 FROM carrier_suffix_group_tbl g
 GROUP BY 1
 ORDER BY 2 DESC
 LIMIT 40;
+
+\echo
+\echo ================================================================
+\echo WHY NO SITE IS AT FACILITY GRADE. Not a bug. node_location.sql
+\echo assigns facility ONLY from the ITDK 'ix' method, which locates a
+\echo router inside an internet exchange. Access routers are not in
+\echo exchanges, so the serving sites of a carrier never carry that
+\echo grade. Every site here is operator_named or site_subcity, which
+\echo means the coordinate came from DNS naming by the operator.
+\echo ================================================================
+\echo
+SELECT grade, count(*) AS sites, sum(node_addresses) AS node_addresses
+FROM serving_site_tbl GROUP BY 1 ORDER BY 2 DESC;
+
+\echo
+\echo Writing the grouping for your ruling. Put y or n in the last column
+\echo and load it back with load_suffix_groups.sql. y means those suffixes
+\echo are one carrier and step 4 should measure against all their sites.
+\echo
+\copy (SELECT g.suffix, g.carrier_key, coalesce((SELECT count(*) FROM serving_site_tbl s WHERE s.carrier_domain = g.suffix), 0) AS sites, g.note, ''::text AS decision FROM carrier_suffix_group_tbl g WHERE g.status = 'proposed' ORDER BY g.carrier_key, 3 DESC, g.suffix) TO '/home/boris/geo/carrier_suffix_approval.tsv' WITH (FORMAT csv, DELIMITER E'\t', HEADER true)
 
 \timing off

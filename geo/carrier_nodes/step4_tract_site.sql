@@ -75,6 +75,13 @@ DROP TABLE IF EXISTS serving_site_tbl;
 
 CREATE TABLE serving_site_tbl AS
 SELECT row_number() OVER (ORDER BY count(*) DESC, g.lat, g.lon) AS site_key,
+       -- BUG FIX 2026-11-24. The last two labels of a hostname are not
+       -- always a domain. Boris's audit showed in-addr.arpa as a carrier
+       -- with 10 sites: those are reverse PTR names, where the last two
+       -- labels are the arpa suffix and carry no operator at all. A
+       -- hostname with fewer than two labels produced a key beginning with
+       -- a dot for the same reason. Both are now excluded in the WHERE
+       -- below rather than renamed, because neither is a carrier.
        split_part(n.hostname, '.', -2) || '.' ||
        split_part(n.hostname, '.', -1)          AS carrier_domain,
        g.grade,
@@ -90,6 +97,11 @@ WHERE g.grade IN ('facility', 'operator_named', 'site_subcity',
                   'site_subcity_unmeasured')
   AND g.country IN ('US', 'United States')
   AND g.lat IS NOT NULL
+  -- a real hostname, with at least two labels and not a reverse PTR name
+  AND n.hostname LIKE '%.%'
+  AND split_part(n.hostname, '.', -2) <> ''
+  AND n.hostname NOT LIKE '%.arpa'
+  AND n.hostname NOT LIKE '%.in-addr.arpa'
 GROUP BY 2, 3, 4, 5, 6, 7;
 
 ALTER TABLE serving_site_tbl ADD PRIMARY KEY (site_key);
@@ -183,6 +195,53 @@ GROUP BY 1 ORDER BY count(*) DESC LIMIT 20;
 \echo For each carrier and each census tract in which that carrier offers
 \echo service per the BDC, the distance from the tract centroid to that
 \echo carriers nearest serving site. This is step 4 as written.
+-- ---------------------------------------------------------------------------
+-- WHICH SITES COUNT AS THIS CARRIER'S. BUG FIX 2026-11-24.
+--
+-- The nearest-site search used to read WHERE s.carrier_domain = ct.itdk_domain,
+-- so one DNS SUFFIX was treated as one carrier. A carrier that names its
+-- routers under several suffixes was split, and each fragment was measured
+-- against a fraction of its own sites. Measured on Boris's corpus: AT&T was
+-- measured against att.com, which holds ONE site, giving a 1,250 km median,
+-- while sbcglobal.net held 110 of AT&T's sites and gives 62 km.
+--
+-- This table says which site suffixes belong to the same carrier as a given
+-- domain. It uses ONLY groupings Boris has CONFIRMED in
+-- carrier_suffix_group_tbl, and the identity row below means an ungrouped or
+-- unconfirmed domain still sees its own sites exactly as before. So this fix
+-- cannot change an answer until he rules, and it changes nothing silently.
+-- ---------------------------------------------------------------------------
+CREATE TABLE IF NOT EXISTS carrier_suffix_group_tbl (
+    suffix      text PRIMARY KEY,
+    carrier_key text NOT NULL,
+    status      text NOT NULL CHECK (status IN ('confirmed', 'proposed')),
+    note        text,
+    ruled_at    timestamptz NOT NULL DEFAULT now());
+
+DROP TABLE IF EXISTS carrier_site_scope_tbl;
+CREATE TABLE carrier_site_scope_tbl AS
+SELECT DISTINCT g1.suffix AS itdk_domain, g2.suffix AS site_suffix
+FROM carrier_suffix_group_tbl g1
+JOIN carrier_suffix_group_tbl g2 ON g2.carrier_key = g1.carrier_key
+WHERE g1.status = 'confirmed' AND g2.status = 'confirmed'
+UNION
+SELECT DISTINCT s.carrier_domain, s.carrier_domain FROM serving_site_tbl s;
+
+CREATE INDEX carrier_site_scope_ix ON carrier_site_scope_tbl (itdk_domain);
+ANALYZE carrier_site_scope_tbl;
+
+COMMENT ON TABLE carrier_site_scope_tbl IS
+'Which site suffixes count as one carrier for the nearest-site search. Built from the CONFIRMED rows of carrier_suffix_group_tbl plus an identity row per suffix, so an unruled domain behaves exactly as it did before the grouping existed.';
+
+\echo
+\echo How many domains now see sites beyond their own suffix. Zero means no
+\echo grouping has been confirmed yet, and step 4 measures as it always did.
+\echo
+SELECT count(*) FILTER (WHERE siblings > 1)  AS domains_with_grouped_sites,
+       count(*)                              AS domains_total
+FROM (SELECT itdk_domain, count(*) AS siblings
+      FROM carrier_site_scope_tbl GROUP BY 1) x;
+
 \echo
 \echo The carrier-and-tract pairing is materialised first because it is the
 \echo expensive part: a scan of 519,469,683 availability rows. It is
@@ -248,7 +307,8 @@ LEFT JOIN LATERAL (
                 floor((s.lon - t.lon + 540) / 360) * 360) - 180
              ) * cos(radians(t.lat)), 2)) AS km
     FROM serving_site_tbl s
-    WHERE s.carrier_domain = ct.itdk_domain
+    WHERE s.carrier_domain IN (SELECT sc.site_suffix FROM carrier_site_scope_tbl sc
+                               WHERE sc.itdk_domain = ct.itdk_domain)
     ORDER BY pow(s.lat - t.lat, 2) +
              pow((s.lon - t.lon) * cos(radians(t.lat)), 2)
     LIMIT 1) n ON true
@@ -261,7 +321,8 @@ LEFT JOIN LATERAL (
                 floor((s.lon - t.lon + 540) / 360) * 360) - 180
              ) * cos(radians(t.lat)), 2)) AS km
     FROM serving_site_tbl s
-    WHERE s.carrier_domain = ct.itdk_domain
+    WHERE s.carrier_domain IN (SELECT sc.site_suffix FROM carrier_site_scope_tbl sc
+                               WHERE sc.itdk_domain = ct.itdk_domain)
       AND s.site_key <> n.site_key
     ORDER BY pow(s.lat - t.lat, 2) +
              pow((s.lon - t.lon) * cos(radians(t.lat)), 2)
