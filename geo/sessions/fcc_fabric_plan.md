@@ -3502,3 +3502,64 @@ be set on 4,920 rows, and the honest options are a fan-out in whatever built
 the table or a broader rule than one decision per ruling. It matters, because
 those rows are exempt from every test. The query to settle it is in the next
 message rather than a conclusion here.
+
+## 2026-11-24: the duplicate rows, and a hang of the same class as the last one
+
+### His query answered the anomaly: the rows are exact repeats
+
+| provider | rows | domains | asns | isp names | rdap names |
+|---|---|---|---|---|---|
+| 131413 | 2,775 | 5 | 1 | 1 | 1 |
+| 131469 | 1,036 | 2 | 1 | 1 | 1 |
+| 540017 | 1,036 | 2 | 1 | 1 | 1 |
+| 360061 | 37 | 1 | 1 | 1 | 1 |
+| 150120 | 27 | 1 | 1 | 1 | 0 |
+| 131425 | 9 | 1 | 1 | 1 | 1 |
+
+At most five distinct combinations are represented by 2,775 rows.
+`carrier_resolved_tbl` holds **exact duplicate rows**, carrying no
+information, and they inflate every count of links and multiply every join
+that passes through the table. That is also a second contributor to the
+original step 4 fan-out, on top of the 87 domains per provider.
+
+`carrier_resolved_v2_tbl` is now built with `SELECT DISTINCT`, and the report
+prints the de-duplicated count of the original beside it so the size of the
+repetition is visible. The rulings assertion compares DISTINCT rows on both
+sides, or it would fail for the wrong reason.
+
+### The tier fix worked
+
+The verdict build went from **169.8 s to 3.2 s**, a factor of 53, from
+evaluating `carrier_name_tier` once per link and brand instead of twice and
+over DISTINCT brands per provider.
+
+### And then I shipped the same class of bug in the same file
+
+The ranked pairing report at the end used
+`carrier_name_compact(v.itdk_side_name)` inside a CORRELATED subquery, so it
+was evaluated once per alias row per verdict row: 684 by 11,925, which is
+8.2 million calls to a function that splits a string with a regular
+expression. It ran for over five minutes with no output.
+
+This is the identical mistake to the doubled tier call fixed an hour earlier
+in this same file: **a function applied to a column inside a correlated
+subquery, where no index can help.** The compact key is now a COLUMN on
+`carrier_link_verdict_tbl`, computed once, indexed, and the report is a hash
+join over a pre-aggregated CTE.
+
+A rule for every future query, since twice in one file is a pattern and not
+an accident: if a name function appears inside a correlated subquery or a
+join condition, it must first be materialised as a column.
+
+### The queue is ranked and the top of it is unambiguous
+
+647 pairings were added from the ITDK link drops. Ranked by the wireline
+tracts behind them:
+
+| ip-api name | BDC brand | wireline tracts |
+|---|---|---|
+| Frontier Communications | Frontier | 11,802 |
+| AT&T Enterprises, LLC | AT&T | 8,000 |
+
+AT&T also carries 283,233 ZIP-capable ranges on the ASN side. Those two
+rulings are worth more than the remaining 645 together.

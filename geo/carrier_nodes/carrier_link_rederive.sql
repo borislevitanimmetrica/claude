@@ -127,6 +127,15 @@ WITH link AS (
 )
 SELECT s.itdk_domain, s.bdc_provider_id, s.by_decision, s.nodes,
        s.itdk_side_name, s.best_brand,
+       -- COMPUTED ONCE, AS A COLUMN. The report at the end of this file used
+       -- carrier_name_compact(v.itdk_side_name) inside a correlated
+       -- subquery, so it was evaluated once per alias row per verdict row:
+       -- 684 by 11,925, which is 8.2 million calls to a function that splits
+       -- a string with a regular expression. That hung for over five minutes
+       -- on Boris's data. Same class of defect as the doubled tier call in
+       -- this very file an hour earlier: a function on a column inside a
+       -- correlated subquery, where no index can help.
+       carrier_name_compact(s.itdk_side_name) AS itdk_name_key,
        coalesce(s.best_tier, 0) AS best_tier,
        CASE WHEN s.by_decision                       THEN 'kept: your ruling'
             WHEN coalesce(s.best_tier, 0) = 1        THEN 'kept: complete name match'
@@ -138,6 +147,7 @@ FROM scored s;
 
 CREATE INDEX carrier_link_verdict_provider_ix ON carrier_link_verdict_tbl (bdc_provider_id);
 CREATE INDEX carrier_link_verdict_domain_ix ON carrier_link_verdict_tbl (itdk_domain);
+CREATE INDEX carrier_link_verdict_key_ix ON carrier_link_verdict_tbl (itdk_name_key);
 ANALYZE carrier_link_verdict_tbl;
 
 \echo
@@ -235,7 +245,14 @@ LIMIT 20;
 \echo
 DROP TABLE IF EXISTS carrier_resolved_v2_tbl;
 CREATE TABLE carrier_resolved_v2_tbl AS
-SELECT r.*
+-- DISTINCT, because the table holds exact duplicate rows. Boris's query
+-- 2026-11-24 settled the anomaly I could not explain: provider 131413 has
+-- 2,775 by_decision rows over 5 domains, 1 ASN, 1 ip-api name and 1 RDAP
+-- name, so at most five distinct combinations are represented by 2,775 rows.
+-- 131469 and 540017 have 1,036 rows over 2 domains each. The rows are
+-- repeats, carrying no information, and they inflate every count of links
+-- and multiply every join that passes through this table.
+SELECT DISTINCT r.*
 FROM carrier_resolved_tbl r
 WHERE r.bdc_provider_id IS NULL
    OR coalesce(r.by_decision, false)
@@ -252,6 +269,8 @@ COMMENT ON TABLE carrier_resolved_v2_tbl IS
 'carrier_resolved_tbl with the machine-matched links re-tested against the current rule: a complete name match or a pairing Boris confirmed. Every by_decision row is carried across untouched. NOT in use: nothing reads this table until it is deliberately swapped for carrier_resolved_tbl, and step4_tract_site.sql must be re-run after any swap.';
 
 SELECT (SELECT count(*) FROM carrier_resolved_tbl)                  AS rows_now,
+       (SELECT count(*) FROM (SELECT DISTINCT * FROM carrier_resolved_tbl) d)
+                                                                    AS rows_now_deduplicated,
        (SELECT count(*) FROM carrier_resolved_v2_tbl)               AS rows_after,
        (SELECT count(*) FROM carrier_resolved_tbl
         WHERE coalesce(by_decision, false))                         AS your_rulings_now,
@@ -263,12 +282,16 @@ SELECT (SELECT count(*) FROM carrier_resolved_tbl)                  AS rows_now,
 DO $rulings$
 DECLARE before_n bigint; after_n bigint;
 BEGIN
-    SELECT count(*) INTO before_n FROM carrier_resolved_tbl
-    WHERE coalesce(by_decision, false);
+    -- compared on DISTINCT rows, because v2 is de-duplicated and the
+    -- original is not: counting repeats on one side and not the other would
+    -- fail this assertion for the wrong reason.
+    SELECT count(*) INTO before_n FROM (
+        SELECT DISTINCT * FROM carrier_resolved_tbl
+        WHERE coalesce(by_decision, false)) d;
     SELECT count(*) INTO after_n FROM carrier_resolved_v2_tbl
     WHERE coalesce(by_decision, false);
     IF after_n <> before_n THEN
-        RAISE EXCEPTION 'the proposed table holds % of your % rulings. It must hold all of them. Nothing was swapped and carrier_resolved_tbl is untouched.', after_n, before_n;
+        RAISE EXCEPTION 'the proposed table holds % of your % distinct rulings. It must hold all of them. Nothing was swapped and carrier_resolved_tbl is untouched.', after_n, before_n;
     END IF;
     RAISE NOTICE 'all % of your rulings are carried across', after_n;
 END
@@ -322,14 +345,21 @@ WITH fp AS (
     FROM provider_tract_tech_tbl
     WHERE technology IN (10, 40, 50)
     GROUP BY 1
+), vk AS (
+    -- one row per ITDK name key, with the largest wireline footprint behind
+    -- it. Aggregated FIRST, then hash-joined, instead of being recomputed
+    -- per alias row.
+    SELECT v.itdk_name_key, max(f.tracts) AS tracts
+    FROM carrier_link_verdict_tbl v
+    JOIN fp f ON f.provider_id = v.bdc_provider_id
+    WHERE v.itdk_name_key IS NOT NULL
+    GROUP BY 1
 )
-SELECT x.ipapi_side, x.bdc_side,
-       (SELECT max(f.tracts) FROM carrier_link_verdict_tbl v
-        JOIN fp f ON f.provider_id = v.bdc_provider_id
-        WHERE carrier_name_compact(v.itdk_side_name) = x.ipapi_key) AS wireline_tracts
+SELECT x.ipapi_side, x.bdc_side, vk.tracts AS wireline_tracts
 FROM carrier_alias_tbl x
+LEFT JOIN vk ON vk.itdk_name_key = x.ipapi_key
 WHERE x.status = 'proposed'
-ORDER BY 3 DESC NULLS LAST, 1
+ORDER BY vk.tracts DESC NULLS LAST, x.ipapi_side
 LIMIT 30;
 
 SELECT status, count(*) AS pairings FROM carrier_alias_tbl GROUP BY 1 ORDER BY 1;
