@@ -3229,3 +3229,74 @@ to 6,243, which is the 13 sites that were keyed on a reverse PTR suffix.
 
 **The grouping is correctly inert.** `domains_with_grouped_sites` is 0
 because nothing has been confirmed, so step 4 measures exactly as before.
+
+## 2026-11-24: the root cause of Comcast and Charter, and a mechanism for the standing orders
+
+### THE ROOT CAUSE, verified on his data
+
+    itdk_domain          bdc_provider_id   brand_name           by_decision
+    comcast.net          130485            USA COMMUNICATIONS   f
+    comcastbusiness.net  130485            USA COMMUNICATIONS   f
+    spectrum.com         130485            USA COMMUNICATIONS   f
+    charter.com          130485            USA COMMUNICATIONS   f
+
+All four of the largest cable domains resolve to **USA COMMUNICATIONS**, a
+small carrier, with `by_decision = f`, meaning a name match and not a ruling
+of his.
+
+`Comcast Cable Communications, LLC` against `USA COMMUNICATIONS` is gate case
+number 19 in `carrier_asn_match.sql`, marked **reject**, with the source
+field reading **"the original bug"**. The gate was built to stop exactly this
+pair, and it does, for the ASN matcher. `carrier_resolved_tbl` was built
+before that rule existed and has never been re-derived, so the ITDK link
+still carries the match the gate rejects.
+
+That is the whole of the Comcast and Charter problem. Their 17 sampled tracts
+are USA COMMUNICATIONS's footprint. Their 216 km and 209 km medians measured
+the distance from a small carrier's tracts to Comcast's 916 sites.
+
+It also explains the customer-domain contamination. `carrier_resolved_tbl`
+holds 14,029 rows over 3,900 domains, of which 4,920 are `by_decision` and
+11,925 carry a provider id, so roughly seven thousand links are machine name
+matches of the same kind that produced this one. `americanadoptions.com`
+reaching AT&T is the same defect with a different string.
+
+**The fix, next:** re-derive the machine-matched half of
+`carrier_resolved_tbl` with the current rule, which is a complete name match
+or a pairing he has confirmed, and keep every `by_decision` row untouched.
+Under that rule `comcast.net` matches no brand at all and is correctly
+unlinked, and Comcast must come from a recorded pairing exactly as it does on
+the ASN side. Expect the link count to fall sharply; that is the point.
+
+### How to force standing-orders compliance
+
+He asked, seriously, and the answer is not another promise.
+
+The orders I made MECHANICAL stopped being broken. `check_sql.sh` caught my
+own unbalanced apostrophes within a day of being written. The regression gate
+has blocked every stopword regression since it existed. A `DO` block that
+raises has stopped every missing-column cascade. The orders that lived only
+in prose were broken repeatedly, and the last three failures were all of that
+kind: a placeholder, no logging, no duration warning.
+
+So two things now exist:
+
+`.kiro/steering/standing-orders.md` puts all fifteen orders where they are
+loaded automatically at the start of every session instead of being
+remembered, each one recorded with the failure that produced it.
+
+`geo/sessions/check_block.sh` checks a command block before it is issued. It
+fails on a placeholder, a report with no `tee`, a mid-line hash, a mid-line
+backslash, `sudo` without `sudo -v`, a relative path, and program output
+pasted as if it were a command. Verified against my three most recent
+failures: it catches the `SHEETNAME` placeholder, the unlogged audit, and the
+relative `geo/carrier_nodes/coverage_holes.py` from 2026-11-18, and passes a
+correct block.
+
+### A concurrency warning I should have given
+
+He ran `load_suffix_groups.sql` while `step4_tract_site.sql` was still
+running. Step 4 reads `carrier_suffix_group_tbl` to build the site scope, so
+a ruling applied mid-run may or may not be seen depending on where the run
+had reached. No harm this time, since every row was left blank, but the rule
+is: do not rule the grouping while step 4 is running.
