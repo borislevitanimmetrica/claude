@@ -1606,6 +1606,18 @@ produce a usable distance for AT&T whatever the crosswalk says, and
 verizon.net's 718 km median says 157 sites is far short of Verizon's real
 footprint. That is step 2 and step 3 work: more sites, not a better join.
 
+**CORRECTION, 2026-11-24. The last two lines of that table are an artefact
+of a bug in how the site set is keyed, and I called the number an "error",
+which it is not.** It is the distance from a carrier's tracts to the nearest
+site THAT CARRIER HAS IN THE TABLE, so it measures a missing inventory and
+says nothing about accuracy. The cause: serving_site_tbl keys sites by the
+last two labels of the hostname, and step4_tract_site.sql then searches
+WHERE s.carrier_domain = ct.itdk_domain, so one DNS suffix is treated as one
+carrier. AT&T was measured against att.com alone while its 5,624
+sbcglobal.net routers were filed under a different "carrier"; Verizon
+against verizon.net alone while alter.net and verizon-gni.net hold 11,475
+more routers. See the 2026-11-24 entry below.
+
 **A third thing, not yet diagnosed, flagged as an inference.** comcast.net
 has 788 sites and 19 tract-technology pairs; spectrum.com 453 sites and 19;
 charter.com 98 and 19; while domains whose reported name reads 'Spectrum'
@@ -2874,9 +2886,82 @@ They now take the keys the tier function has already computed.
 | step | state |
 |---|---|
 | 1. Ingest the FCC Fabric | DONE. 2,605 brands, 2,108 with wireline plant, tract-by-technology coverage loaded. |
-| 2. Headend and CO locations per carrier and network type | IN PROGRESS, and it is the binding constraint. The carrier identity half is what this week has been: 19,936 ASNs, 1,199 eligible, 147 complete matches, 37 pairings awaiting a ruling. The LOCATION half is barely started: `att.com` resolved 1 located site with a 1,412 km median error. |
+| 2. Headend and CO locations per carrier and network type | IN PROGRESS, and it is the binding constraint. The carrier identity half is what this week has been: 19,936 ASNs, 1,199 eligible, 147 complete matches, 37 pairings awaiting a ruling. The LOCATION half is barely started, and the one measurement I had on it was mislabelled: `att.com` resolved 1 site and a 1,412 km median tract-to-nearest-site distance, which was a suffix-keying bug and not an accuracy figure. |
 | 3. Street addresses of headends and COs | NOT STARTED. |
 | 4. Distance from headend to tract centroid | NOT STARTED, blocked on 2 and 3. |
 | 5. Nearest headend unless another within twice the distance has uninterrupted coverage | NOT STARTED, blocked on 4. |
 | 6. Ascribe ip-api addresses near a headend to the tract | NOT STARTED. Its prerequisite is the ASN-to-brand map being built now. |
 | 7. Combine tracts into ZIP codes | NOT STARTED. The Census tract-to-ZIP relationship file is verified available, 23.2 MB. |
+
+## 2026-11-24: the 1,412 km was my bug, and what it really measured
+
+Boris: "What does this mean? AT&T operates conventional cable through
+headends, xDSL through COs, and fiber through a subset of COs. No error of
+more than several miles should occur. We are spending much time on step 2
+because you don't think one step ahead and don't check your work for bugs."
+
+### What the number was
+
+`step4_tract_site.sql` measures, for each census tract a carrier serves, the
+distance to the nearest site THAT CARRIER HAS IN THE TABLE. 1,412 km was the
+median of that for AT&T. It is not a geolocation error: no site was placed
+1,412 km from where it is. It is the distance from AT&T's tracts to the
+single site AT&T had. Calling it an error was wrong and the word hid the
+cause for a week.
+
+### The cause, which is a bug
+
+`serving_site_tbl` keys sites by the **last two labels of the hostname**, so
+`carrier_domain` is a DNS suffix. `step4_tract_site.sql:240` then searches
+`WHERE s.carrier_domain = ct.itdk_domain`. One suffix is therefore treated as
+one carrier, and any carrier that names its routers under several suffixes is
+split, with each fragment getting a fraction of its own sites.
+
+From this repository's own Hoiho suffix table, which was there the whole time:
+
+| suffix | routers | hints | ppv | whose |
+|---|---|---|---|---|
+| comcast.net | 255,906 | 1,029 | 0.999 | Comcast |
+| windstream.net | 16,956 | 333 | 0.990 | Windstream |
+| frontiernet.net | 15,357 | 324 | 0.990 | Frontier |
+| charter.com | 10,997 | 1,198 | 0.998 | Charter |
+| verizon.net | 7,985 | 29 | 0.999 | Verizon |
+| alter.net | 7,303 | 223 | 0.991 | Verizon |
+| qwest.net | 5,642 | 72 | 0.957 | Lumen |
+| sbcglobal.net | 5,624 | 123 | 0.965 | **AT&T** |
+| verizon-gni.net | 4,172 | 336 | 0.977 | Verizon |
+| bellsouth.net | 65 | 25 | 0.831 | AT&T |
+
+`att.com` is not in that table at all. AT&T's measurable router estate is
+`sbcglobal.net` and `bellsouth.net`, and neither was in AT&T's site set.
+Verizon's is three suffixes holding 19,460 routers, of which one was used.
+
+### The audit, and what it will settle
+
+`site_inventory_audit.sql` is non-destructive and writes no decision. It
+lists every suffix that has located sites with its site count and whether it
+is linked to a BDC provider; builds `carrier_suffix_group_tbl`, which says
+which suffixes are one carrier, every row `proposed` because the grouping is
+my inference; and re-measures the median tract-to-nearest-site distance both
+per suffix, which reproduces the published numbers exactly because step 4
+searches one suffix, and over the grouped site set. Both numbers come from
+one computation, so they cannot disagree through a second code path.
+
+On a sample of 400 tracts per carrier and technology, because the
+nearest-site search is a cross product with no spatial index and AT&T alone
+serves 39,617 tracts. The sample size is printed.
+
+Demonstrated on a synthetic fixture built to the shape of the defect: the
+single suffix gives a 1,487 km median, the grouped set 2.8 km. **The 2.8 km
+is a property of my fixture, not a prediction.** What his data gives is the
+measurement that matters, and if the grouped median stays in the hundreds of
+kilometres then the inventory really is missing and step 3 is the work.
+
+### Still unmet, and unchanged by this
+
+The sites carry no technology. Boris's point that cable headends, xDSL COs
+and FTTP COs are different places is not addressed by grouping suffixes; the
+audit reports per BDC technology on the tract side with one undifferentiated
+site set, and says so. Separating them needs hostname tokens such as fios,
+dsl and cbr, or per-network domains such as verizon-gni.net against
+verizon.net, which is step 2's unmet half and is still untested.
