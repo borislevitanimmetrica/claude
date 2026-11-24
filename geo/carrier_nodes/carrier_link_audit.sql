@@ -121,14 +121,26 @@ LIMIT 40;
 
 \echo
 \echo ================================================================
-\echo SECTION 3. How much of the BDC footprint step 4 can reach, which
-\echo is the coverage figure for the plan rather than a row count.
+\echo SECTION 3. How much of the WIRELINE BDC footprint step 4 can
+\echo reach. Wireless is excluded from the denominator: it cannot carry
+\echo a ZIP answer, and including it made this figure meaningless.
 \echo ================================================================
 \echo
 
+-- WIRELINE ONLY. Added 2026-11-24. Without this the headline coverage is
+-- dominated by licensed fixed wireless: on Boris's run technology 71 alone
+-- holds 282,768 of the 785,168 tract-technology pairs, more than Copper,
+-- Cable and FTTP together, and AT&T, Verizon and lumos each read about
+-- 83,000 tracts, which is 97 percent of the country and is their wireless
+-- licence area rather than their plant. Wireless cannot answer a ZIP
+-- question and he ruled it out of scope on 2026-11-22, so it does not belong
+-- in the denominator of a coverage figure. The full split by technology is
+-- still printed below, unfiltered, so nothing is hidden.
 WITH f AS (
     SELECT provider_id, count(*) AS provider_pairs
-    FROM provider_tract_tech_tbl GROUP BY 1
+    FROM provider_tract_tech_tbl
+    WHERE technology IN (10, 40, 50)
+    GROUP BY 1
 ), reach AS (
     SELECT f.provider_id, f.provider_pairs,
            EXISTS (SELECT 1 FROM carrier_resolved_tbl r

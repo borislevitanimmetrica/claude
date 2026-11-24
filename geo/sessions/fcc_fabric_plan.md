@@ -3161,3 +3161,71 @@ printed, to stop the zero being read as a failure.
 **Still outstanding, and his to run:** Comcast and Charter sampling 17 tracts
 each. `carrier_link_audit.sql` was written on 2026-11-17 and has never been
 run; until it is, the two largest cable footprints cannot be measured.
+
+## 2026-11-24: two process failures of mine, and what the link audit found
+
+### My failures, both standing orders
+
+**No logging.** I gave a command block whose output is four screens of
+tables and told him nothing about keeping it. Every command block I issue
+from now on that produces a report must `tee` to a file under
+`/home/boris/geo/logs/`.
+
+**No duration warning.** `step4_tract_site.sql` scans 519,469,683
+availability rows; the file says so in its own echo. I handed it over with no
+warning that it is long-running. The standing order is to think one step
+ahead about what the command will do, and run time is part of that.
+
+### What carrier_link_audit.sql found, from his run
+
+**Xfinity cannot be placed at all.** Provider 130317, 57,577 tract-technology
+pairs over 36,151 tracts, and `NONE - this carrier cannot be placed`. Zero
+ITDK domains resolve to it. That is why Comcast sampled 17 tracts in the site
+audit: `comcast.net` resolves to some other provider, while the provider that
+actually holds Comcast's plant has no domain.
+
+Also unplaceable, each with no ITDK domain: GeoLinks 8,879 tracts, Astound
+Broadband 5,255, Rise Broadband 5,490, Nextlink 4,169, Starry 3,260, Hotwire
+3,361, Wisper 1,856, Cspire 1,332, Ziply Fiber 1,211, Aeronet 932, Neptuno
+935.
+
+**The links that do exist are contaminated with CUSTOMER domains.** The
+domain lists for the largest carriers are not the carriers' own naming:
+
+| provider | domains linked | examples from his output |
+|---|---|---|
+| AT&T 130077 | 87 | adque.com, afes.com, afstyla.com, americanadoptions.com |
+| Verizon 131425 | 101 | 255.208, 2rosenthals.com, 3rdlevelitpro.net, accord.com |
+| Spectrum 130235 | 48 | aepro.com, aqfab.com, asknow.com, autobooksbishko.com |
+| CenturyLink 130228 | 56 | 1859historichotels.com, a1governmentsolutions.com |
+
+These are DIA customers whose ip-api ISP name reads as the carrier. It is the
+1-800-Flowers leak again, in the ITDK link rather than the ASN map, and it
+matters more here: a customer hostname contributes a SITE to that carrier's
+site set, so the nearest-site distance is measured partly against customer
+premises. `255.208` is not a domain at all.
+
+**A third technology bug, the same as the other two.** The headline coverage
+figure pooled all technologies. On his run technology 71, licensed fixed
+wireless, holds 282,768 of 785,168 tract-technology pairs, more than Copper,
+Cable and FTTP together, and AT&T, Verizon and lumos each read about 83,000
+tracts, which is 97 percent of the country and is a licence area rather than
+plant. Filtered to 10, 40 and 50. The honest reachability from his own
+numbers:
+
+| technology | pairs | placeable | pct |
+|---|---|---|---|
+| Copper | 87,949 | 83,105 | 94.5% |
+| Cable | 99,151 | 57,298 | 57.8% |
+| FTTP | 221,739 | 155,688 | 70.2% |
+| **wireline total** | **408,839** | **296,091** | **72.4%** |
+
+74.9% pooled was inflated by wireless; 72.4% is the wireline figure, and it
+is a reachability ceiling, not an accuracy figure, since the Cable number
+rests on links that include Xfinity at zero.
+
+**The in-addr.arpa fix is confirmed.** serving_site_tbl went from 6,256 sites
+to 6,243, which is the 13 sites that were keyed on a reverse PTR suffix.
+
+**The grouping is correctly inert.** `domains_with_grouped_sites` is 0
+because nothing has been confirmed, so step 4 measures exactly as before.
