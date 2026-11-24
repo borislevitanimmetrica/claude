@@ -2706,3 +2706,88 @@ pastes commands verbatim; that is a standing order I already had on record
 and broke. `--sheet` is now optional: when one sheet holds data that is the
 sheet, and when several do the error names them. The command needs no
 placeholder.
+
+## 2026-11-24: the Form 499a file, and a claim of mine it refuted
+
+The file is in the repository on main, at `geo/FCC_Form_499a_filers.xlsx`.
+I had told Boris the path did not exist on disk, which was true of his
+working tree and useless as an answer; it was in version control the whole
+time.
+
+### A CORRECTION. I was wrong about why the cleanup guard was needed.
+
+On 2026-11-23 I wrote, in the guard itself and in this file: "AT&T
+Enterprises, LLC is a Form 499a legal name, so once that file is in, the
+holder of AS7018 is a carrier by a COMPLETE match against his own data." I
+marked it unverified. It is now **refuted by the file**.
+
+Measured 2026-11-24. The workbook holds exactly two AT&T legal names:
+
+| section | legal name | doing business as |
+|---|---|---|
+| CAP/CLEC | AT&T Corp. | Ameritech Advanced Data Services ... |
+| CAP/CLEC | AT&T Broadband Phone of Virginia, Inc. | AT&T Broadband, LLC |
+
+Neither is `AT&T Enterprises, LLC`, which is the registry name on AS7018 and
+its 263,102 ZIP-capable ranges. Of nineteen names I checked against the file,
+three are in it: `Zayo Bandwidth LLC.`, `Cincinnati Bell Telephone
+Company, LLC` and the DBA `Sparklight`. `Cogent`, `Mediacom`, `Lumen` and
+`Alaska Communications` are not in it at all.
+
+**Boris then pointed at `AT&T Corp.`, and that name does solve a different
+half of the problem.** `Corp.` is a legal suffix, so `AT&T Corp.` compacts to
+`att`, which is a COMPLETE match to the BDC brand `AT&T`. Verified in SQL:
+
+| name | compact key | tier against the brand AT&T |
+|---|---|---|
+| AT&T Corp. | att | 1 |
+| AT&T | att | 1 |
+| AT&T Enterprises, LLC | attenterprises | 3 |
+| AT&T WorldNet | attworldnet | 3 |
+
+So the brand is in the universe on his own data. The HOLDER of AS7018 is
+not, and one ruling decides it.
+
+### The guard, rebuilt on the real reason
+
+The exposure was never a missing file. It is a pairing nobody has ruled:
+`carrier_alias_tbl` rows with status `proposed` do not match, so an ASN whose
+only route to its brand was such a row now looks like a non-carrier holding a
+brand decision, which is exactly the row the cleanup deletes.
+
+`carrier_rulings.sql` now raises if ANY row in the doomed set belongs to an
+unruled pairing, naming the rows and their ranges. The protective guard also
+counts tier 3 now, not just 1 and 2, because `AT&T Enterprises, LLC` against
+`AT&T` IS tier 3 under the new rule and is the row that must not be deleted.
+The 499a presence check stays, with its reason restated: the universe is only
+as complete as the name lists behind it.
+
+`carrier_universe.sql` prints the at-risk set without deleting anything, each
+row labelled `awaiting_your_ruling`, `shares a word, protected` or `no
+connection found`.
+
+### The file's real shape, measured before loading it
+
+| fact | value |
+|---|---|
+| sheets | 1, named `Sheet1` |
+| rows | 4,070 |
+| title row | row 1, `FCC Form 499a filers` |
+| sections | 4: Cable TV (321), CAP/CLEC (1,952), ILEC (1,396), Other local (392) |
+| header rows | 4, at rows 3, 326, 2280 and 3678, one per section |
+| data rows | 4,061 |
+| columns | `499 Filer ID`, `Legal Name of Reporting Entity`, `Doing Business As` |
+| rows with a DBA | 3,713 |
+| distinct legal-name keys | 4,002 |
+| distinct DBA keys | 3,236 |
+| non-breaking spaces | 8, including inside the header cells |
+
+It is four lists in one sheet, each with its own label and its own copy of
+the header. A loader that took the first header and treated the rest as data
+would have loaded four title rows and four header rows as carriers.
+`xlsx_dump.py` now detects all three row kinds by shape, keeps the section
+label in a column of its own because it is the FCC's own classification of
+the filer, and normalises non-breaking spaces so a name can match the same
+name written ordinarily. Its counts cross-check against an independent
+analysis of the file: 4,061 data rows, 348 rows padded, which is exactly
+4,061 minus the 3,713 that have a DBA.

@@ -150,6 +150,47 @@ WHERE NOT carrier_name_in_universe(a.as_operator)
 ORDER BY a.zip_capable_ranges DESC NULLS LAST
 LIMIT 50;
 
+-- ---------------------------------------------------------------------------
+-- WHAT IS AT RISK, SHOWN WITHOUT DELETING ANYTHING.
+--
+-- Every ASN that holds a brand decision while its holder is outside the
+-- carrier universe. These are the rows carrier_rulings.sql would delete, and
+-- it now refuses to delete any of them that depend on a pairing nobody has
+-- ruled on. Look at this list before running that file.
+--
+-- On 2026-11-22 a version of the cleanup without that guard deleted 769 of
+-- these, 736 ASNs and 373,410 ZIP-capable ranges, AS7018 included.
+-- ---------------------------------------------------------------------------
+\echo
+\echo Brand decisions whose holder is outside the universe. NOT deleted here.
+\echo A row marked awaiting_your_ruling is protected by the cleanup guard.
+\echo
+SELECT a.asn, a.as_operator, m.bdc_brand_name,
+       carrier_name_tier(a.as_operator, m.bdc_brand_name) AS tier,
+       CASE WHEN EXISTS (SELECT 1 FROM carrier_alias_tbl x
+                         WHERE x.status = 'proposed'
+                           AND carrier_name_compact(a.as_operator)
+                               IN (x.ipapi_key, x.bdc_key))
+            THEN 'awaiting_your_ruling'
+            WHEN carrier_name_tier(a.as_operator, m.bdc_brand_name) = 3
+            THEN 'shares a word, protected'
+            ELSE 'no connection found' END AS why,
+       a.zip_capable_ranges
+FROM asn_bdc_brand_map_tbl m
+JOIN ipapi_asn_tbl a ON a.asn = m.asn
+WHERE m.decision = 'brand'
+  AND NOT carrier_name_in_universe(a.as_operator)
+ORDER BY a.zip_capable_ranges DESC NULLS LAST, a.asn
+LIMIT 40;
+
+SELECT count(*) AS rows_at_risk,
+       count(DISTINCT m.asn) AS asns,
+       sum(a.zip_capable_ranges) AS zip_capable_ranges
+FROM asn_bdc_brand_map_tbl m
+JOIN ipapi_asn_tbl a ON a.asn = m.asn
+WHERE m.decision = 'brand'
+  AND NOT carrier_name_in_universe(a.as_operator);
+
 \echo
 \echo The two 1-800-Flowers ASNs Boris named, as a direct check.
 \echo

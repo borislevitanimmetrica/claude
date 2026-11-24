@@ -131,33 +131,6 @@ ORDER BY m.asn, m.bdc_brand_name;
 -- ---------------------------------------------------------------------------
 -- 2. The cleanup. Backed up to a file first, then deleted, then verified.
 -- ---------------------------------------------------------------------------
--- ---------------------------------------------------------------------------
--- THE CLEANUP WILL NOT RUN WITHOUT THE FORM 499a LIST. IT BLOCKS.
---
--- The cleanup deletes brand decisions for holders that are not in the carrier
--- universe. Since 2026-11-23 the universe admits a name only on a COMPLETE
--- match or a pairing Boris has confirmed, which is what he asked for, and
--- that makes the universe only as complete as the name lists behind it.
---
--- BDC brand names alone are not enough. AT&T Enterprises, LLC is the holder
--- of AS7018 and 263,102 ZIP-capable ranges, and it is not a BDC brand; it is
--- a Form 499a FILER, which is a different list and the reason he supplied the
--- file. Running the cleanup without that list would delete AS7018 again,
--- along with the 768 others it took on 2026-11-22.
---
--- So this refuses to delete anything until the list is loaded. The rulings
--- above this point are unaffected: they are explicit and are already written.
--- ---------------------------------------------------------------------------
-DO $need499$
-BEGIN
-    IF NOT EXISTS (SELECT 1 FROM information_schema.tables
-                   WHERE table_name = 'fcc499_filer_tbl') THEN
-        RAISE EXCEPTION 'fcc499_filer_tbl is not loaded, so the carrier universe holds BDC brand names only and does not know the legal names of carriers such as AT&T Enterprises, LLC. The cleanup would delete AS7018 and its 263,102 ranges exactly as it did on 2026-11-22. NOTHING WAS DELETED. Load the filer list first: python3 /home/boris/geo/src/claude/geo/carrier_nodes/xlsx_dump.py --table fcc499_filer_tbl --out /home/boris/geo/fcc499_filers.tsv --sql /home/boris/geo/load_fcc499.sql /home/boris/geo/FCC_Form_499a_filers.xlsx';
-    END IF;
-    RAISE NOTICE 'Form 499a filer list is present, so the universe knows legal names as well as brand names';
-END
-$need499$;
-
 DROP TABLE IF EXISTS carrier_map_doomed_tbl;
 CREATE TABLE carrier_map_doomed_tbl AS
 SELECT m.asn, a.as_operator, a.isp_commonest, m.decision,
@@ -197,7 +170,12 @@ DECLARE
 BEGIN
     SELECT count(*) INTO n FROM carrier_map_doomed_tbl d
     WHERE d.bdc_brand_name IS NOT NULL
-      AND carrier_name_tier(d.as_operator, d.bdc_brand_name) IN (1, 2);
+      -- 1, 2 AND 3. Tier 3 is included since 2026-11-23, when a match became
+      -- a complete name match or a pairing he confirmed and nothing else.
+      -- AT&T Enterprises, LLC against the brand AT&T is now tier 3, a shared
+      -- word, and it is exactly the row this cleanup must not delete: 263,102
+      -- ranges whose only defect is that nobody has ruled on the pairing yet.
+      AND carrier_name_tier(d.as_operator, d.bdc_brand_name) IN (1, 2, 3);
 
     IF n > 0 THEN
         SELECT string_agg(format('AS%s %s mapped to %s at tier %s, %s ranges',
@@ -208,7 +186,7 @@ BEGIN
           INTO worst
         FROM (SELECT * FROM carrier_map_doomed_tbl d2
               WHERE d2.bdc_brand_name IS NOT NULL
-                AND carrier_name_tier(d2.as_operator, d2.bdc_brand_name) IN (1, 2)
+                AND carrier_name_tier(d2.as_operator, d2.bdc_brand_name) IN (1, 2, 3)
               ORDER BY d2.zip_capable_ranges DESC NULLS LAST
               LIMIT 10) d;
 
@@ -217,6 +195,67 @@ BEGIN
     RAISE NOTICE 'guard passed: no doomed row is a match the name rule would make again';
 END
 $guard$;
+
+-- ---------------------------------------------------------------------------
+-- THE CLEANUP WILL NOT RUN WHILE A PAIRING IS UNRULED. IT BLOCKS.
+--
+-- I GOT THE REASON WRONG YESTERDAY AND THE FILE REFUTED ME. I wrote that
+-- this guard was needed until fcc499_filer_tbl was loaded, "because AT&T
+-- Enterprises, LLC is a Form 499a legal name". Measured on the real file on
+-- 2026-11-24: it is not. The file holds 4,061 filers in four sections and
+-- exactly two AT&T legal names, AT&T Corp. and AT&T Broadband Phone of
+-- Virginia, Inc. Neither is AT&T Enterprises, LLC, which is the registry
+-- name on AS7018 and its 263,102 ZIP-capable ranges.
+--
+-- Boris then pointed at AT&T Corp., and that name does solve a different
+-- half of the problem: Corp. is a legal suffix, so AT&T Corp. compacts to
+-- att, which is a COMPLETE match to the BDC brand AT&T. The brand is in the
+-- universe on his own data. The HOLDER of AS7018 still is not.
+--
+-- So the real exposure is not a missing file. It is a pairing nobody has
+-- ruled: carrier_alias_tbl holds rows with status proposed, which do not
+-- match, and an ASN whose only route to its brand was one of those rows now
+-- looks like a non-carrier holding a brand decision. That is precisely the
+-- row this cleanup deletes. Blocking on unruled pairings is therefore the
+-- guard that protects the 769 decisions; the 499a check stays as well,
+-- because the universe is only as complete as the name lists behind it.
+-- ---------------------------------------------------------------------------
+DO $needrulings$
+DECLARE
+    missing_499 boolean;
+    unruled     bigint;
+    at_risk     bigint;
+    worst       text;
+BEGIN
+    missing_499 := NOT EXISTS (SELECT 1 FROM information_schema.tables
+                               WHERE table_name = 'fcc499_filer_tbl');
+    IF missing_499 THEN
+        RAISE EXCEPTION 'fcc499_filer_tbl is not loaded, so the carrier universe holds BDC brand names and nothing else, and every carrier that files with the FCC under a name no BDC brand repeats is outside it. NOTHING WAS DELETED. Load it first with: python3 /home/boris/geo/src/claude/geo/carrier_nodes/xlsx_dump.py --table fcc499_filer_tbl --out /home/boris/geo/fcc499_filers.tsv --sql /home/boris/geo/load_fcc499.sql /home/boris/geo/src/claude/geo/FCC_Form_499a_filers.xlsx';
+    END IF;
+
+    SELECT count(*) INTO unruled FROM carrier_alias_tbl WHERE status = 'proposed';
+
+    SELECT count(*), string_agg(format('AS%s %s was mapped to %s, %s ranges',
+                                  d.asn, d.as_operator, d.bdc_brand_name,
+                                  coalesce(d.zip_capable_ranges, 0)),
+                                E'\n' ORDER BY d.zip_capable_ranges DESC NULLS LAST)
+      INTO at_risk, worst
+    FROM carrier_map_doomed_tbl d
+    WHERE EXISTS (SELECT 1 FROM carrier_alias_tbl x
+                  WHERE x.status = 'proposed'
+                    AND (x.ipapi_key = carrier_name_compact(d.as_operator)
+                      OR x.bdc_key   = carrier_name_compact(d.as_operator)));
+
+    IF at_risk > 0 THEN
+        RAISE EXCEPTION E'% of the rows about to be deleted belong to a pairing you have not ruled on yet, so they are not evidence that the holder is a non-carrier. NOTHING WAS DELETED.\n%\nRule the % proposed pairing(s) in carrier_alias_tbl first; the list is printed by carrier_universe.sql.', at_risk, worst, unruled;
+    END IF;
+
+    IF unruled > 0 THEN
+        RAISE NOTICE 'carrier_alias_tbl still holds % proposed pairing(s), none of which affects a row in this cleanup', unruled;
+    END IF;
+    RAISE NOTICE 'Form 499a filer list is present and no doomed row depends on an unruled pairing';
+END
+$needrulings$;
 
 \echo
 \echo ABOUT TO DELETE. Every one of these is a brand decision for an ASN whose

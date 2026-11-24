@@ -157,11 +157,20 @@ def iter_rows(archive, part, shared):
 
 SUBSTITUTE_RE = re.compile(r"[\t\r\n]")
 
+# The non-breaking space. The FCC file uses it inside its header cells
+# ('499\xa0Filer\xa0ID') and it can appear inside a company name, where it
+# would stop that name ever matching the same name written with an ordinary
+# space. Normalised on the way out, and counted.
+NBSP_RE = re.compile("[\u00a0\u2007\u202f]")
 
-def clean(value, counter):
-    cleaned, hits = SUBSTITUTE_RE.subn(" ", value)
+
+def clean(value, counter, nbsp_counter=None):
+    cleaned, hits = NBSP_RE.subn(" ", value)
+    if nbsp_counter is not None:
+        nbsp_counter[0] += hits
+    cleaned, hits = SUBSTITUTE_RE.subn(" ", cleaned)
     counter[0] += hits
-    return cleaned
+    return cleaned.strip()
 
 
 def check_readable(path):
@@ -363,56 +372,122 @@ def write_loader(path, part, sheet_name, table, tsv_path, sql_path, header_row):
     """Write the TSV and a SQL file that loads it, with the column names and
     the column COUNT taken from the header row of the sheet. Every column is
     text: a filer list is names and identifiers, and a numeric type guessed
-    from the first few rows is how a leading zero on an FRN gets destroyed."""
+    from the first few rows is how a leading zero on an FRN gets destroyed.
+
+    THE SHAPE THIS HANDLES, measured on /home/boris/geo/FCC_Form_499a_filers.xlsx
+    on 2026-11-24 rather than assumed:
+
+      row 1     'FCC Form 499a filers'                      a title
+      row 2     'Cable TV'                                   a section label
+      row 3     '499 Filer ID' | 'Legal Name ...' | 'Doing Business As'
+      ...       321 data rows
+      row 325   'CAP/CLEC'                                   another section
+      row 326   the header again
+      ...       and the same for ILEC at 2279 and Other local at 3677
+
+    So the file is four lists in one sheet, each with its own label and its
+    own copy of the header. A loader that took the first header row and
+    treated everything after it as data would load four title rows and four
+    header rows as if they were carriers. The section label is kept, in a
+    column of its own, because it is the FCC's own classification of the
+    filer: Cable TV, competitive local, incumbent local, other local.
+
+    The rules, each of which the file satisfies:
+      a row whose cells equal the header row is a repeated header, skipped;
+      a row with ONE non-empty cell directly above a header row is a section
+      label, kept as the section for the rows that follow;
+      any other row with one non-empty cell before the first header is the
+      title, skipped;
+      a row with one non-empty cell anywhere else is DATA, and is counted and
+      reported, because that would mean the file is not shaped as measured.
+    """
     with zipfile.ZipFile(path) as archive:
         shared = read_shared_strings(archive)
-        sheets = read_sheet_index(archive)
+        rows = [[value for value in row] for row in iter_rows(archive, part, shared)]
 
-        header = None
-        header_at = 0
-        rows_seen = 0
-        substitutions = [0]
-        data_rows = 0
-        ragged_short = 0
-        ragged_long = 0
-        dropped_blank = 0
+    substitutions = [0]
+    nbsp = [0]
+    rows = [[clean(value, substitutions, nbsp) for value in row] for row in rows]
 
-        with open(tsv_path, "w", encoding="utf-8") as out:
-            for row in iter_rows(archive, part, shared):
-                rows_seen += 1
-                if header is None:
-                    take = (rows_seen == header_row) if header_row \
-                        else looks_like_header(row)
-                    if not take:
-                        continue
-                    header = [clean(value, substitutions) for value in row]
-                    while header and not header[-1].strip():
-                        header.pop()
-                    if not header:
-                        raise SystemExit(
-                            "the header row is empty. Nothing was written.")
-                    header_at = rows_seen
-                    continue
-                values = [clean(value, substitutions) for value in row]
-                if not any(value.strip() for value in values):
-                    dropped_blank += 1
-                    continue
-                if len(values) < len(header):
-                    ragged_short += 1
-                    values = values + [""] * (len(header) - len(values))
-                elif len(values) > len(header):
-                    ragged_long += 1
-                    values = values[:len(header)]
-                out.write("\t".join(values))
-                out.write("\n")
-                data_rows += 1
+    def filled(row):
+        return [value for value in row if value]
 
+    header = None
+    header_at = 0
+    if header_row:
+        if header_row > len(rows):
+            raise SystemExit("--header-row " + str(header_row) + " is past the"
+                             " end of a sheet with " + str(len(rows))
+                             + " rows. Nothing was written.")
+        header = rows[header_row - 1]
+        header_at = header_row
+    else:
+        for index, row in enumerate(rows):
+            if len(filled(row)) >= 2:
+                header = row
+                header_at = index + 1
+                break
     if header is None:
-        raise SystemExit("found no header row in sheet " + repr(sheet_name)
-                         + ". Nothing was written.")
+        raise SystemExit("found no row with two or more non-empty cells in"
+                         " sheet " + repr(sheet_name) + ", so there is no"
+                         " header. Nothing was written.")
+    while header and not header[-1]:
+        header.pop()
+
+    header_rows = {index for index, row in enumerate(rows)
+                   if [value for value in row[:len(header)]] == header}
+    sections = {}
+    for index, row in enumerate(rows):
+        if len(filled(row)) == 1 and index + 1 in header_rows:
+            sections[index] = filled(row)[0]
 
     used = set()
-    columns = [identifier(label, i, used) for i, label in enumerate(header)]
+    columns = [identifier(label, position, used)
+               for position, label in enumerate(header)]
+    section_column = None
+    if sections:
+        section_column = identifier("filer category", len(columns), used)
+
+    data_rows = 0
+    skipped_headers = 0
+    skipped_title = 0
+    ragged_short = 0
+    ragged_long = 0
+    dropped_blank = 0
+    stray_single = 0
+    current_section = ""
+
+    with open(tsv_path, "w", encoding="utf-8") as out:
+        for index, row in enumerate(rows):
+            if index in header_rows:
+                skipped_headers += 1
+                continue
+            if index in sections:
+                current_section = sections[index]
+                continue
+            cells = filled(row)
+            if not cells:
+                dropped_blank += 1
+                continue
+            if len(cells) == 1:
+                if index < min(header_rows):
+                    skipped_title += 1
+                    continue
+                stray_single += 1
+            values = list(row)
+            if len(values) < len(header):
+                ragged_short += 1
+                values = values + [""] * (len(header) - len(values))
+            elif len(values) > len(header):
+                ragged_long += 1
+                values = values[:len(header)]
+            if section_column:
+                values = values + [current_section]
+            out.write("\t".join(values))
+            out.write("\n")
+            data_rows += 1
+
+    all_columns = columns + ([section_column] if section_column else [])
 
     with open(sql_path, "w", encoding="utf-8") as sql:
         sql.write("-- Generated by xlsx_dump.py from " + path + "\n")
@@ -423,30 +498,51 @@ def write_loader(path, part, sheet_name, table, tsv_path, sql_path, header_row):
         sql.write("-- were not chosen by hand and nothing was assumed about the file.\n")
         for label, column in zip(header, columns):
             sql.write("--   " + repr(label) + " becomes " + column + "\n")
+        if section_column:
+            sql.write("-- " + str(len(sections)) + " section label(s) found in the"
+                      " sheet, carried in " + section_column + ": "
+                      + ", ".join(repr(v) for v in sections.values()) + "\n")
         sql.write("\n\\set ON_ERROR_STOP on\n\n")
         sql.write("DROP TABLE IF EXISTS " + table + ";\n")
         sql.write("CREATE TABLE " + table + " (\n")
-        sql.write(",\n".join("    " + column + " text" for column in columns))
+        sql.write(",\n".join("    " + column + " text" for column in all_columns))
         sql.write(");\n\n")
         sql.write("\\copy " + table + " FROM '" + tsv_path
                   + "' WITH (FORMAT csv, DELIMITER E'\\t', QUOTE E'\\b', HEADER false)\n\n")
         sql.write("ANALYZE " + table + ";\n\n")
         sql.write("SELECT count(*) AS rows_loaded FROM " + table + ";\n")
+        if section_column:
+            sql.write("\nSELECT " + section_column + ", count(*) AS filers\n"
+                      "FROM " + table + " GROUP BY 1 ORDER BY 2 DESC;\n")
 
     report = sys.stderr.write
     report("header found on row " + str(header_at) + " with "
            + str(len(header)) + " columns\n")
-    report("columns: " + ", ".join(columns) + "\n")
+    report("columns: " + ", ".join(all_columns) + "\n")
+    if sections:
+        report("section labels: "
+               + ", ".join(repr(value) for value in sections.values()) + "\n")
     report("wrote " + str(data_rows) + " data rows to " + tsv_path + "\n")
     report("wrote the loader to " + sql_path + "\n")
+    if skipped_headers > 1:
+        report("skipped " + str(skipped_headers) + " header rows, one per section\n")
+    if skipped_title:
+        report("skipped " + str(skipped_title) + " title row(s) above the first header\n")
     if dropped_blank:
         report("skipped " + str(dropped_blank) + " entirely empty rows\n")
+    if stray_single:
+        report("KEPT " + str(stray_single) + " rows holding a single value that is"
+               " neither a title nor a section label. Look at these: the file may"
+               " not be shaped the way this loader measured it.\n")
     if ragged_short:
         report("padded " + str(ragged_short)
                + " rows that held fewer cells than the header\n")
     if ragged_long:
         report("TRUNCATED " + str(ragged_long) + " rows that held MORE cells than"
                " the header. Check the header row choice before trusting these.\n")
+    if nbsp[0]:
+        report("replaced " + str(nbsp[0]) + " non-breaking spaces with ordinary"
+               " spaces, so the names can match names written normally\n")
     if substitutions[0]:
         report("replaced " + str(substitutions[0])
                + " tab or newline characters inside cells with a space\n")
