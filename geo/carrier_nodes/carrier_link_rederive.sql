@@ -272,8 +272,8 @@ SELECT (SELECT count(*) FROM carrier_resolved_tbl)                  AS rows_now,
        (SELECT count(*) FROM (SELECT DISTINCT * FROM carrier_resolved_tbl) d)
                                                                     AS rows_now_deduplicated,
        (SELECT count(*) FROM carrier_resolved_v2_tbl)               AS rows_after,
-       (SELECT count(*) FROM carrier_resolved_tbl
-        WHERE coalesce(by_decision, false))                         AS your_rulings_now,
+       (SELECT count(*) FROM (SELECT DISTINCT * FROM carrier_resolved_tbl
+        WHERE coalesce(by_decision, false)) d)                      AS your_rulings_now,
        (SELECT count(*) FROM carrier_resolved_v2_tbl
         WHERE coalesce(by_decision, false))                         AS your_rulings_after;
 
@@ -332,7 +332,70 @@ WHERE v.verdict = 'dropped: shares a word only'
   AND carrier_name_compact(v.itdk_side_name) <> carrier_name_compact(v.best_brand)
   AND NOT carrier_keys_are_unrelated(carrier_name_compact(v.itdk_side_name),
                                      carrier_name_compact(v.best_brand))
+  -- PREFIX OR SUFFIX, and this is a filter on which QUESTIONS are worth
+  -- asking, not a matching rule. Boris 2026-11-24, from the first ranked
+  -- queue: it offered Georgia Institute of Technology against Georgia
+  -- Windstream, Southern Illinois University at Edwardsville against
+  -- Southern Montana Telephone Company, and Full Spectrum Communications
+  -- against Spectrum. A shared word is not a question; 684 proposals with
+  -- that in them is an unusable queue.
+  --
+  -- Every pairing that turned out to be real has the shorter compact key as
+  -- a PREFIX or a SUFFIX of the longer one, because a carrier's longer legal
+  -- name extends its trading name at one end:
+  --   frontier  inside frontiercommunications      prefix
+  --   att       inside attenterprises              prefix
+  --   lightpath inside cablevisionlightpath        suffix
+  --   optimum   inside optimumonline               prefix
+  --   metronet  inside metronetholdings            prefix
+  --   lumos     inside lumosnetworks               prefix
+  -- while the junk pairs share a word in the MIDDLE or share only a region:
+  --   georgiainstituteoftechnology against georgiawindstream   neither
+  --   fullspectrumcommunications  against spectrum             middle
+  --   quantuminternetservices     against quantumfiber         neither
+  --
+  -- Anything excluded here is still visible in carrier_link_verdict_tbl, so
+  -- a real pairing filtered out by this is findable rather than lost.
+  AND (CASE WHEN length(carrier_name_compact(v.itdk_side_name))
+                 <= length(carrier_name_compact(v.best_brand))
+            THEN carrier_name_compact(v.best_brand) LIKE
+                 carrier_name_compact(v.itdk_side_name) || '%'
+              OR carrier_name_compact(v.best_brand) LIKE
+                 '%' || carrier_name_compact(v.itdk_side_name)
+            ELSE carrier_name_compact(v.itdk_side_name) LIKE
+                 carrier_name_compact(v.best_brand) || '%'
+              OR carrier_name_compact(v.itdk_side_name) LIKE
+                 '%' || carrier_name_compact(v.best_brand)
+       END)
 ON CONFLICT (ipapi_key, bdc_key) DO NOTHING;
+
+-- AND REMOVE THE JUNK ALREADY INSERTED. The previous run put 647 pairings in
+-- without this filter, and his ranked queue showed what that looks like.
+--
+-- PRE-MORTEM. This deletes only rows that are status = 'proposed' AND carry
+-- the note written by this file AND fail the prefix-or-suffix test. It
+-- cannot touch a confirmed pairing, a pairing seeded from the regression
+-- gate, or one seeded from the entity layer, because each is excluded by one
+-- of those three conditions. A pairing he has already confirmed is immune by
+-- its status. Nothing here is recoverable from the alias table afterwards,
+-- but everything here is reproducible by re-running this file, and the
+-- underlying evidence stays in carrier_link_verdict_tbl either way.
+DO $cleanjunk$
+DECLARE removed bigint;
+BEGIN
+    DELETE FROM carrier_alias_tbl x
+    WHERE x.status = 'proposed'
+      AND x.note LIKE 'from the ITDK link%'
+      AND NOT (CASE WHEN length(x.ipapi_key) <= length(x.bdc_key)
+                    THEN x.bdc_key LIKE x.ipapi_key || '%'
+                      OR x.bdc_key LIKE '%' || x.ipapi_key
+                    ELSE x.ipapi_key LIKE x.bdc_key || '%'
+                      OR x.ipapi_key LIKE '%' || x.bdc_key
+               END);
+    GET DIAGNOSTICS removed = ROW_COUNT;
+    RAISE NOTICE 'removed % ITDK-derived pairings that shared a word without extending a name at either end', removed;
+END
+$cleanjunk$;
 
 ANALYZE carrier_alias_tbl;
 

@@ -3563,3 +3563,66 @@ tracts behind them:
 
 AT&T also carries 283,233 ZIP-capable ranges on the ASN side. Those two
 rulings are worth more than the remaining 645 together.
+
+## 2026-11-24: 4,920 rulings are 82, and the queue had junk in it
+
+### The rulings count, and a misleading column of mine
+
+`your_rulings_now 4920` beside `your_rulings_after 82` reads like a disaster
+and is not one. The assertion compares DISTINCT rows on both sides and
+passed: the 4,920 by_decision rows collapse to **82 distinct rulings**, and
+he ruled on 87 records. The duplication is about sixtyfold. The report column
+printed the raw count on one side and the distinct count on the other, which
+is my error; both are distinct now.
+
+| measure | value |
+|---|---|
+| rows now | 14,029 |
+| rows now, de-duplicated | 6,063 |
+| rows after re-derivation | 2,698 |
+| his distinct rulings, before and after | 82 |
+
+### The verdict build is 53 times faster
+
+169.8 s to 3.2 s. The whole file is now a few seconds of work plus two
+reports of about 1.2 s each.
+
+### The ranked queue was unusable, and he saw it first
+
+The first ranked output offered him these, each at thousands of tracts:
+
+| ip-api name | BDC brand |
+|---|---|
+| Georgia Institute of Technology | Georgia Windstream, LLC. |
+| Southern Illinois University at Edwardsville | Southern Montana Telephone Company |
+| Full Spectrum Communications | Spectrum |
+| Quantum Internet Services, Inc. | Quantum Fiber |
+| Information Management | Information Transport Solutions, Inc. |
+| Oklahoma Network for Education Enrichment | Oklahoma Windstream, LLC |
+
+A shared word is not a question. 684 proposals with that in them is a queue
+nobody can work through, and it is the same defect he reported five times on
+the ASN side arriving in a new place.
+
+**The filter, which is on questions and not on matches.** Every pairing that
+turned out to be real has the shorter compact key as a PREFIX or a SUFFIX of
+the longer, because a carrier's legal name extends its trading name at one
+end:
+
+    frontier   inside frontiercommunications       prefix
+    att        inside attenterprises               prefix
+    lightpath  inside cablevisionlightpath         suffix
+    optimum    inside optimumonline                prefix
+    metronet   inside metronetholdings             prefix
+    lumos      inside lumosnetworks                prefix
+
+The junk pairs share a word in the MIDDLE or share only a region name.
+Verified on sixteen pairs taken from his own output, ten real and six junk:
+all ten pass, all six are filtered, no errors either way.
+
+The 647 already inserted without the filter are deleted by a statement that
+can only touch rows which are `status = 'proposed'` AND carry this file's
+note AND fail the test, so a confirmed pairing or one seeded from the gate or
+the entity layer is immune by construction. Everything removed is
+reproducible by re-running the file, and the evidence stays in
+`carrier_link_verdict_tbl` regardless.
