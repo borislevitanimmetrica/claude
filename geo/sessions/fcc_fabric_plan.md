@@ -3722,3 +3722,62 @@ frontiernet.net with 98, charter.com with 98 and zayo.com with 185 are now
 all in the unresolved list. Their links were the contaminated ones, so
 dropping them was right, and the 25 verdicts above are what puts the real
 carriers back.
+
+## 2026-11-25: four rulings, and the state government rule was in the wrong category
+
+### His rulings, recorded
+
+| pair | ruling | recorded as |
+|---|---|---|
+| CenturyLink Communications, LLC / Level 3 | do not combine. Level 3's enterprise customers are localized by ip-api to their own sites and are out of scope | unrelated, tier 0 |
+| Fusion Voice and Data Corp / Fusion | same company | llm pairing, tier 2 |
+| Fusion Connect / Fusion | not related, and not a carrier | unrelated |
+| New Wave Industries, Inc., Cox Communications Inc. / Cox Communications | unrelated | unrelated, tier 0 |
+
+All three of the pairs I had refused to decide are now decided by him, and
+each reason is recorded in the table beside the verdict. Verified against the
+live rule: Fusion scores 2, Level 3 scores 0, New Wave scores 0.
+
+### The state government rule was a scope filter, not a matching rule
+
+Boris 2026-11-25: "Remove state governments. They are DIA customers and out
+of scope for the ITDK-BDC work."
+
+I built `carrier_name_is_state_government` as a MATCHING rule that forces
+tier 0, then disclosed it as an extra step outside his algorithm. It is
+neither. It is a SCOPE filter of exactly the same kind as wireless and as
+1-800-Flowers: a state government buys dedicated internet access, ip-api
+locates it at its own premises, and no headend inference applies. Such an ASN
+does not belong in the queue at all, matched or unmatched.
+
+`state_gov_out_of_scope.sql` writes one `out_of_scope` row per
+state-government ASN, the same mechanism that retired 1-800-Flowers, and
+removes any brand decision they hold because an ASN cannot be both out of
+scope and mapped to plant. On his data that is 50 ASNs and 5,799 ZIP-capable
+ranges, led by State of WI Dept. of Administration at 1,484.
+
+It asserts before writing that the test catches NO municipal name: City of
+Fort Collins, Carthage Water and Electric, The City of New York and City of
+Chattanooga are checked on every run, because municipal carriers own real
+plant and deleting it would be the expensive kind of mistake. The 10 positive
+and 14 negative name cases still run inside the matcher as well.
+
+### Postgres restored, and what "latest" could actually mean here
+
+PostgreSQL **16.2**, running, verified with `select version()`.
+
+It is not the newest PostgreSQL in the world and I am not going to imply it
+is. The sandbox has no usable system package manager: `dnf` cannot write
+`/var/log/dnf.log` because the filesystem is read-only. The only route
+available is the `pgserver` wheel, and version 0.1.4 is the latest published,
+bundling 16.2. That is the ceiling from inside this sandbox.
+
+The old data directory was damaged by whatever removed the previous install:
+`pg_notify` was missing and the server would not start. It is moved aside as
+`pgdata_broken_20261125` rather than deleted, and a fresh cluster
+initialised. Nothing was lost: it held only my test fixtures, every one of
+which is rebuilt by running the fixture files.
+
+Re-verified on the restored database: the 53-case regression gate, the
+pairing gate, both assertion blocks, the state government test, the scope
+filter and the three new verdicts.

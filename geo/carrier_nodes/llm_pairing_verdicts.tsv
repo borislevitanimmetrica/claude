@@ -24,8 +24,10 @@ Hargray Communications Group, Inc.	Hargray Communications	y	Same company.
 LUMOS Networks	lumos	y	Same company, casing and legal suffix only.
 Armstrong	Armstrong Telecommunications Inc	y	Armstrong is the trading name of Armstrong Telecommunications. Same company.
 Fidelity Communication International Inc.	Fidelity	y	Fidelity Communications of Missouri trading as Fidelity. Same company.
-New Wave Industries, Inc., Cox Communications Inc.	Cox Communications	flag	The ip-api field concatenates TWO companies, New Wave Industries and Cox Communications. Cox is genuinely present, but the string is malformed and I will not record a pairing from a field holding two carriers. Needs the underlying data checked.
-CenturyLink Communications, LLC	Level 3	flag	Related by ownership: Level 3 was acquired by CenturyLink in 2017 and both are Lumen today. But you ruled on 2026-11-22 that one owner is not one network when the plant is complementary, which is why Verizon and Frontier are kept apart. Level 3 is backbone and enterprise fibre; CenturyLink is ILEC access. Recording this would let Level 3 backbone sites serve CenturyLink access tracts. Your call, not mine.
+New Wave Industries, Inc., Cox Communications Inc.	Cox Communications	n	boris 2026-11-25: unrelated.
+CenturyLink Communications, LLC	Level 3	n	boris 2026-11-25: do not combine. Level 3's enterprise customers are localized by ip-api.com to their own sites and are out of scope for the ITDK-BDC subsystem.
 Consolidated Telcom	Consolidated	n	Consolidated Telcom is a North Dakota cooperative based in Dickinson. Consolidated Communications is an Illinois company. Different companies that share a word.
 Consolidated Telephone Company	Consolidated	n	Consolidated Telephone Company, CTC of Brainerd Minnesota, is a separate cooperative from Consolidated Communications.
-Fusion Voice and Data Corp	Fusion	flag	I cannot establish whether the BDC brand Fusion is Fusion Connect, the former Fusion Telecommunications, or an unrelated local operator of the same name. Not recording either way.
+Fusion Voice and Data Corp	Fusion	y	boris 2026-11-25: same company. Fusion Connect is a different thing, not related and not a carrier.
+Fusion Connect	Fusion	n	boris 2026-11-25: Fusion Connect is not related to the Fusion brand and is not a carrier.
+Fusion Connect, Inc.	Fusion	n	boris 2026-11-25: Fusion Connect is not related to the Fusion brand and is not a carrier.
