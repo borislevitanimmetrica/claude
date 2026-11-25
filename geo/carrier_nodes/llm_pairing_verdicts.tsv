@@ -1,0 +1,31 @@
+ipapi_side	bdc_side	verdict	reason
+AT&T Enterprises, LLC	AT&T	y	AT&T Enterprises, LLC is an AT&T Inc. entity. Same company, same brand.
+AT&T Services, Inc.	AT&T	y	AT&T Services, Inc. is AT&T Inc.'s internal services entity. Same company.
+Spectrum	Charter Communications	y	Spectrum is the consumer trading brand of Charter Communications. Same network.
+Verizon Communications	Verizon	y	Verizon Communications Inc. is the parent of the Verizon brand. Same company.
+Frontier Communications	Frontier	y	Same company, trading name against legal name.
+Frontier Communications of America	Frontier	y	A Frontier Communications operating entity. Same company.
+Frontier Communications Solutions	Frontier	y	A Frontier Communications entity. Same company.
+CenturyLink Communications, LLC	CenturyLink	y	Same company, legal entity against brand.
+CenturyLink Communications, LLC	Quantum Fiber	y	Quantum Fiber is Lumen's consumer fibre brand, operated over CenturyLink plant. Same network.
+CenturyLink Communications, LLC	Lumen	y	CenturyLink rebranded to Lumen Technologies in 2020. Same company.
+Cablevision Lightpath LLC	Lightpath	y	Same company. Lightpath is the trading name of Cablevision Lightpath LLC.
+Optimum Online	Optimum	y	Same brand. Optimum Online was the ISP product name.
+Windstream Communications LLC	Windstream	y	Same company, legal entity against brand.
+Zayo Bandwidth	ZAYO GROUP LLC	y	Zayo Bandwidth is a Zayo Group entity. Same company.
+Metronet	Metronet Holdings	y	Same company, brand against holding entity.
+NTS Communications LLC dba Vexus Fiber	Vexus Fiber	y	The ip-api string states the dba explicitly. Same company.
+Consolidated Communications	Consolidated	y	Same company, abbreviated brand.
+Consolidated Communications, Inc.	Consolidated Communications Networks, Inc	y	Both are Consolidated Communications entities. Same company.
+Fidium	Fidium Fiber	y	Fidium Fiber is the brand; same product of Consolidated Communications.
+Google LLC	Google Fiber	y	Google Fiber is a Google LLC service. Same company, though see the note below on plant.
+Mediacom Communications Corp	Xtream	y	Xtream is Mediacom's consumer brand. Same network.
+Hargray Communications Group, Inc.	Hargray Communications	y	Same company.
+LUMOS Networks	lumos	y	Same company, casing and legal suffix only.
+Armstrong	Armstrong Telecommunications Inc	y	Armstrong is the trading name of Armstrong Telecommunications. Same company.
+Fidelity Communication International Inc.	Fidelity	y	Fidelity Communications of Missouri trading as Fidelity. Same company.
+New Wave Industries, Inc., Cox Communications Inc.	Cox Communications	flag	The ip-api field concatenates TWO companies, New Wave Industries and Cox Communications. Cox is genuinely present, but the string is malformed and I will not record a pairing from a field holding two carriers. Needs the underlying data checked.
+CenturyLink Communications, LLC	Level 3	flag	Related by ownership: Level 3 was acquired by CenturyLink in 2017 and both are Lumen today. But you ruled on 2026-11-22 that one owner is not one network when the plant is complementary, which is why Verizon and Frontier are kept apart. Level 3 is backbone and enterprise fibre; CenturyLink is ILEC access. Recording this would let Level 3 backbone sites serve CenturyLink access tracts. Your call, not mine.
+Consolidated Telcom	Consolidated	n	Consolidated Telcom is a North Dakota cooperative based in Dickinson. Consolidated Communications is an Illinois company. Different companies that share a word.
+Consolidated Telephone Company	Consolidated	n	Consolidated Telephone Company, CTC of Brainerd Minnesota, is a separate cooperative from Consolidated Communications.
+Fusion Voice and Data Corp	Fusion	flag	I cannot establish whether the BDC brand Fusion is Fusion Connect, the former Fusion Telecommunications, or an unrelated local operator of the same name. Not recording either way.

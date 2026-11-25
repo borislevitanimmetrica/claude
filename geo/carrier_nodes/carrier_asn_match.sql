@@ -741,7 +741,7 @@ CREATE TABLE IF NOT EXISTS carrier_alias_tbl (
     bdc_side   text NOT NULL,
     ipapi_key  text NOT NULL,
     bdc_key    text NOT NULL,
-    status     text NOT NULL CHECK (status IN ('confirmed', 'proposed')),
+    status     text NOT NULL CHECK (status IN ('confirmed', 'proposed', 'llm')),
     note       text,
     ruled_at   timestamptz NOT NULL DEFAULT now(),
     PRIMARY KEY (ipapi_key, bdc_key));
@@ -823,6 +823,35 @@ BEGIN
 END
 $reconcile$;
 
+-- STEP 3 OF HIS ALGORITHM NEEDS A THIRD STATUS. Boris 2026-11-24 gave the
+-- complete algorithm: from the table; else an exact match after punctuation
+-- and legal suffixes are dropped, recorded in the table; else an LLM decides
+-- whether the two brands are related at all, and if so it is recorded. So an
+-- LLM verdict IS a recorded pairing and does match, but it stays
+-- distinguishable from his own ruling, because the two carry different
+-- authority and he must be able to audit one without the other.
+--
+-- Widened with ALTER as well as in the CREATE, because the table is created
+-- IF NOT EXISTS and an existing one keeps the constraint it was built with.
+DO $widen$
+DECLARE target text;
+BEGIN
+    SELECT con.conname INTO target
+    FROM pg_constraint con
+    JOIN pg_class rel ON rel.oid = con.conrelid
+    WHERE rel.relname = 'carrier_alias_tbl' AND con.contype = 'c'
+      AND pg_get_constraintdef(con.oid) LIKE '%status%'
+      AND pg_get_constraintdef(con.oid) NOT LIKE '%llm%'
+    LIMIT 1;
+    IF target IS NOT NULL THEN
+        EXECUTE format('ALTER TABLE carrier_alias_tbl DROP CONSTRAINT %I', target);
+        ALTER TABLE carrier_alias_tbl ADD CONSTRAINT carrier_alias_status_chk
+            CHECK (status IN ('confirmed', 'proposed', 'llm'));
+        RAISE NOTICE 'widened the status constraint to allow llm';
+    END IF;
+END
+$widen$;
+
 CREATE INDEX IF NOT EXISTS carrier_alias_ipapi_ix ON carrier_alias_tbl (ipapi_key);
 CREATE INDEX IF NOT EXISTS carrier_alias_bdc_ix   ON carrier_alias_tbl (bdc_key);
 ANALYZE carrier_alias_tbl;
@@ -832,8 +861,10 @@ ANALYZE carrier_alias_tbl;
 -- CONFIRMED ONLY. A proposed row is my inference and must not match.
 CREATE OR REPLACE FUNCTION carrier_keys_are_recorded(ka text, kb text)
 RETURNS boolean AS $fn$
+-- confirmed is his ruling, llm is step 3. Both are RECORDED and both match.
+-- proposed is neither, and must not decide anything.
 SELECT EXISTS (SELECT 1 FROM carrier_alias_tbl x
-               WHERE x.status = 'confirmed'
+               WHERE x.status IN ('confirmed', 'llm')
                  AND ((x.ipapi_key = ka AND x.bdc_key = kb)
                    OR (x.ipapi_key = kb AND x.bdc_key = ka)));
 $fn$ LANGUAGE sql STABLE;

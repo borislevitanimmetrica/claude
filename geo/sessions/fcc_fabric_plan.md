@@ -3626,3 +3626,99 @@ note AND fail the test, so a confirmed pairing or one seeded from the gate or
 the entity layer is immune by construction. Everything removed is
 reproducible by re-running the file, and the evidence stays in
 `carrier_link_verdict_tbl` regardless.
+
+## 2026-11-24: the complete algorithm, and what I was using instead
+
+Boris gave the algorithm and asked for disclosure of anything else in use:
+
+> 1. From the table. 2. For items not in the table, exact match after
+> punctuation and suffixes "Inc.", "LLC" etc. are dropped. Record in table.
+> 3. Remaining matches should be run through an LLM to determine whether
+> there is any relationship between the two brands. If there is, record in
+> table.
+
+### DISCLOSURE: three things decided matches that are not in his algorithm
+
+1. **`carrier_name_is_state_government`.** A shape test on the whole name,
+   forcing tier 0. Mine, added after his State of Alaska report. Redundant
+   under his algorithm: the pair is not an exact match, so it goes to step 3
+   and the LLM answers it.
+
+2. **The stopword tokeniser.** About 90 stopwords plus bare-number noise and
+   uppercase state abbreviations. It stopped deciding matches on 2026-11-23
+   but still decides WHICH PAIRS ARE CONSIDERED, because "shares a word" is
+   what generates the queue. Under his algorithm that set is step 3's input,
+   so the tokeniser is a candidate generator and nothing more.
+
+3. **The prefix-or-suffix filter**, added the same day to keep Georgia
+   Institute of Technology out of the queue. A string heuristic standing
+   exactly where step 3 belongs.
+
+Also in use and consistent with step 1, but worth naming because it is four
+tables and not one: `carrier_alias_tbl`, `carrier_unrelated_tbl`,
+`carrier_entity_name_tbl`, `carrier_suffix_group_tbl`.
+
+**Step 3 did not exist at all.** Nothing had been adjudicated by an LLM.
+Every "proposed" row was a string heuristic or my own unrecorded inference.
+
+### Step 3, built
+
+`carrier_alias_tbl.status` now allows `llm`, and
+`carrier_keys_are_recorded` treats `confirmed` and `llm` alike, so an LLM
+verdict IS a recorded pairing and does match. It keeps its own status because
+his ruling and a machine judgement carry different authority and he must be
+able to revoke one without the other. Every row carries the reason, and a
+verdict with an empty reason is REJECTED, because a verdict without a stated
+basis cannot be audited.
+
+His own ruling outranks step 3: a pair in `carrier_unrelated_tbl` is not
+reopened by an LLM verdict, and the skipped count is printed.
+
+`llm_pairing_verdicts.tsv` holds the first 30 adjudications, the pairs his
+run surfaced: 25 related, 2 not related, 3 refused.
+
+The two NOT related are both the same trap: **Consolidated Telcom** of
+Dickinson, North Dakota and **Consolidated Telephone Company** of Brainerd,
+Minnesota are separate cooperatives from Consolidated Communications of
+Illinois. A prefix test would have accepted both.
+
+The three refused, with the reason recorded rather than a guess:
+
+- **New Wave Industries, Inc., Cox Communications Inc. / Cox Communications.**
+  The ip-api field concatenates TWO companies. Cox is genuinely in it, but a
+  pairing must not be recorded from a field holding two carriers.
+- **CenturyLink Communications, LLC / Level 3.** Related by ownership, both
+  Lumen since 2017. But he ruled on 2026-11-22 that one owner is not one
+  network when the plant is complementary, which is why Verizon and Frontier
+  are kept apart. Level 3 is backbone and enterprise fibre, CenturyLink is
+  ILEC access. Recording it would let Level 3 backbone sites serve
+  CenturyLink access tracts. His call.
+- **Fusion Voice and Data Corp / Fusion.** I cannot establish whether the BDC
+  brand is Fusion Connect or an unrelated local operator of the same name.
+
+### NOT TESTED, and that is not a style note
+
+The sandbox Postgres installation disappeared during this turn:
+`pgserver/pginstall/bin` no longer exists and cannot be reinstalled from
+here. So `load_llm_pairings.sql`, the widened status constraint and the
+verdicts file are **syntax-checked by check_sql.sh and never executed**.
+Everything before this entry was run against a fixture; this was not.
+
+I removed the one construct I could not reason about safely, a psql variable
+inside a `\copy`, in favour of a fixed path, rather than ship an unverified
+statement in the line that reads the input.
+
+### The swap made step 4 worse, as predicted, and these rulings are the cure
+
+| measure | before swap | after swap |
+|---|---|---|
+| carriers with sites resolving to a provider | 1,246 | 363 |
+| step 4 pairs | 293,209 | 227,702 |
+| over 50 km | 155,162, 52.9% | 166,616, 73.2% |
+| within 10 km | 19.1% | 10.8% |
+
+comcast.net with 788 sites, spectrum.com with 453, sbcglobal.net with 110,
+frontiernet.net with 98, charter.com with 98 and zayo.com with 185 are now
+all in the unresolved list. Their links were the contaminated ones, so
+dropping them was right, and the 25 verdicts above are what puts the real
+carriers back.
